@@ -1,5 +1,18 @@
 # multigit
 
+<p>
+  <a href="https://github.com/paxel/multigit/actions/workflows/ci.yml"><img src="https://github.com/paxel/multigit/actions/workflows/ci.yml/badge.svg?branch=summer" alt="CI"/></a>
+  <a href="https://github.com/paxel/multigit/actions/workflows/security.yml"><img src="https://github.com/paxel/multigit/actions/workflows/security.yml/badge.svg?branch=summer" alt="Security"/></a>
+  <a href="https://github.com/paxel/multigit/actions/workflows/codeql.yml"><img src="https://github.com/paxel/multigit/actions/workflows/codeql.yml/badge.svg?branch=summer" alt="CodeQL"/></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=paxel_multigit"><img src="https://sonarcloud.io/api/project_badges/measure?project=paxel_multigit&metric=alert_status" alt="Quality gate"/></a>
+  <a href="https://sonarcloud.io/component_measures?id=paxel_multigit&metric=coverage"><img src="https://sonarcloud.io/api/project_badges/measure?project=paxel_multigit&metric=coverage" alt="Coverage"/></a>
+  <a href="https://sonarcloud.io/summary/overall?id=paxel_multigit"><img src="https://sonarcloud.io/api/project_badges/measure?project=paxel_multigit&metric=ncloc" alt="Lines of code"/></a>
+  <a href="https://github.com/paxel/multigit/releases/latest"><img src="https://img.shields.io/github/v/release/paxel/multigit" alt="Release"/></a>
+  <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-informational" alt="Platforms"/>
+  <img src="https://img.shields.io/github/languages/top/paxel/multigit" alt="Top language"/>
+  <img src="https://img.shields.io/github/last-commit/paxel/multigit/summer" alt="Last commit"/>
+</p>
+
 <img src="assets/multigit.svg" alt="multigit icon" width="96" align="right">
 
 A desktop dashboard for many git repositories, for Linux and macOS. Every
@@ -153,8 +166,19 @@ started from.
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+tool/coverage.sh    # needs cargo-llvm-cov; COVERAGE_JOBS=1 for a small machine
 ```
 
-CI runs these on Linux and macOS on every push and pull request. Pushing a
+Clippy denies `unsafe`, and `unwrap`, `expect`, `panic` and indexing outside
+tests (`Cargo.toml`, `clippy.toml`).
+
+CI runs these on Linux and macOS on every push and pull request, together with
+CodeQL (Rust and the workflows) and OSV-Scanner on `Cargo.lock`. A notice that a
+crate is unmaintained only fails the weekly Security run; accepted ones are in
+`osv-scanner.toml`, each with a reason and a review date. SonarQube Cloud
+analyses `summer` after every push. Pushing a
 tag `vX.Y.Z` that matches the version in `Cargo.toml` builds the Linux tarball
 and the macOS zip and publishes a GitHub release with that version's `CHANGELOG.md` section as release notes.
+The release stops first on a failing check, a known vulnerability, an open high
+or critical CodeQL alert, or line coverage below the floor in
+`tool/coverage-floor.txt`.

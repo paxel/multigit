@@ -36,9 +36,11 @@ pub fn subtitles(paths: &[PathBuf]) -> Vec<Option<String>> {
             let others: Vec<&PathBuf> = indices
                 .iter()
                 .filter(|&&j| j != i)
-                .map(|&j| &paths[j])
+                .filter_map(|&j| paths.get(j))
                 .collect();
-            result[i] = Some(distinguishing_suffix(&paths[i], &others));
+            if let (Some(path), Some(slot)) = (paths.get(i), result.get_mut(i)) {
+                *slot = Some(distinguishing_suffix(path, &others));
+            }
         }
     }
     result
@@ -54,7 +56,9 @@ fn normal_components(path: &Path) -> Vec<String> {
 }
 
 fn suffix(components: &[String], len: usize) -> &[String] {
-    &components[components.len().saturating_sub(len)..]
+    components
+        .get(components.len().saturating_sub(len)..)
+        .unwrap_or_default()
 }
 
 fn distinguishing_suffix(path: &Path, others: &[&PathBuf]) -> String {

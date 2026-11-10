@@ -1,0 +1,55 @@
+# SonarQube Cloud analysis of summer after each merge; the free plan
+# analyses the main branch only. Report only: the quality gate shows on
+# https://sonarcloud.io/summary/new_code?id=paxel_multigit and fails no
+# build. What is analysed is in sonar-project.properties.
+#
+# One-time setup: the project paxel_multigit on SonarQube Cloud with
+# Automatic Analysis off, and the repository secret SQ_TOKEN.
+#
+# Third-party actions are pinned to full commit SHAs (githubactions:S7637);
+# the comment names the version.
+name: SonarQube Cloud
+
+on:
+  push:
+    branches: [summer]
+
+permissions:
+  contents: read
+
+jobs:
+  sonar:
+    name: SonarQube Cloud analysis
+    runs-on: ubuntu-24.04
+    steps:
+      # The full history, for the blame and the new-code period.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-16
+        with:
+          toolchain: stable
+          components: clippy, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # Imported by the analyzer as external issues.
+      - name: Clippy report for the analyzer
+        run: |
+          mkdir -p build
+          cargo clippy --all-targets --locked --message-format=json > build/clippy-report.json
+
+      # The LCOV file sonar-project.properties names, from the same script
+      # as the release's coverage floor. Report only, like the analysis: a
+      # run below the floor still writes the file, and a failing test
+      # leaves the scan without coverage.
+      - name: Coverage (LCOV for the analyzer)
+        continue-on-error: true
+        run: |
+          cargo install cargo-llvm-cov --locked --version 0.9.1
+          tool/coverage.sh
+
+      - uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304 # v8.4.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SQ_TOKEN }}

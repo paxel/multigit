@@ -19,3 +19,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 egui_kittest = "0.35"
 tempfile = "3"
+
+# Production code may not unwrap, expect, panic or index; tests may
+# (clippy.toml). CI runs clippy with -D warnings, so these fail the build.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"

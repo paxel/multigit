@@ -1,0 +1,40 @@
+# OSV-Scanner's exceptions for Cargo.lock. CI, the release gate and the
+# weekly Security run (.github/workflows/) all read them. Each one says why
+# multigit is not exposed and why no update removes the crate. CI and the
+# release list a notice that a crate is unmaintained without failing
+# (tool/osv_gate.py); the weekly run fails on it. When an entry's date
+# passes, the weekly run fails again: that is the review. Check the advisory
+# and the parent crates again, then remove the entry or move the date with a
+# reason.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0192"
+ignoreUntil = 2027-05-10
+reason = """ttf-parser is unmaintained; no vulnerability is described. \
+It comes only through eframe -> winit 0.30 -> sctk-adwaita 0.10 -> ab_glyph, \
+which draws the window title bar on Wayland desktops without server-side \
+decorations. The font it parses is the system title-bar font or \
+sctk-adwaita's embedded Cantarell, never a file from a repository. The app's \
+own text is drawn by egui without ttf-parser."""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+ignoreUntil = 2027-05-10
+reason = """zbus_names is unmaintained because it moved into zbus 6; no \
+vulnerability is described. It is part of zbus 5, which egui's accessibility \
+(accesskit_unix, atspi) uses to talk to the user's own session bus. It stays \
+until egui's accessibility moves to zbus 6."""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+ignoreUntil = 2027-05-10
+reason = """zvariant is unmaintained because it moved into zbus 6; no \
+vulnerability is described. Same as RUSTSEC-2026-0371: part of zbus 5, used \
+by egui's accessibility on the session bus."""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+ignoreUntil = 2027-05-10
+reason = """zvariant_derive is unmaintained because it moved into zbus 6; no \
+vulnerability is described. A proc macro of zbus 5, run at compile time only. \
+Same as RUSTSEC-2026-0371."""

@@ -1,6 +1,15 @@
 //! Tests of the shell scripts shipped in the release tarball and used by the
 //! release workflow. They run in temporary directories only.
 
+// The whole file is test code; clippy.toml's allow-in-tests only covers the
+// #[test] functions, not the helpers they share.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

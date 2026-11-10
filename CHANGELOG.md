@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- macOS support: CI runs on macOS, and releases include `multigit.app` as a universal (Apple silicon and Intel) zip.
+
+### Changed
+
+- The menu entry and icon are only written on Linux and other freedesktop.org systems, not on macOS.
+
 ## [0.1.0]
 
 ### Added

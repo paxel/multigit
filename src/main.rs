@@ -1,7 +1,7 @@
 //! multigit binary: loads config and history, starts the window.
 
 use multigit::infrastructure::backend::GitBackend;
-use multigit::infrastructure::launcher::{self, APP_ID, ICON_PNG};
+use multigit::infrastructure::launcher::{APP_ID, ICON_PNG};
 use multigit::infrastructure::store::{self, Paths};
 use multigit::ui::{MultigitApp, app::App, style};
 use std::sync::Arc;
@@ -21,7 +21,9 @@ fn main() -> eframe::Result {
         .map(|p| store::load_history(&p.history_file))
         .unwrap_or_default();
 
-    launcher::register_in_background();
+    // Desktop entries are a freedesktop.org convention; macOS uses the .app bundle.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    multigit::infrastructure::launcher::register_in_background();
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("multigit")

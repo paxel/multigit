@@ -2,9 +2,9 @@
 
 <img src="assets/multigit.svg" alt="multigit icon" width="96" align="right">
 
-A Linux desktop dashboard for many git repositories. Every repository is a card
-that shows where it stands; buttons and a command line run git in one or many
-repositories at once.
+A desktop dashboard for many git repositories, for Linux and macOS. Every
+repository is a card that shows where it stands; buttons and a command line run
+git in one or many repositories at once.
 
 ## The board
 
@@ -92,10 +92,11 @@ buttons (add, remove, reorder, or pick a preset).
 |----------------------------------------------------------------|---------------------------------------------------|
 | `~/.config/multigit/config.toml`                               | Repositories, buttons, settings; editable by hand |
 | `~/.local/state/multigit/history`                              | Command line history, last 500 entries            |
-| `~/.local/share/applications/io.github.paxel.multigit.desktop` | Menu entry, written on every start                |
-| `~/.local/share/icons/hicolor/256x256/apps/multigit.png`       | Icon                                              |
+| `~/.local/share/applications/io.github.paxel.multigit.desktop` | Menu entry, written on every start (Linux only)   |
+| `~/.local/share/icons/hicolor/256x256/apps/multigit.png`       | Icon (Linux only)                                 |
 
-`XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_DATA_HOME` are honoured. If the
+`XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_DATA_HOME` are honoured, on macOS
+as well. If the
 config file cannot be read, the app starts with defaults and does not save
 over it.
 
@@ -114,6 +115,28 @@ multigit-<version>-x86_64-linux/install.sh
 `install.sh` copies the binary to `~/.local/bin` and installs the menu entry
 and icon. git must be installed.
 
+### Release zip (macOS, Apple silicon and Intel)
+
+Download `multigit-<version>-macos-universal.zip` from the
+[releases](https://github.com/paxel/multigit/releases), unpack it and move
+`multigit.app` to `/Applications`. The app is not signed: on first start,
+right-click it and choose **Open**, or remove the quarantine flag:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/multigit.app
+```
+
+An app started from the Finder or the Dock gets the system `PATH`
+(`/usr/bin:/bin:/usr/sbin:/sbin`), so it runs `/usr/bin/git` from the Xcode
+Command Line Tools (`xcode-select --install`), not a git from Homebrew.
+
+To build the bundle yourself:
+
+```sh
+cargo build --release
+packaging/macos/bundle.sh target/release/multigit 0.1.0 .
+```
+
 ### From source
 
 ```sh
@@ -121,7 +144,8 @@ cargo build --release
 target/release/multigit
 ```
 
-The app registers its menu entry pointing at the binary it was started from.
+On Linux the app registers its menu entry pointing at the binary it was
+started from.
 
 ## Development
 
@@ -131,6 +155,6 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-CI runs these on every push and pull request. Pushing a tag `vX.Y.Z` that
-matches the version in `Cargo.toml` builds the tarball and publishes a GitHub
-release with that version's `CHANGELOG.md` section as release notes.
+CI runs these on Linux and macOS on every push and pull request. Pushing a
+tag `vX.Y.Z` that matches the version in `Cargo.toml` builds the Linux tarball
+and the macOS zip and publishes a GitHub release with that version's `CHANGELOG.md` section as release notes.

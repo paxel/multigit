@@ -97,3 +97,49 @@ fn current_changelog_has_notes_for_cargo_version() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_bundle_has_binary_plist_and_icon() {
+    let tmp = tempfile::tempdir().unwrap();
+    let binary = tmp.path().join("multigit");
+    fs::write(&binary, "#!/bin/sh\necho fake\n").unwrap();
+    let out_dir = tmp.path().join("out dir");
+    fs::create_dir_all(&out_dir).unwrap();
+
+    let out = Command::new("sh")
+        .arg(root().join("packaging/macos/bundle.sh"))
+        .arg(&binary)
+        .arg("1.2.3")
+        .arg(&out_dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let contents = out_dir.join("multigit.app/Contents");
+    assert_eq!(
+        fs::read_to_string(contents.join("MacOS/multigit")).unwrap(),
+        "#!/bin/sh\necho fake\n"
+    );
+    let plist = contents.join("Info.plist");
+    let lint = Command::new("plutil")
+        .arg("-lint")
+        .arg(&plist)
+        .output()
+        .unwrap();
+    assert!(
+        lint.status.success(),
+        "{}",
+        String::from_utf8_lossy(&lint.stdout)
+    );
+    let plist = fs::read_to_string(plist).unwrap();
+    assert!(plist.contains("<string>1.2.3</string>"));
+    assert!(!plist.contains("@VERSION@"));
+    assert!(plist.contains("<string>io.github.paxel.multigit</string>"));
+    let icns = fs::read(contents.join("Resources/multigit.icns")).unwrap();
+    assert_eq!(&icns[0..4], b"icns");
+}

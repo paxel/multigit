@@ -5,15 +5,18 @@ on:
     tags:
       - "v*"
 
+# Build jobs run third-party build scripts: they only get a read-only token.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
+  version:
     runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -21,37 +24,104 @@ jobs:
         id: version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          case "$version" in
+            ""|*[!0-9A-Za-z.+-]*) echo "::error::Unexpected version '$version' in Cargo.toml"; exit 1 ;;
+          esac
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Release notes from CHANGELOG.md
-        run: packaging/release-notes.sh "${{ steps.version.outputs.version }}" > release-notes.md
+  linux:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build
         run: cargo build --release --locked --target x86_64-unknown-linux-gnu
 
       - name: Package
-        id: package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          name="multigit-${{ steps.version.outputs.version }}-x86_64-linux"
+          name="multigit-$VERSION-x86_64-linux"
           mkdir "$name"
           cp target/x86_64-unknown-linux-gnu/release/multigit "$name/"
           cp packaging/linux/install.sh packaging/linux/io.github.paxel.multigit.desktop "$name/"
           cp assets/icon_256.png README.md CHANGELOG.md "$name/"
           tar -czf "$name.tar.gz" "$name"
-          echo "archive=$name.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: multigit-*.tar.gz
+
+  macos:
+    needs: version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build universal binary
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          lipo -create -output multigit \
+            target/aarch64-apple-darwin/release/multigit \
+            target/x86_64-apple-darwin/release/multigit
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          name="multigit-$VERSION-macos-universal"
+          mkdir "$name"
+          packaging/macos/bundle.sh multigit "$VERSION" "$name"
+          ditto -c -k --keepParent "$name/multigit.app" "$name.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: multigit-*.zip
+
+  publish:
+    needs: [version, linux, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: packaging/release-notes.sh "$VERSION" > release-notes.md
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "${{ steps.package.outputs.archive }}" \
-            --title "multigit ${{ steps.version.outputs.version }}" \
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "multigit $VERSION" \
             --notes-file release-notes.md

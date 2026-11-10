@@ -115,6 +115,19 @@ over it.
 
 ## Install
 
+### Homebrew (Linux x86_64 and macOS)
+
+```sh
+brew install paxel/tap/multigit           # Linux
+brew install --cask paxel/tap/multigit    # macOS
+```
+
+On Linux the formula also puts the menu entry and icon into
+`~/.local/share`; `multigit-install-icon` writes them again, and
+`multigit-install-icon --uninstall` removes them before `brew uninstall`. On
+macOS the app is not signed: on first start, choose **Open Anyway** in System
+Settings, Privacy & Security.
+
 ### Release tarball (Linux x86_64)
 
 Download `multigit-<version>-x86_64-linux.tar.gz` from the

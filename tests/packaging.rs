@@ -145,10 +145,130 @@ fn macos_bundle_has_binary_plist_and_icon() {
         "{}",
         String::from_utf8_lossy(&lint.stdout)
     );
+    let verify = Command::new("codesign")
+        .arg("--verify")
+        .arg("--strict")
+        .arg(out_dir.join("multigit.app"))
+        .output()
+        .unwrap();
+    assert!(
+        verify.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
     let plist = fs::read_to_string(plist).unwrap();
     assert!(plist.contains("<string>1.2.3</string>"));
     assert!(!plist.contains("@VERSION@"));
     assert!(plist.contains("<string>io.github.paxel.multigit</string>"));
     let icns = fs::read(contents.join("Resources/multigit.icns")).unwrap();
     assert_eq!(&icns[0..4], b"icns");
+}
+
+#[test]
+fn install_icon_script_installs_and_uninstalls_entry_and_icon() {
+    let tmp = tempfile::tempdir().unwrap();
+    let libexec = tmp.path().join("lib exec");
+    let data = tmp.path().join("data home");
+    fs::create_dir_all(&libexec).unwrap();
+    let linux = root().join("packaging/linux");
+    fs::copy(
+        linux.join("install-icon.sh"),
+        libexec.join("install-icon.sh"),
+    )
+    .unwrap();
+    fs::write(
+        libexec.join("io.github.paxel.multigit.desktop"),
+        "[Desktop Entry]\nExec=/brew/opt/multigit/bin/multigit\n",
+    )
+    .unwrap();
+    fs::copy(
+        root().join("assets/icon_256.png"),
+        libexec.join("icon_256.png"),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new("sh")
+            .arg(libexec.join("install-icon.sh"))
+            .args(args)
+            .env("XDG_DATA_HOME", &data)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    let entry = data.join("applications/io.github.paxel.multigit.desktop");
+    let icon = data.join("icons/hicolor/256x256/apps/multigit.png");
+    run(&[]);
+    run(&[]);
+    assert_eq!(
+        fs::read_to_string(&entry).unwrap(),
+        "[Desktop Entry]\nExec=/brew/opt/multigit/bin/multigit\n"
+    );
+    assert_eq!(
+        fs::read(&icon).unwrap(),
+        fs::read(root().join("assets/icon_256.png")).unwrap()
+    );
+    run(&["--uninstall"]);
+    assert!(!entry.exists());
+    assert!(!icon.exists());
+
+    let bad = Command::new("sh")
+        .arg(libexec.join("install-icon.sh"))
+        .arg("--bogus")
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(2));
+}
+
+#[test]
+fn render_channels_fills_version_and_checksums() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dist = tmp.path().join("dist");
+    let out = tmp.path().join("out");
+    fs::create_dir_all(&dist).unwrap();
+    fs::write(dist.join("multigit-1.2.3-x86_64-linux.tar.gz"), "linux").unwrap();
+    fs::write(dist.join("multigit-1.2.3-macos-universal.zip"), "macos").unwrap();
+    let render = |version: &str| {
+        Command::new("sh")
+            .arg(root().join("packaging/render-channels.sh"))
+            .arg(version)
+            .arg(&dist)
+            .arg(&out)
+            .output()
+            .unwrap()
+    };
+    let result = render("1.2.3");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    // sha256 of "linux" and "macos".
+    let formula = fs::read_to_string(out.join("multigit-formula.rb")).unwrap();
+    assert!(formula.contains("version \"1.2.3\""));
+    assert!(formula.contains("releases/download/v1.2.3/multigit-1.2.3-x86_64-linux.tar.gz"));
+    assert!(
+        formula.contains(
+            "sha256 \"caf90169eefa5f807d577486b9f795ab86ae2983c5c20806cff959117e90af18\""
+        )
+    );
+    assert!(!formula.contains("{{"));
+    let cask = fs::read_to_string(out.join("multigit-cask.rb")).unwrap();
+    assert!(cask.contains("version \"1.2.3\""));
+    assert!(
+        cask.contains(
+            "sha256 \"a0c0485eff9c817deee7190edf264622b1677fc992920657411b36a6aed48f83\""
+        )
+    );
+    assert!(!cask.contains("{{"));
+
+    // A missing artifact or a bad version renders nothing.
+    assert!(!render("9.9.9").status.success());
+    assert!(!render("1.2.3/x").status.success());
 }

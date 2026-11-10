@@ -33,4 +33,9 @@ done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/multigit.icns"
 rm -rf "$(dirname "$iconset")"
 
+# Ad-hoc signature over the whole bundle: Apple silicon runs no unsigned code,
+# and a quarantined download (the Homebrew cask) with only the linker's
+# signature on the binary is reported as damaged instead of offering Open Anyway.
+codesign --force --sign - "$app"
+
 echo "$app"

@@ -146,7 +146,7 @@ jobs:
           name="multigit-$VERSION-x86_64-linux"
           mkdir "$name"
           cp target/x86_64-unknown-linux-gnu/release/multigit "$name/"
-          cp packaging/linux/install.sh packaging/linux/io.github.paxel.multigit.desktop "$name/"
+          cp packaging/linux/install.sh packaging/linux/install-icon.sh packaging/linux/io.github.paxel.multigit.desktop "$name/"
           cp assets/icon_256.png README.md CHANGELOG.md "$name/"
           tar -czf "$name.tar.gz" "$name"
 
@@ -216,3 +216,38 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "multigit $VERSION" \
             --notes-file release-notes.md
+
+  # Only after the release exists: the formula and the cask point at its
+  # assets. Needs the repository secret CHANNEL_PAT, a token that may push
+  # to paxel/homebrew-tap.
+  homebrew:
+    name: Homebrew tap
+    needs: [version, publish]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Render the formula and the cask with the artifacts' checksums
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: packaging/render-channels.sh "$VERSION" dist out
+
+      - name: Push to the tap
+        env:
+          GH_TOKEN: ${{ secrets.CHANNEL_PAT }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          git config --global user.name "multigit-release-bot"
+          git config --global user.email "taum@tuta.io"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/paxel/homebrew-tap.git" tap
+          mkdir -p tap/Casks tap/Formula
+          cp out/multigit-formula.rb tap/Formula/multigit.rb
+          cp out/multigit-cask.rb tap/Casks/multigit.rb
+          git -C tap add Formula/multigit.rb Casks/multigit.rb
+          git -C tap diff --cached --quiet || git -C tap commit -m "multigit $VERSION"
+          git -C tap push

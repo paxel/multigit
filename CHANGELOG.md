@@ -29,3 +29,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Confirmation before destructive commands (such as `reset --hard` or `push --force`) run in more than one repository.
 - git runs without prompts, pager or editor; commands that need an editor fail with a clear message and failed logins show as "auth failed" on the card.
 - Application menu entry and icon, registered on every start and by the release tarball's `install.sh`.
+- Homebrew install from `paxel/tap`: a formula for Linux and a cask for macOS.

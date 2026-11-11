@@ -9,6 +9,7 @@ pub mod destructive;
 pub mod favorites;
 pub mod hints;
 pub mod history;
+pub mod kawaii;
 pub mod naming;
 pub mod output;
 pub mod repo;

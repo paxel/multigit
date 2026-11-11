@@ -6,10 +6,11 @@ use crate::application::schedule::{Due, Schedule};
 use crate::domain::board::{SortKey, Sorted, compare, matches_filter};
 use crate::domain::command::{Job, display, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
-use crate::domain::config::Config;
+use crate::domain::config::{Config, Theme};
 use crate::domain::destructive::is_destructive;
 use crate::domain::favorites::{FavoriteDraft, active_after_delete, forget};
 use crate::domain::history::History;
+use crate::domain::kawaii;
 use crate::domain::naming::{board_order, title};
 use crate::domain::output::OutputLog;
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
@@ -18,7 +19,7 @@ use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
 use crate::infrastructure::scan::scan;
 use crate::infrastructure::store::{self, Paths};
 use crate::ui::cli::CliState;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -159,6 +160,12 @@ pub struct App {
     commands_requested: bool,
     pub toasts: Vec<Toast>,
     pub copy_flash: Option<CopyFlash>,
+    /// The clock of the Kawaii theme's motion, in seconds; it runs only
+    /// while the window has focus.
+    pub kawaii_clock: f64,
+    /// Cards that swing because they were just marked, with the clock time
+    /// of the mark.
+    wobbles: HashMap<PathBuf, f64>,
     pub confirm: Option<PendingRun>,
     pub settings_open: bool,
     pub settings_page: SettingsPage,
@@ -214,6 +221,8 @@ impl App {
             commands_requested: false,
             toasts: Vec::new(),
             copy_flash: None,
+            kawaii_clock: 0.0,
+            wobbles: HashMap::new(),
             confirm: None,
             settings_open: false,
             settings_page: SettingsPage::default(),
@@ -297,6 +306,48 @@ impl App {
         self.marked.remove(path);
         forget(&mut self.config.favorites, &[path.to_path_buf()]);
         self.sync_repos_to_config();
+    }
+
+    pub fn is_kawaii(&self) -> bool {
+        self.config.theme == Theme::Kawaii
+    }
+
+    /// A click on a card: mark it, or take the mark off. In the Kawaii theme
+    /// a card that gets its mark swings.
+    pub fn toggle_mark(&mut self, path: PathBuf) {
+        if self.marked.remove(&path) {
+            return;
+        }
+        if self.is_kawaii() {
+            self.wobbles.insert(path.clone(), self.kawaii_clock);
+        }
+        self.marked.insert(path);
+    }
+
+    /// One frame of the Kawaii theme's clock; `true` while it runs.
+    pub fn advance_kawaii(&mut self, dt: f32, focused: bool) -> bool {
+        if !self.is_kawaii() {
+            self.wobbles.clear();
+            return false;
+        }
+        self.kawaii_clock = kawaii::advance(self.kawaii_clock, dt, focused);
+        let clock = self.kawaii_clock;
+        self.wobbles
+            .retain(|_, marked_at| kawaii::wobble(clock, *marked_at).is_some());
+        focused
+    }
+
+    /// How far the Kawaii theme moves the card at position `index` of the
+    /// board right now: right and down, in points. Nothing in other themes.
+    pub fn card_offset(&self, path: &Path, index: usize) -> (f32, f32) {
+        if !self.is_kawaii() {
+            return (0.0, 0.0);
+        }
+        let swing = self
+            .wobbles
+            .get(path)
+            .and_then(|marked_at| kawaii::wobble(self.kawaii_clock, *marked_at));
+        (swing.unwrap_or(0.0), kawaii::bob(self.kawaii_clock, index))
     }
 
     /// What a right click on the card of `clicked` acts on: that card, or,
@@ -1186,6 +1237,46 @@ pub(crate) mod tests {
         app.delete_favorite(0);
         assert_eq!(app.active_favorite, None);
         assert_eq!(shown(&app), vec![PathBuf::from("/x/web")]);
+    }
+
+    #[test]
+    fn kawaii_moves_cards_only_in_its_theme_and_only_with_focus() {
+        let mut app = app_with(Arc::default(), None);
+        let path = PathBuf::from("/x/a");
+        // Other themes: no clock, no motion, no swing on a mark.
+        assert!(!app.advance_kawaii(0.05, true));
+        app.toggle_mark(path.clone());
+        assert_eq!(app.card_offset(&path, 1), (0.0, 0.0));
+        assert_eq!(app.kawaii_clock, 0.0);
+        app.toggle_mark(path.clone());
+        assert!(app.marked.is_empty());
+
+        app.config.theme = Theme::Kawaii;
+        assert!(app.advance_kawaii(0.05, true));
+        app.toggle_mark(path.clone());
+        assert!(app.advance_kawaii(0.05, true));
+        let (swing, bob) = app.card_offset(&path, 1);
+        assert!(swing != 0.0 && bob != 0.0, "{swing} {bob}");
+        assert_eq!(
+            app.card_offset(Path::new("/x/b"), 1).0,
+            0.0,
+            "only the marked card swings"
+        );
+
+        // Without focus the clock stands still: the same picture every frame.
+        let frozen = (app.kawaii_clock, app.card_offset(&path, 1));
+        for _ in 0..5 {
+            assert!(!app.advance_kawaii(0.05, false));
+        }
+        assert_eq!((app.kawaii_clock, app.card_offset(&path, 1)), frozen);
+
+        // The swing ends; taking the mark off starts none.
+        for _ in 0..20 {
+            app.advance_kawaii(0.05, true);
+        }
+        assert_eq!(app.card_offset(&path, 1).0, 0.0);
+        app.toggle_mark(path.clone());
+        assert_eq!(app.card_offset(&path, 1).0, 0.0);
     }
 
     #[test]

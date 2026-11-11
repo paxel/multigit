@@ -2,6 +2,7 @@
 
 use crate::domain::command::{Job, display, shell_name, shell_program};
 use crate::domain::favorites::{EMOJIS, Favorite, PALETTE, color_rgb, dark_text_on, favorites_of};
+use crate::domain::kawaii;
 use crate::domain::naming::{parent_line, title};
 use crate::domain::output::{Run, SectionState};
 use crate::domain::repo::Snapshot;
@@ -10,6 +11,7 @@ use crate::domain::switch::{Choice, branch_choices, matching, new_branch_command
 use crate::ui::app::{App, Card, CopyFlash};
 use crate::ui::cli::{CliAction, CliContext};
 use crate::ui::settings;
+use crate::ui::style::{KAWAII_PINK, KAWAII_YELLOW};
 use egui::{Color32, RichText, Ui};
 use std::path::{Path, PathBuf};
 
@@ -170,6 +172,13 @@ impl App {
         }
         ui.ctx()
             .request_repaint_after(next.max(std::time::Duration::from_millis(200)));
+        // The Kawaii theme moves, but only while the window has focus:
+        // without it no frame is asked for and the picture stands still.
+        let (dt, focused) = ui.input(|i| (i.stable_dt, i.focused));
+        if self.advance_kawaii(dt, focused) {
+            let frame = std::time::Duration::from_secs_f32(1.0 / kawaii::FPS);
+            ui.ctx().request_repaint_after(frame);
+        }
 
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("cli").show(ui, |ui| {
@@ -432,14 +441,25 @@ impl App {
         let mut actions = Vec::new();
         let gap = 10.0;
         let marked_shown = self.marked_repos();
+        let kawaii = self.is_kawaii();
+        // Room the Kawaii theme keeps around a card to move it in.
+        let play = if kawaii {
+            2.0 * (kawaii::WOBBLE + ui.spacing().item_spacing.x)
+        } else {
+            0.0
+        };
+        if kawaii {
+            kawaii_background(ui, self.kawaii_clock);
+        }
+        let mut index = 0;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 // Containers do not wrap inside `horizontal_wrapped`, so lay out
                 // fixed rows: as many columns as fit the width.
-                let columns = (((ui.available_width() + gap) / (CARD_OUTER_WIDTH + gap)).floor()
-                    as usize)
-                    .max(1);
+                let card_width = CARD_OUTER_WIDTH + play;
+                let columns =
+                    (((ui.available_width() + gap) / (card_width + gap)).floor() as usize).max(1);
                 for row in self.shown_cards().chunks(columns) {
                     ui.horizontal_top(|ui| {
                         for (i, card) in row.iter().enumerate() {
@@ -453,8 +473,15 @@ impl App {
                                 buttons: &self.config.buttons,
                                 favorites: &self.config.favorites,
                                 marked_shown: &marked_shown,
+                                kawaii,
                             };
-                            view.show(ui, &mut actions);
+                            if kawaii {
+                                let offset = self.card_offset(&card.path, index);
+                                moved(ui, offset, |ui| view.show(ui, &mut actions));
+                            } else {
+                                view.show(ui, &mut actions);
+                            }
+                            index += 1;
                         }
                     });
                     ui.add_space(gap);
@@ -478,11 +505,7 @@ impl App {
                     let targets = self.menu_targets(&p);
                     self.new_favorite(targets);
                 }
-                BoardAction::Toggle(p) => {
-                    if !self.marked.remove(&p) {
-                        self.marked.insert(p);
-                    }
-                }
+                BoardAction::Toggle(p) => self.toggle_mark(p),
                 BoardAction::Copy(text, at) => self.copy(ui, text, at),
                 BoardAction::CopyFetchError(path, at) => {
                     if let Some(output) = self.take_fetch_error(&path) {
@@ -570,6 +593,20 @@ impl App {
             egui::Id::new("copy-flash"),
         ));
         let color = ui.visuals().strong_text_color().gamma_multiply(1.0 - t);
+        if self.is_kawaii() {
+            // A burst of stars around the click.
+            const SPARKS: usize = 6;
+            for i in 0..SPARKS {
+                let (x, y) = kawaii::spark(t, i, SPARKS);
+                painter.text(
+                    flash.at + egui::vec2(x, y),
+                    egui::Align2::CENTER_CENTER,
+                    STAR,
+                    egui::FontId::proportional(12.0),
+                    KAWAII_YELLOW.gamma_multiply(1.0 - t),
+                );
+            }
+        }
         painter.text(
             flash.at - egui::vec2(0.0, 8.0 + COPY_FLASH_RISE * t),
             egui::Align2::CENTER_BOTTOM,
@@ -676,6 +713,63 @@ fn output_toggle(ui: &mut Ui, hidden: &mut bool, unseen: Option<Option<bool>>) {
     }
 }
 
+/// Heart and star of the Kawaii theme.
+pub const HEART: &str = "\u{2665}";
+pub const STAR: &str = "\u{2605}";
+
+/// The Kawaii theme's board: a pastel rainbow that drifts sideways, and
+/// hearts and stars floating up it. Painted under the cards.
+fn kawaii_background(ui: &Ui, clock: f64) {
+    let rect = ui.clip_rect();
+    let painter = ui.painter();
+    const STRIPS: u32 = 24;
+    let mut mesh = egui::Mesh::default();
+    for i in 0..=STRIPS {
+        let x = i as f32 / STRIPS as f32;
+        let hue = kawaii::rainbow_hue(clock, x);
+        let color: Color32 = egui::ecolor::Hsva::new(hue, 0.22, 1.0, 1.0).into();
+        let at = egui::lerp(rect.left()..=rect.right(), x);
+        mesh.colored_vertex(egui::pos2(at, rect.top()), color);
+        mesh.colored_vertex(egui::pos2(at, rect.bottom()), color);
+    }
+    for i in 0..STRIPS {
+        let a = 2 * i;
+        mesh.add_triangle(a, a + 1, a + 2);
+        mesh.add_triangle(a + 1, a + 2, a + 3);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+    for index in 0..kawaii::PARTICLES {
+        let p = kawaii::particle(clock, index);
+        let (glyph, color) = if p.heart {
+            (HEART, KAWAII_PINK)
+        } else {
+            (STAR, KAWAII_YELLOW)
+        };
+        painter.text(
+            rect.min + egui::vec2(p.x * rect.width(), p.y * rect.height()),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            egui::FontId::proportional(p.size),
+            color.gamma_multiply(0.8 * p.alpha),
+        );
+    }
+}
+
+/// Draw `content` moved by `offset` (right, down) inside room that stays the
+/// same size, so the cards around it keep their place.
+fn moved(ui: &mut Ui, offset: (f32, f32), content: impl FnOnce(&mut Ui)) {
+    let (dx, dy) = offset;
+    ui.vertical(|ui| {
+        ui.add_space(kawaii::BOB + dy);
+        ui.horizontal(|ui| {
+            ui.add_space(kawaii::WOBBLE + dx);
+            content(ui);
+            ui.add_space(kawaii::WOBBLE - dx);
+        });
+        ui.add_space(kawaii::BOB - dy);
+    });
+}
+
 /// One card and what drawing it needs from the board.
 struct CardView<'a> {
     card: &'a Card,
@@ -686,6 +780,9 @@ struct CardView<'a> {
     /// The marked cards the board shows: what a right click on a marked
     /// card acts on.
     marked_shown: &'a [PathBuf],
+    /// The Kawaii theme: a solid card over the rainbow, a ring under the
+    /// pointer.
+    kawaii: bool,
 }
 
 impl CardView<'_> {
@@ -709,7 +806,22 @@ impl CardView<'_> {
             buttons,
             emojis: &emojis,
         };
-        let mut anchors = card_ui(ui, &content, marked, actions);
+        let mut anchors = card_ui(ui, &content, marked, self.kawaii, actions);
+        if let Some(whole) = anchors.first().filter(|_| self.kawaii) {
+            // The card grows a little under the pointer.
+            let grown = ui
+                .ctx()
+                .animate_bool(whole.id.with("grow"), whole.contains_pointer());
+            if grown > 0.0 {
+                let radius = ui.visuals().widgets.noninteractive.corner_radius;
+                ui.painter().rect_stroke(
+                    whole.rect.expand(2.0 * grown),
+                    radius,
+                    egui::Stroke::new(2.5 * grown, KAWAII_PINK),
+                    egui::StrokeKind::Outside,
+                );
+            }
+        }
         // One stripe per favorite at the left edge, inside the card's margin.
         if let Some(whole) = anchors.first().map(|r| r.rect) {
             let width = STRIPE_WIDTH.min(CARD_MARGIN / member_of.len().max(1) as f32);
@@ -782,16 +894,27 @@ fn card_ui(
     ui: &mut Ui,
     content: &CardContent,
     marked: bool,
+    solid: bool,
     actions: &mut Vec<BoardAction>,
 ) -> Vec<egui::Response> {
     let card = content.card;
     let mut frame = egui::Frame::group(ui.style()).inner_margin(CARD_MARGIN);
+    if solid {
+        // Over a background that is no plain color the text needs a card
+        // that is one.
+        frame = frame.fill(ui.visuals().window_fill);
+    }
     if marked {
         // Marked cards get a thick selection-colored border and a tinted background.
         let selection = ui.visuals().selection.bg_fill;
+        let tint = if solid {
+            ui.visuals().window_fill.lerp_to_gamma(selection, 0.3)
+        } else {
+            selection.gamma_multiply(0.18)
+        };
         frame = frame
             .stroke(egui::Stroke::new(MARKED_STROKE, selection))
-            .fill(selection.gamma_multiply(0.18));
+            .fill(tint);
     }
     // A click on the card toggles its mark; its buttons and the texts that
     // copy themselves sit above this sense and keep their clicks. Texts are

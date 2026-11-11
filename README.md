@@ -187,9 +187,15 @@ Buttons and the command line run git as you would in a terminal, hooks and all.
 
 **Settings** in the toolbar changes the fetch interval, the number of parallel
 git processes, the folder scan depth, the terminal command, the theme (System,
-Light or Dark), Tab's
+Light, Dark or Kawaii), Tab's
 single-match behaviour, and the card buttons (add, remove, reorder, or pick a
 preset).
+
+The **Kawaii** theme is round and pastel, in the Fredoka font, with a rainbow
+drifting behind the cards, hearts and stars floating up, cards that bob, grow
+under the pointer and swing when marked, and a burst of stars on a copy. It
+moves only while the window has focus; without focus the picture stands still
+and the app draws no more often than in the other themes.
 
 **About multigit** in the Settings window shows the version and opens the
 source code, the issue tracker, a mail to the developer, the donation page and
@@ -276,6 +282,9 @@ cargo test
 tool/coverage.sh    # needs cargo-llvm-cov; COVERAGE_JOBS=1 for a small machine
 tool/licenses.sh    # after a change of Cargo.lock: the About page's licence list
 ```
+
+The Kawaii theme's font, Fredoka, is in `assets/fonts` under the SIL Open
+Font License (`assets/fonts/Fredoka-OFL.txt`).
 
 Clippy denies `unsafe`, and `unwrap`, `expect`, `panic` and indexing outside
 tests (`Cargo.toml`, `clippy.toml`).

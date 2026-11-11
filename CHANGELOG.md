@@ -17,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Terminal button on every card: opens a terminal window in that repository; the terminal command can be set in Settings.
 - "Open in editor" on a command and on each repository's section of the output panel opens that output as a text file.
 - "Output" button beside the command line hides the output panel completely and shows it again; while hidden it marks a running, succeeded or failed command.
-- Theme setting: System, Light or Dark.
+- Theme setting: System, Light, Dark or Kawaii. Kawaii is round, pastel and animated, and stands still while the window has no focus.
 - Sort button in the toolbar: orders the cards by name, path, branch, tag, dirty first or behind first.
 
 ### Changed

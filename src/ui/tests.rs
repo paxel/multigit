@@ -1063,6 +1063,122 @@ fn about_page_opens_from_settings_and_its_rows_open_links() {
     h.get_by_label("Card buttons");
 }
 
+fn repaint_delay(h: &Harness<'static, App>) -> Duration {
+    h.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay
+}
+
+#[test]
+fn kawaii_theme_animates_with_focus_and_stands_still_without() {
+    let backend = Arc::new(FakeBackend::default());
+    *backend.snapshot.lock().unwrap() =
+        Some(snapshot(Counts::default(), Upstream::None, &["main"]));
+    let mut app = app_with(backend, None);
+    app.cards = (0..6).map(|i| card(&format!("/r/repo{i}"))).collect();
+    app.settings_open = true;
+    let mut h = harness(app);
+    // Until the first probes are in and the window has faded in.
+    h.run();
+    settle(&mut h, |a| a.cards.iter().all(|c| c.snapshot().is_some()));
+    h.run();
+    h.step();
+    // Plain themes ask for a frame only for their timers.
+    assert!(repaint_delay(&h) >= Duration::from_millis(200));
+    assert_eq!(h.state().kawaii_clock, 0.0);
+
+    h.get_by_label("Kawaii").click();
+    // The click, the frame that sets style and fonts, the frames that use them.
+    for _ in 0..4 {
+        h.step();
+    }
+    assert!(h.state().is_kawaii());
+    let style = h.ctx.global_style();
+    assert!(!style.visuals.dark_mode);
+    assert!(
+        style.visuals.widgets.inactive.corner_radius.nw >= 12,
+        "round"
+    );
+    assert!(
+        style.visuals.widgets.hovered.expansion > 0.0,
+        "grows on hover"
+    );
+    assert!(
+        h.ctx
+            .fonts(|f| f.definitions().font_data.contains_key("Fredoka"))
+    );
+    h.state_mut().settings_open = false;
+    h.step();
+
+    // With focus: about 30 frames a second, the clock runs, cards move.
+    let top = |h: &Harness<'static, App>| h.get_by_label("repo1").rect().top();
+    let (clock, y) = (h.state().kawaii_clock, top(&h));
+    h.step();
+    h.step();
+    assert!(repaint_delay(&h) <= Duration::from_millis(34));
+    assert!(h.state().kawaii_clock > clock);
+    assert!((top(&h) - y).abs() > 0.01, "the card bobbed");
+    // The click target stays under a card that moves.
+    // Empty space right of the name; `click_at` would wait for a still picture.
+    let space = h.get_by_label("repo3").rect().right_center() + egui::vec2(40.0, 0.0);
+    h.event(egui::Event::PointerMoved(space));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: space,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.step();
+    h.step();
+    assert!(h.state().marked.contains(&PathBuf::from("/r/repo3")));
+
+    // Without focus: no frame asked for, a frozen clock, a frozen picture.
+    h.input_mut().focused = false;
+    // Let what the click started (the swing's last frames) run out.
+    h.run();
+    let (clock, y) = (h.state().kawaii_clock, top(&h));
+    for _ in 0..4 {
+        h.step();
+        assert!(repaint_delay(&h) >= Duration::from_millis(200));
+    }
+    assert_eq!(h.state().kawaii_clock, clock);
+    assert_eq!(top(&h), y);
+
+    // Back in a plain theme the look and the fonts are egui's again.
+    h.input_mut().focused = true;
+    h.state_mut().config.theme = crate::domain::config::Theme::Light;
+    h.run();
+    h.step();
+    assert!(repaint_delay(&h) >= Duration::from_millis(200));
+    assert!(
+        !h.ctx
+            .fonts(|f| f.definitions().font_data.contains_key("Fredoka"))
+    );
+    assert_eq!(
+        h.ctx.global_style().visuals.widgets,
+        egui::Visuals::light().widgets
+    );
+    assert_eq!(
+        h.ctx.global_style().spacing.button_padding,
+        crate::ui::style::BUTTON_PADDING
+    );
+}
+
+#[test]
+fn kawaii_glyphs_and_font_are_there() {
+    for glyph in [crate::ui::view::HEART, crate::ui::view::STAR] {
+        assert!(glyph.chars().all(bundled_fonts_draw), "{glyph}");
+    }
+    let font = include_bytes!("../../assets/fonts/Fredoka.ttf");
+    let face = ttf_parser::Face::parse(font, 0).unwrap();
+    assert!(face.is_variable());
+    for c in ('a'..='z').chain('A'..='Z').chain('0'..='9') {
+        assert!(face.glyph_index(c).is_some(), "{c}");
+    }
+    let license = include_str!("../../assets/fonts/Fredoka-OFL.txt");
+    assert!(license.contains("SIL Open Font License"));
+}
+
 #[test]
 fn settings_button_editor() {
     let mut app = app_with(Arc::default(), None);

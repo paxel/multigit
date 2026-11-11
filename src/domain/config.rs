@@ -53,11 +53,13 @@ pub enum Theme {
     System,
     Light,
     Dark,
+    /// Round, pastel and animated.
+    Kawaii,
 }
 
 impl Theme {
     /// Every theme, in the order Settings offers them.
-    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+    pub const ALL: [Self; 4] = [Self::System, Self::Light, Self::Dark, Self::Kawaii];
 
     /// As Settings names it.
     pub fn label(self) -> &'static str {
@@ -65,6 +67,7 @@ impl Theme {
             Self::System => "System",
             Self::Light => "Light",
             Self::Dark => "Dark",
+            Self::Kawaii => "Kawaii",
         }
     }
 }
@@ -187,7 +190,14 @@ mod tests {
         assert!(text.contains("theme = \"light\""), "{text}");
         assert_eq!(Config::from_toml(&text).unwrap(), config);
         assert!(Config::from_toml("theme = \"pink\"").is_err());
-        assert_eq!(Theme::ALL.map(Theme::label), ["System", "Light", "Dark"]);
+        assert_eq!(
+            Theme::ALL.map(Theme::label),
+            ["System", "Light", "Dark", "Kawaii"]
+        );
+        assert_eq!(
+            Config::from_toml("theme = \"kawaii\"").unwrap().theme,
+            Theme::Kawaii
+        );
     }
 
     #[test]

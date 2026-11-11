@@ -118,6 +118,10 @@ pub struct App {
     schedule: Schedule,
     applied_concurrency: usize,
     pub log: OutputLog,
+    /// The output panel is folded away; not saved.
+    pub output_hidden: bool,
+    /// The last run the open output panel showed.
+    output_seen: Option<u64>,
     pub history: History,
     pub cli: CliState,
     pub vocab: Vocabulary,
@@ -163,6 +167,8 @@ impl App {
             events,
             schedule: Schedule::default(),
             log: OutputLog::default(),
+            output_hidden: false,
+            output_seen: None,
             history,
             cli: CliState::default(),
             vocab: Vocabulary::default(),
@@ -369,6 +375,18 @@ impl App {
         for repo in &run.repos {
             self.engine.run_command(id, repo, run.job.clone());
         }
+    }
+
+    /// The open output panel shows every run: none is news any more.
+    pub fn output_shown(&mut self) {
+        self.output_seen = self.log.last().map(|r| r.id);
+    }
+
+    /// For the mark on the button of the hidden output panel: the outcome of
+    /// the last run when the panel has not shown it. `Some(None)` = running.
+    pub fn unseen_outcome(&self) -> Option<Option<bool>> {
+        let last = self.log.last()?;
+        (self.output_seen != Some(last.id)).then(|| last.outcome())
     }
 
     pub fn confirm_run(&mut self) {

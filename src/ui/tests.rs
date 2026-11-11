@@ -474,6 +474,41 @@ fn clicking_the_commit_line_copies_the_full_hash() {
 }
 
 #[test]
+fn output_button_folds_the_panel_away_and_marks_unseen_results() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut h = harness(marked_app(backend, &[]));
+    h.run();
+    h.get_by_label("Clear");
+    // The panel's heading reads "Output" too; the button is the lower one.
+    let toggle = |h: &Harness<'static, App>| {
+        h.get_all_by_label("Output")
+            .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+            .unwrap()
+            .click();
+    };
+    toggle(&h);
+    h.run();
+    assert!(h.state().output_hidden);
+    assert!(h.query_by_label("Clear").is_none(), "the panel is gone");
+
+    // A command leaves the panel hidden; the button tells its result.
+    h.state_mut().start_run("status", vec!["/repo".into()]);
+    settle(&mut h, |a| a.cards[0].last_command == Some(true));
+    h.run();
+    assert!(h.state().output_hidden);
+    assert_eq!(h.state().unseen_outcome(), Some(Some(true)));
+    let mark = format!("Output {}", crate::ui::view::OUTPUT_MARK);
+    h.get_by_label(&mark).click();
+    h.run();
+    h.get_by_label("Clear");
+    // Shown once, the result is no news when the panel is hidden again.
+    toggle(&h);
+    h.run();
+    assert_eq!(h.state().unseen_outcome(), None);
+    h.get_by_label("Output");
+}
+
+#[test]
 fn card_shows_the_tag() {
     let backend = Arc::new(FakeBackend::default());
     let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);
@@ -664,7 +699,16 @@ fn glyphs_used_in_labels_exist_in_default_fonts() {
     let mut h = harness(app_with(Arc::default(), None));
     h.run();
     let font = egui::FontId::proportional(14.0);
-    for c in ['×', '+', '~', '?', '!', '@'] {
+    for c in [
+        '×',
+        '+',
+        '~',
+        '?',
+        '!',
+        '@',
+        '…',
+        crate::ui::view::OUTPUT_MARK,
+    ] {
         assert!(
             h.ctx.fonts_mut(|f| f.has_glyph(&font, c)),
             "missing glyph {c}"

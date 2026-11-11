@@ -57,6 +57,16 @@ pub struct Run {
     pub sections: Vec<Section>,
 }
 
+impl Run {
+    /// `None` while a repository is not done; then whether all succeeded.
+    pub fn outcome(&self) -> Option<bool> {
+        self.sections
+            .iter()
+            .map(|s| s.state.outcome())
+            .try_fold(true, |all, outcome| Some(all && outcome?))
+    }
+}
+
 /// Bounded log of runs, oldest first.
 #[derive(Debug, Clone, Default)]
 pub struct OutputLog {
@@ -106,6 +116,11 @@ impl OutputLog {
         self.runs.iter()
     }
 
+    /// The run started last.
+    pub fn last(&self) -> Option<&Run> {
+        self.runs.back()
+    }
+
     pub fn len(&self) -> usize {
         self.runs.len()
     }
@@ -131,14 +146,17 @@ mod tests {
     fn start_update_and_outcome() {
         let mut log = OutputLog::default();
         let repos = vec![PathBuf::from("/a"), PathBuf::from("/b")];
+        assert!(log.last().is_none());
         let id = log.start("status", &repos);
         log.update(id, Path::new("/a"), out(0));
+        assert_eq!(log.last().unwrap().outcome(), None, "/b is not done");
         log.update(id, Path::new("/b"), out(1));
         let run = log.runs().next().unwrap();
         assert_eq!(run.command, "status");
         assert_eq!(run.sections[0].state.outcome(), Some(true));
         assert_eq!(run.sections[1].state.outcome(), Some(false));
         assert_eq!(SectionState::Running.outcome(), None);
+        assert_eq!(log.last().unwrap().outcome(), Some(false));
     }
 
     #[test]
@@ -152,6 +170,9 @@ mod tests {
         assert_eq!(log.runs().next().unwrap().command, "log -5");
         // Updates to dropped runs are ignored.
         log.update(0, Path::new("/a"), out(0));
+        let id = log.start("status", &repos);
+        log.update(id, Path::new("/a"), out(0));
+        assert_eq!(log.last().unwrap().outcome(), Some(true));
         log.clear();
         assert!(log.is_empty());
     }

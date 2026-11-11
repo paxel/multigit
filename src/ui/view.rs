@@ -127,11 +127,14 @@ impl App {
             self.cli_line(ui);
             ui.add_space(4.0);
         });
-        egui::Panel::bottom("output")
-            .resizable(true)
-            .default_size(220.0)
-            .min_size(60.0)
-            .show(ui, |ui| self.output_panel(ui));
+        if !self.output_hidden {
+            self.output_shown();
+            egui::Panel::bottom("output")
+                .resizable(true)
+                .default_size(220.0)
+                .min_size(60.0)
+                .show(ui, |ui| self.output_panel(ui));
+        }
         egui::CentralPanel::default().show(ui, |ui| self.board(ui));
 
         self.toasts_overlay(ui);
@@ -315,7 +318,15 @@ impl App {
             shell: login_shell_name(),
         };
         let mut cli = std::mem::take(&mut self.cli);
-        let actions = cli.show(ui, &cx);
+        let unseen = self.unseen_outcome();
+        let mut hidden = self.output_hidden;
+        let actions = ui
+            .horizontal(|ui| {
+                output_toggle(ui, &mut hidden, unseen);
+                cli.show(ui, &cx)
+            })
+            .inner;
+        self.output_hidden = hidden;
         self.cli = cli;
         for action in actions {
             match action {
@@ -429,6 +440,37 @@ impl App {
             Some(false) => self.cancel_run(),
             None => {}
         }
+    }
+}
+
+/// Mark behind "Output" while the hidden panel has an unseen run.
+pub const OUTPUT_MARK: char = '\u{2022}';
+
+/// The button that folds the output panel away and brings it back. While the
+/// panel is hidden, a mark tells about the last command: running, then green
+/// or red by its result.
+fn output_toggle(ui: &mut Ui, hidden: &mut bool, unseen: Option<Option<bool>>) {
+    let mut text = RichText::new("Output");
+    let mut hover = if *hidden {
+        "Show the output panel"
+    } else {
+        "Hide the output panel"
+    };
+    if let Some(outcome) = unseen.filter(|_| *hidden) {
+        let (color, state) = match outcome {
+            None => (ui.visuals().warn_fg_color, "Running. Show the output panel"),
+            Some(true) => (ok_color(ui), "Done. Show the output panel"),
+            Some(false) => (ui.visuals().error_fg_color, "Failed. Show the output panel"),
+        };
+        text = RichText::new(format!("Output {OUTPUT_MARK}")).color(color);
+        hover = state;
+    }
+    if ui
+        .selectable_label(!*hidden, text)
+        .on_hover_text(hover)
+        .clicked()
+    {
+        *hidden = !*hidden;
     }
 }
 

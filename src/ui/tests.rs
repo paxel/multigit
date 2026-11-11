@@ -359,6 +359,48 @@ fn fetch_error_is_one_line_and_a_click_copies_all_of_it_and_removes_it() {
 }
 
 #[test]
+fn filter_field_hides_cards_and_counts_the_shown_ones() {
+    let mut app = app_with(Arc::default(), None);
+    app.cards = vec![card("/r/etl-load"), card("/r/web"), card("/r/Etl-store")];
+    app.mark_all();
+    let mut h = harness(app);
+    h.run();
+    assert!(
+        h.query_by_label("3 of 3").is_none(),
+        "no count without text"
+    );
+    // The field keeps the right end of the toolbar, in the buttons' row.
+    // Two text fields exist: the filter on top, the command line at the bottom.
+    let field = h
+        .get_all_by_role(egui::accesskit::Role::TextInput)
+        .map(|n| n.rect())
+        .min_by(|a, b| a.top().total_cmp(&b.top()))
+        .unwrap();
+    let settings = h.get_by_label("Settings").rect();
+    assert!(field.right() > 1150.0, "{field:?}");
+    assert!(
+        (field.center().y - settings.center().y).abs() < 6.0,
+        "{field:?} {settings:?}"
+    );
+    h.ctx
+        .memory_mut(|m| m.request_focus(crate::ui::view::filter_id()));
+    h.run();
+    type_text(&mut h, "etl");
+    assert_eq!(h.state().filter, "etl");
+    h.get_by_label("etl-load");
+    h.get_by_label("Etl-store");
+    assert!(h.query_by_label("web").is_none());
+    h.get_by_label("2 of 3");
+    h.get_by_label("2 marked:");
+
+    type_text(&mut h, "x");
+    h.get_by_label("No repository matches the filter.");
+    h.get_by_label("0 of 3");
+    // The command line has nothing to run in.
+    assert!(h.state().marked_repos().is_empty());
+}
+
+#[test]
 fn card_shows_the_tag() {
     let backend = Arc::new(FakeBackend::default());
     let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);

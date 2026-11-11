@@ -19,6 +19,14 @@ const MARKED_STROKE: f32 = 3.0;
 /// Width a card takes on the board: content, margins and the widest frame stroke.
 const CARD_OUTER_WIDTH: f32 = CARD_WIDTH + 2.0 * CARD_MARGIN + 2.0 * MARKED_STROKE;
 
+/// Width of the filter field.
+const FILTER_WIDTH: f32 = 160.0;
+
+/// Id of the filter field.
+pub fn filter_id() -> egui::Id {
+    egui::Id::new("board-filter")
+}
+
 /// Something the user clicked that changes the board; applied after drawing.
 enum BoardAction {
     Remove(PathBuf),
@@ -129,57 +137,11 @@ impl App {
     }
 
     fn toolbar(&mut self, ui: &mut Ui) {
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .button(RichText::new(" + ").strong())
-                .on_hover_text("Add a repository, or scan a folder for repositories")
-                .clicked()
-            {
-                self.open_folder_picker(pick_folder);
-            }
-            ui.separator();
-            ui.label("Mark:");
-            if ui.button("all").clicked() {
-                self.mark_all();
-            }
-            if ui.button("none").clicked() {
-                self.mark_none();
-            }
-            if ui.button("dirty").clicked() {
-                self.mark_dirty();
-            }
-            if ui.button("behind").clicked() {
-                self.mark_behind();
-            }
-            ui.separator();
-            let any_marked = !self.marked.is_empty();
-            ui.label(format!("{} marked:", self.marked.len()));
-            let labels: Vec<String> = self
-                .config
-                .buttons
-                .iter()
-                .map(|b| b.label.clone())
-                .collect();
-            for (i, label) in labels.iter().enumerate() {
-                if ui
-                    .add_enabled(any_marked, egui::Button::new(label))
-                    .on_hover_text("Run on all marked repositories")
-                    .clicked()
-                {
-                    self.run_button_on_marked(i);
-                }
-            }
-            if ui
-                .add_enabled(any_marked, egui::Button::new("Remove marked"))
-                .on_hover_text("Take the marked repositories off the board (files stay)")
-                .clicked()
-            {
-                self.remove_marked();
-            }
-            ui.separator();
-            if ui.button("Settings").clicked() {
-                self.settings_open = true;
-            }
+        // The filter keeps the right end; the buttons wrap in what is left.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            self.filter_field(ui);
+            let wrapping = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
+            ui.with_layout(wrapping, |ui| self.toolbar_buttons(ui));
         });
         if let Some(error) = &self.config_error {
             ui.colored_label(
@@ -189,10 +151,85 @@ impl App {
         }
     }
 
+    /// The filter field and, while it hides cards by its text, how many show.
+    /// Drawn right to left.
+    fn filter_field(&mut self, ui: &mut Ui) {
+        if !self.filter.trim().is_empty() {
+            let shown = self.shown_cards().len();
+            ui.weak(format!("{shown} of {}", self.cards.len()));
+        }
+        ui.add(
+            egui::TextEdit::singleline(&mut self.filter)
+                .id(filter_id())
+                .hint_text("Filter by name")
+                .desired_width(FILTER_WIDTH),
+        );
+    }
+
+    fn toolbar_buttons(&mut self, ui: &mut Ui) {
+        if ui
+            .button(RichText::new(" + ").strong())
+            .on_hover_text("Add a repository, or scan a folder for repositories")
+            .clicked()
+        {
+            self.open_folder_picker(pick_folder);
+        }
+        ui.separator();
+        ui.label("Mark:");
+        if ui.button("all").clicked() {
+            self.mark_all();
+        }
+        if ui.button("none").clicked() {
+            self.mark_none();
+        }
+        if ui.button("dirty").clicked() {
+            self.mark_dirty();
+        }
+        if ui.button("behind").clicked() {
+            self.mark_behind();
+        }
+        ui.separator();
+        let marked = self.marked_repos().len();
+        let any_marked = marked > 0;
+        ui.label(format!("{marked} marked:"));
+        let labels: Vec<String> = self
+            .config
+            .buttons
+            .iter()
+            .map(|b| b.label.clone())
+            .collect();
+        for (i, label) in labels.iter().enumerate() {
+            if ui
+                .add_enabled(any_marked, egui::Button::new(label))
+                .on_hover_text("Run on all marked repositories")
+                .clicked()
+            {
+                self.run_button_on_marked(i);
+            }
+        }
+        if ui
+            .add_enabled(any_marked, egui::Button::new("Remove marked"))
+            .on_hover_text("Take the marked repositories off the board (files stay)")
+            .clicked()
+        {
+            self.remove_marked();
+        }
+        ui.separator();
+        if ui.button("Settings").clicked() {
+            self.settings_open = true;
+        }
+    }
+
     fn board(&mut self, ui: &mut Ui) {
         if self.cards.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.weak("No repositories yet. Click + to add a repository or a folder.");
+            });
+            return;
+        }
+        if self.shown_cards().is_empty() {
+            ui.centered_and_justified(|ui| {
+                ui.weak("No repository matches the filter.");
             });
             return;
         }
@@ -206,7 +243,7 @@ impl App {
                 let columns = (((ui.available_width() + gap) / (CARD_OUTER_WIDTH + gap)).floor()
                     as usize)
                     .max(1);
-                for row in self.cards.chunks(columns) {
+                for row in self.shown_cards().chunks(columns) {
                     ui.horizontal_top(|ui| {
                         for (i, card) in row.iter().enumerate() {
                             if i > 0 {
@@ -251,7 +288,7 @@ impl App {
     fn cli_line(&mut self, ui: &mut Ui) {
         let values = self.repo_values();
         let cx = CliContext {
-            enabled: !self.marked.is_empty(),
+            enabled: !self.marked_repos().is_empty(),
             history: &self.history,
             vocab: &self.vocab,
             values: &values,

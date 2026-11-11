@@ -2,6 +2,7 @@
 
 use crate::application::engine::{Backend, Engine, Event, Notify};
 use crate::application::schedule::{Due, Schedule};
+use crate::domain::board::matches_filter;
 use crate::domain::command::{Job, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::Config;
@@ -98,7 +99,10 @@ pub struct App {
     pub config_error: Option<String>,
     paths: Option<Paths>,
     pub cards: Vec<Card>,
+    /// Marks of all cards, also of the ones the filter hides.
     pub marked: BTreeSet<PathBuf>,
+    /// Text of the filter field; not saved.
+    pub filter: String,
     engine: Engine,
     events: Receiver<Event>,
     schedule: Schedule,
@@ -143,6 +147,7 @@ impl App {
             paths,
             cards,
             marked: BTreeSet::new(),
+            filter: String::new(),
             engine,
             events,
             schedule: Schedule::default(),
@@ -237,9 +242,26 @@ impl App {
         self.sync_repos_to_config();
     }
 
+    /// Whether the board shows this card.
+    pub fn shows(&self, card: &Card) -> bool {
+        matches_filter(&card.path, &self.filter)
+    }
+
+    /// The cards the board shows, in board order. Everything that acts on
+    /// "the marked cards" acts on the marked ones among these: a hidden card
+    /// keeps its mark but is never run in, marked, unmarked or removed.
+    pub fn shown_cards(&self) -> Vec<&Card> {
+        self.cards.iter().filter(|c| self.shows(c)).collect()
+    }
+
+    fn shown_paths(&self) -> BTreeSet<PathBuf> {
+        self.shown_cards().iter().map(|c| c.path.clone()).collect()
+    }
+
     pub fn remove_marked(&mut self) {
-        let marked = std::mem::take(&mut self.marked);
-        self.cards.retain(|c| !marked.contains(&c.path));
+        let gone: BTreeSet<PathBuf> = self.marked_repos().into_iter().collect();
+        self.cards.retain(|c| !gone.contains(&c.path));
+        self.marked.retain(|p| !gone.contains(p));
         self.sync_repos_to_config();
     }
 
@@ -251,19 +273,22 @@ impl App {
     }
 
     fn mark_where(&mut self, keep: impl Fn(&Card) -> bool) {
-        self.marked = self
-            .cards
-            .iter()
+        let shown = self.shown_paths();
+        let picked: Vec<PathBuf> = self
+            .shown_cards()
+            .into_iter()
             .filter(|c| keep(c))
             .map(|c| c.path.clone())
             .collect();
+        self.marked.retain(|p| !shown.contains(p));
+        self.marked.extend(picked);
     }
 
     pub fn mark_all(&mut self) {
         self.mark_where(|_| true);
     }
     pub fn mark_none(&mut self) {
-        self.marked.clear();
+        self.mark_where(|_| false);
     }
     pub fn mark_dirty(&mut self) {
         self.mark_where(Card::is_dirty);
@@ -272,10 +297,10 @@ impl App {
         self.mark_where(Card::is_behind);
     }
 
-    /// Marked repositories in board order.
+    /// The marked repositories the board shows, in board order.
     pub fn marked_repos(&self) -> Vec<PathBuf> {
-        self.cards
-            .iter()
+        self.shown_cards()
+            .into_iter()
             .filter(|c| self.marked.contains(&c.path))
             .map(|c| c.path.clone())
             .collect()
@@ -447,8 +472,8 @@ impl App {
     /// Union of the refs of all marked repos, for completion values.
     pub fn repo_values(&self) -> RepoValues {
         RepoValues::union(
-            self.cards
-                .iter()
+            self.shown_cards()
+                .into_iter()
                 .filter(|c| self.marked.contains(&c.path))
                 .filter_map(|c| c.snapshot().map(|s| &s.refs)),
         )
@@ -715,6 +740,47 @@ pub(crate) mod tests {
         assert_eq!(app.marked.len(), 3);
         app.mark_none();
         assert!(app.marked.is_empty());
+    }
+
+    #[test]
+    fn cards_hidden_by_the_filter_keep_their_mark_but_nothing_touches_them() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut app = app_with(backend.clone(), None);
+        app.cards = ["/x/etl-load", "/x/etl-store", "/x/web"]
+            .into_iter()
+            .map(|p| Card::new(p.into()))
+            .collect();
+        app.mark_all();
+        app.filter = "ETL".into();
+        let etl = vec![PathBuf::from("/x/etl-load"), PathBuf::from("/x/etl-store")];
+        assert_eq!(app.marked_repos(), etl);
+
+        // Command line and toolbar buttons run in the shown cards only.
+        app.run_cli_line("status");
+        app.run_button_on_marked(2);
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 4);
+        let ran: BTreeSet<PathBuf> = backend
+            .runs
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.0.clone())
+            .collect();
+        assert_eq!(ran, etl.iter().cloned().collect());
+
+        // Marking touches the shown cards only: the hidden mark stays.
+        app.mark_none();
+        assert_eq!(app.marked, BTreeSet::from([PathBuf::from("/x/web")]));
+        app.marked.clear();
+        app.mark_all();
+        assert_eq!(app.marked, etl.iter().cloned().collect());
+
+        // "Remove marked" leaves a marked hidden card on the board.
+        app.marked.insert("/x/web".into());
+        app.remove_marked();
+        assert_eq!(app.config.repos, vec![PathBuf::from("/x/web")]);
+        app.filter.clear();
+        assert_eq!(app.marked_repos(), vec![PathBuf::from("/x/web")]);
     }
 
     #[test]

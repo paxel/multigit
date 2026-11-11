@@ -41,6 +41,11 @@ Cards are sorted by folder name. The status of every card refreshes every
 unpulled count stays current. A repository with a running command is skipped by
 both until the command is done, and is refreshed right after it.
 
+The filter field at the right end of the toolbar shows only the cards whose
+folder name contains the typed text (case ignored), and how many those are. A
+hidden card keeps its mark, but nothing touches it: commands, the toolbar's
+mark buttons and **Remove marked** act on the shown cards only.
+
 A card whose folder is gone or is no longer a repository stays on the board,
 greyed out, and comes back by itself when the folder returns.
 

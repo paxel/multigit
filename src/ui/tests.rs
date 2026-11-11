@@ -280,18 +280,56 @@ fn copied(h: &Harness<'static, App>) -> Vec<String> {
 }
 
 #[test]
-fn clicking_a_card_text_copies_it_and_keeps_the_mark() {
+fn clicking_a_value_copies_it_and_keeps_the_mark() {
     let mut h = harness(marked_app(Arc::default(), &[]));
     h.run();
-    for text in ["repo", "branch", "main", "clean", "no upstream", "no tag"] {
-        h.get_by_label(text).click();
+    // The path line of `/repo` shows its parent and copies the whole path.
+    for (label, copy) in [("repo", "repo"), ("main", "main"), ("/", "/repo")] {
+        h.get_by_label(label).click();
         // The click lands on the last of the queued events: read that pass.
         h.step();
-        assert_eq!(copied(&h), vec![text.to_owned()], "{text}");
-        assert!(h.state().copy_flash.is_some(), "{text}");
+        assert_eq!(copied(&h), vec![copy.to_owned()], "{label}");
+        assert!(h.state().copy_flash.is_some(), "{label}");
         h.run();
     }
     assert!(h.state().marked.contains(&PathBuf::from("/repo")));
+}
+
+#[test]
+fn clicking_a_field_name_or_state_marks_the_card_and_copies_nothing() {
+    let mut h = harness(marked_app(Arc::default(), &[]));
+    h.run();
+    let mut marked = true;
+    for label in ["branch", "clean", "no upstream", "no tag", "status"] {
+        h.get_by_label(label).click();
+        h.step();
+        assert!(copied(&h).is_empty(), "{label}");
+        h.run();
+        marked = !marked;
+        assert_eq!(
+            h.state().marked.contains(&PathBuf::from("/repo")),
+            marked,
+            "{label}"
+        );
+    }
+    assert!(h.state().copy_flash.is_none());
+}
+
+#[test]
+fn detached_head_copies_the_sha_only() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut app = marked_app(backend.clone(), &[]);
+    let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);
+    snap.status.head = crate::domain::status::Head::Detached("1a2b3c4".into());
+    // The first refresh must bring the same snapshot.
+    *backend.snapshot.lock().unwrap() = Some(snap.clone());
+    app.cards[0].probe = Some(Ok(snap));
+    let mut h = harness(app);
+    h.run();
+    h.get_by_label("detached @");
+    h.get_by_label("1a2b3c4").click();
+    h.step();
+    assert_eq!(copied(&h), vec!["1a2b3c4".to_owned()]);
 }
 
 #[test]

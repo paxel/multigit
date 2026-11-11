@@ -1,7 +1,7 @@
 //! Drawing of the board: toolbar, cards, output panel, CLI, toasts, dialogs.
 
 use crate::domain::command::{Job, display, shell_name, shell_program};
-use crate::domain::naming::{subtitles, title};
+use crate::domain::naming::{parent_line, title};
 use crate::domain::output::{Run, SectionState};
 use crate::domain::status::{Head, RepoState, Upstream};
 use crate::ui::app::{App, Card, CopyFlash};
@@ -194,8 +194,6 @@ impl App {
             });
             return;
         }
-        let paths: Vec<PathBuf> = self.cards.iter().map(|c| c.path.clone()).collect();
-        let subs = subtitles(&paths);
         let mut actions = Vec::new();
         let gap = 10.0;
         egui::ScrollArea::vertical()
@@ -206,24 +204,15 @@ impl App {
                 let columns = (((ui.available_width() + gap) / (CARD_OUTER_WIDTH + gap)).floor()
                     as usize)
                     .max(1);
-                let rows = self.cards.iter().zip(&subs).collect::<Vec<_>>();
-                for row in rows.chunks(columns) {
+                for row in self.cards.chunks(columns) {
                     ui.horizontal_top(|ui| {
-                        for (i, (card, sub)) in row.iter().enumerate() {
+                        for (i, card) in row.iter().enumerate() {
                             if i > 0 {
                                 ui.add_space(gap);
                             }
                             let marked = self.marked.contains(&card.path);
                             let busy = self.is_busy(&card.path);
-                            card_ui(
-                                ui,
-                                card,
-                                sub.as_deref(),
-                                marked,
-                                busy,
-                                &self.config.buttons,
-                                &mut actions,
-                            );
+                            card_ui(ui, card, marked, busy, &self.config.buttons, &mut actions);
                         }
                     });
                     ui.add_space(gap);
@@ -380,7 +369,6 @@ impl App {
 fn card_ui(
     ui: &mut Ui,
     card: &Card,
-    subtitle: Option<&str>,
     marked: bool,
     busy: bool,
     buttons: &[crate::domain::config::ButtonDef],
@@ -394,13 +382,13 @@ fn card_ui(
             .stroke(egui::Stroke::new(MARKED_STROKE, selection))
             .fill(selection.gamma_multiply(0.18));
     }
-    // The card's empty space toggles its mark; its buttons and texts (which
-    // copy themselves) sit above this sense and keep their clicks. Texts are
-    // not selectable: a drag to select would fight the click that copies.
+    // A click on the card toggles its mark; its buttons and the texts that
+    // copy themselves sit above this sense and keep their clicks. Texts are
+    // not selectable: a drag to select would fight those clicks.
     let card_sense = egui::UiBuilder::new().sense(egui::Sense::click());
     let response = ui.scope_builder(card_sense, |ui| {
         ui.style_mut().interaction.selectable_labels = false;
-        card_frame(ui, frame, card, subtitle, busy, buttons, actions);
+        card_frame(ui, frame, card, busy, buttons, actions);
     });
     if response.response.clicked() {
         actions.push(BoardAction::Toggle(card.path.clone()));
@@ -411,7 +399,6 @@ fn card_frame(
     ui: &mut Ui,
     frame: egui::Frame,
     card: &Card,
-    subtitle: Option<&str>,
     busy: bool,
     buttons: &[crate::domain::config::ButtonDef],
     actions: &mut Vec<BoardAction>,
@@ -421,8 +408,9 @@ fn card_frame(
         ui.set_width(CARD_WIDTH);
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                let name = RichText::new(title(&card.path)).strong().size(15.0);
-                copyable(ui, name, actions).on_hover_text(&path_text);
+                let name = title(&card.path);
+                let text = RichText::new(&name).strong().size(15.0);
+                copyable(ui, text, name, actions).on_hover_text(&path_text);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .small_button("×")
@@ -433,32 +421,28 @@ fn card_frame(
                     }
                 });
             });
-            if let Some(sub) = subtitle {
-                copyable(ui, RichText::new(sub).weak(), actions).on_hover_text(&path_text);
-            }
+            let parents = parent_line(&card.path, |text| fits(ui, text, CARD_WIDTH));
+            copyable(ui, weak(parents), path_text.clone(), actions).on_hover_text(&path_text);
             let greyed = card.snapshot().is_none();
             if greyed {
                 ui.multiply_opacity(0.55);
             }
             status_lines(ui, card, actions);
             if let Some(error) = &card.fetch_error {
-                let error =
-                    RichText::new(format!("fetch: {error}")).color(ui.visuals().error_fg_color);
-                copyable(ui, error, actions);
+                let text = format!("fetch: {error}");
+                let red = RichText::new(&text).color(ui.visuals().error_fg_color);
+                copyable(ui, red, text, actions);
             }
             if busy {
-                let running = RichText::new("running").color(ui.visuals().warn_fg_color);
-                copyable(ui, running, actions);
+                ui.label(RichText::new("running").color(ui.visuals().warn_fg_color));
             } else {
                 match card.last_command {
                     Some(true) => {
-                        let ok = RichText::new("last command: ok").color(ok_color(ui));
-                        copyable(ui, ok, actions);
+                        ui.label(RichText::new("last command: ok").color(ok_color(ui)));
                     }
                     Some(false) => {
-                        let failed = RichText::new("last command: failed")
-                            .color(ui.visuals().error_fg_color);
-                        copyable(ui, failed, actions);
+                        let red = ui.visuals().error_fg_color;
+                        ui.label(RichText::new("last command: failed").color(red));
                     }
                     None => {}
                 }
@@ -478,10 +462,14 @@ fn card_frame(
     });
 }
 
-/// A card text: a click copies it to the clipboard (and does not toggle the
-/// card); the pointer turns into a hand over it.
-fn copyable(ui: &mut Ui, text: RichText, actions: &mut Vec<BoardAction>) -> egui::Response {
-    let copy = text.text().to_owned();
+/// A card text that copies `copy` to the clipboard on a click (and does not
+/// toggle the card); the pointer turns into a hand over it.
+fn copyable(
+    ui: &mut Ui,
+    text: RichText,
+    copy: String,
+    actions: &mut Vec<BoardAction>,
+) -> egui::Response {
     let response = ui
         .add(egui::Label::new(text).sense(egui::Sense::click()))
         .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -498,73 +486,90 @@ fn weak(text: impl Into<String>) -> RichText {
     RichText::new(text).weak()
 }
 
+/// Whether `text` in the body font is at most `width` wide.
+fn fits(ui: &Ui, text: &str, width: f32) -> bool {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
+    galley.size().x <= width
+}
+
+/// The status of a card. Only names a user pastes somewhere copy themselves
+/// (branch, sha, tag); a click on anything else reaches the card.
 fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
     let snap = match &card.probe {
         None => {
-            copyable(ui, weak("loading"), actions);
+            ui.label(weak("loading"));
             return;
         }
         Some(Err(e)) => {
-            let error = RichText::new(e.to_string()).color(ui.visuals().error_fg_color);
-            copyable(ui, error, actions);
+            ui.label(RichText::new(e.to_string()).color(ui.visuals().error_fg_color));
             return;
         }
         Some(Ok(snap)) => snap,
     };
-    let branch = match &snap.status.head {
-        Head::Branch(b) => b.clone(),
-        Head::Unborn(b) => format!("{b} (no commits)"),
-        Head::Detached(sha) => format!("detached @ {sha}"),
-    };
     let warn = ui.visuals().warn_fg_color;
     ui.horizontal(|ui| {
-        copyable(ui, weak("branch"), actions);
-        copyable(ui, RichText::new(branch).monospace(), actions);
+        ui.label(weak("branch"));
+        match &snap.status.head {
+            Head::Branch(b) => {
+                copyable(ui, RichText::new(b).monospace(), b.clone(), actions);
+            }
+            Head::Unborn(b) => {
+                copyable(ui, RichText::new(b).monospace(), b.clone(), actions);
+                ui.label(RichText::new("(no commits)").monospace());
+            }
+            Head::Detached(sha) => {
+                ui.label(RichText::new("detached @").monospace());
+                copyable(ui, RichText::new(sha).monospace(), sha.clone(), actions);
+            }
+        }
         match snap.state {
             RepoState::Rebasing => {
-                copyable(ui, RichText::new("rebasing").color(warn), actions);
+                ui.label(RichText::new("rebasing").color(warn));
             }
             RepoState::Merging => {
-                copyable(ui, RichText::new("merging").color(warn), actions);
+                ui.label(RichText::new("merging").color(warn));
             }
             RepoState::Normal => {}
         }
     });
     ui.horizontal(|ui| match &snap.tag {
         Some(tag) => {
-            copyable(ui, weak("tag"), actions);
-            copyable(ui, RichText::new(tag).monospace(), actions);
+            ui.label(weak("tag"));
+            copyable(ui, RichText::new(tag).monospace(), tag.clone(), actions);
         }
         None => {
-            copyable(ui, weak("no tag"), actions);
+            ui.label(weak("no tag"));
         }
     });
     let c = snap.status.counts;
     ui.horizontal(|ui| {
-        copyable(ui, weak("status"), actions);
+        ui.label(weak("status"));
         if c.is_clean() {
-            copyable(ui, RichText::new("clean").color(ok_color(ui)), actions);
+            ui.label(RichText::new("clean").color(ok_color(ui)));
         } else {
             let counts = format!(
                 "+{} ~{} ?{} !{}",
                 c.staged, c.modified, c.untracked, c.conflicts
             );
-            copyable(ui, RichText::new(counts).monospace(), actions)
+            ui.label(RichText::new(counts).monospace())
                 .on_hover_text("+staged ~modified ?untracked !conflicts");
         }
     });
     ui.horizontal(|ui| match snap.status.upstream {
         Upstream::None => {
-            copyable(ui, weak("no upstream"), actions);
+            ui.label(weak("no upstream"));
         }
         Upstream::Gone => {
-            copyable(ui, RichText::new("upstream gone").color(warn), actions);
+            ui.label(RichText::new("upstream gone").color(warn));
         }
         Upstream::Tracking { ahead, behind } => {
-            copyable(ui, weak("unpushed"), actions);
-            copyable(ui, RichText::new(ahead.to_string()).strong(), actions);
-            copyable(ui, weak("unpulled"), actions);
-            copyable(ui, RichText::new(behind.to_string()).strong(), actions);
+            ui.label(weak("unpushed"));
+            ui.label(RichText::new(ahead.to_string()).strong());
+            ui.label(weak("unpulled"));
+            ui.label(RichText::new(behind.to_string()).strong());
         }
     });
 }

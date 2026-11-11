@@ -23,8 +23,8 @@ git in one or many repositories at once.
 
 Each card shows:
 
-- the folder name (with the shortest distinguishing parent path when two
-  repositories share a name; the full path is in the tooltip)
+- the folder name, and under it the folders above it (as many as fit; the
+  full path is in the tooltip)
 - the branch, or `detached @ <sha>`
 - the nearest tag reachable from the checked-out commit (lightweight tags
   included), or `no tag`
@@ -55,11 +55,13 @@ greyed out, and comes back by itself when the folder returns.
 
 - **Card buttons** run in that one repository. The defaults are
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
-- **Marking**: a click on a card's empty space marks it, a second click
-  unmarks it; marked cards get a coloured border. A click on any text of a
-  card copies that text to the clipboard instead. The toolbar marks all, none, dirty (changes or an operation in
-  progress) or behind (unpulled commits). The toolbar repeats the card buttons
+- **Marking**: a click on a card marks it, a second click unmarks it; marked
+  cards get a coloured border. The toolbar marks all, none, dirty (changes or
+  an operation in progress) or behind (unpulled commits). The toolbar repeats the card buttons
   for all marked repositories.
+- **Copying**: a click on a card's folder name, branch name (or the sha of a
+  detached HEAD) or tag copies it to the clipboard instead of marking the
+  card; a click on the path line copies the repository's full path.
 - **Command line** at the bottom: type git arguments after the fixed `git`
   label (typing `git` first anyway is fine; it is ignored); Enter runs them in
   all marked repositories. It is disabled while nothing is marked.

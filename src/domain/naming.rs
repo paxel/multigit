@@ -1,8 +1,7 @@
-//! Card titles, collision subtitles and board order.
+//! Card titles, path lines and board order.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 /// The card title: the last path component (folder name).
 pub fn title(path: &Path) -> String {
@@ -19,106 +18,66 @@ pub fn board_order(a: &Path, b: &Path) -> Ordering {
         .then_with(|| a.cmp(b))
 }
 
-/// For each path, a subtitle that tells it apart from other entries with the same title.
-///
-/// Paths whose title is unique get `None`. Colliding paths get the shortest
-/// `parent/.../name` suffix that is unique within the collision group; if even the
-/// full path does not differ by suffix (one path is a suffix of another), the full
-/// path is used.
-pub fn subtitles(paths: &[PathBuf]) -> Vec<Option<String>> {
-    let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
-    for (i, p) in paths.iter().enumerate() {
-        groups.entry(title(p)).or_default().push(i);
+/// The card's path line: the folders above the repository, as many trailing
+/// ones as `fits` accepts, with a leading `…/` when some are cut. The nearest
+/// parent is always shown; a repository at the root gets `/`.
+pub fn parent_line(path: &Path, fits: impl Fn(&str) -> bool) -> String {
+    let Some(parent) = path.parent() else {
+        return "/".to_owned();
+    };
+    let full = parent.to_string_lossy().into_owned();
+    if fits(&full) {
+        return full;
     }
-    let mut result = vec![None; paths.len()];
-    for indices in groups.values().filter(|g| g.len() > 1) {
-        for &i in indices {
-            let others: Vec<&PathBuf> = indices
-                .iter()
-                .filter(|&&j| j != i)
-                .filter_map(|&j| paths.get(j))
-                .collect();
-            if let (Some(path), Some(slot)) = (paths.get(i), result.get_mut(i)) {
-                *slot = Some(distinguishing_suffix(path, &others));
-            }
-        }
-    }
-    result
-}
-
-fn normal_components(path: &Path) -> Vec<String> {
-    path.components()
+    let parts: Vec<String> = parent
+        .components()
         .filter_map(|c| match c {
             Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
             _ => None,
         })
-        .collect()
-}
-
-fn suffix(components: &[String], len: usize) -> &[String] {
-    components
-        .get(components.len().saturating_sub(len)..)
-        .unwrap_or_default()
-}
-
-fn distinguishing_suffix(path: &Path, others: &[&PathBuf]) -> String {
-    let own = normal_components(path);
-    let others: Vec<Vec<String>> = others.iter().map(|p| normal_components(p)).collect();
-    for len in 2..=own.len() {
-        let candidate = suffix(&own, len);
-        let clashes = others
-            .iter()
-            .any(|o| o.len() >= len && suffix(o, len) == candidate);
-        if !clashes {
-            return candidate.join("/");
+        .collect();
+    let mut shown = String::new();
+    for len in 1..=parts.len() {
+        let tail = parts
+            .get(parts.len().saturating_sub(len)..)
+            .unwrap_or_default();
+        let candidate = format!("\u{2026}/{}", tail.join("/"));
+        if len > 1 && !fits(&candidate) {
+            break;
         }
+        shown = candidate;
     }
-    path.to_string_lossy().into_owned()
+    if shown.is_empty() { full } else { shown }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn paths(list: &[&str]) -> Vec<PathBuf> {
         list.iter().map(PathBuf::from).collect()
     }
 
     #[test]
-    fn unique_titles_have_no_subtitle() {
-        let p = paths(&["/home/u/dev/multigit", "/home/u/dev/api"]);
-        assert_eq!(subtitles(&p), vec![None, None]);
+    fn parent_line_shows_the_whole_parent_when_it_fits() {
+        assert_eq!(
+            parent_line(Path::new("/home/u/dev/multigit"), |_| true),
+            "/home/u/dev"
+        );
+        assert_eq!(parent_line(Path::new("/"), |_| true), "/");
+        assert_eq!(parent_line(Path::new("/repo"), |_| false), "/");
     }
 
     #[test]
-    fn collision_uses_parent_prefix() {
-        let p = paths(&["/home/u/work/api", "/home/u/side/api", "/home/u/x"]);
+    fn parent_line_keeps_the_nearest_parents_that_fit() {
+        let path = Path::new("/home/u/dev/multigit");
         assert_eq!(
-            subtitles(&p),
-            vec![Some("work/api".into()), Some("side/api".into()), None]
+            parent_line(path, |s| s.chars().count() <= 7),
+            "\u{2026}/u/dev"
         );
-    }
-
-    #[test]
-    fn collision_goes_deeper_when_parents_collide() {
-        let p = paths(&["/a/work/api", "/b/work/api", "/c/side/api"]);
-        assert_eq!(
-            subtitles(&p),
-            vec![
-                Some("a/work/api".into()),
-                Some("b/work/api".into()),
-                Some("side/api".into())
-            ]
-        );
-    }
-
-    #[test]
-    fn suffix_of_other_path_falls_back_to_full_path() {
-        let p = paths(&["/api", "/x/api"]);
-        assert_eq!(
-            subtitles(&p),
-            vec![Some("/api".into()), Some("x/api".into())]
-        );
+        // The nearest parent stays even when it does not fit.
+        assert_eq!(parent_line(path, |_| false), "\u{2026}/dev");
     }
 
     #[test]

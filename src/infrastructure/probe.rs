@@ -56,11 +56,17 @@ pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
     refs.remotes = remotes_out.stdout.lines().map(str::to_owned).collect();
     refs.files = status.changed_paths.clone();
 
-    // Fails without a reachable tag (and on an unborn branch): no tag, not an error.
-    let tag = query(runner, dir, &["describe", "--tags", "--abbrev=0"])
-        .ok()
-        .map(|out| out.stdout.trim().to_owned())
-        .filter(|t| !t.is_empty());
+    // Fails without a reachable tag (and on an unborn branch): no tag, not an
+    // error. Not asked at all in a repository without tags, where describe
+    // would walk the whole history on every refresh.
+    let tag = if refs.tags.is_empty() {
+        None
+    } else {
+        query(runner, dir, &["describe", "--tags", "--abbrev=0"])
+            .ok()
+            .map(|out| out.stdout.trim().to_owned())
+            .filter(|t| !t.is_empty())
+    };
 
     Ok(Snapshot {
         status,

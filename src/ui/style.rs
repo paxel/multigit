@@ -1,6 +1,7 @@
 //! App-wide look: roomier buttons than egui's defaults.
 
-use egui::{Context, Style, vec2};
+use crate::domain::config::Theme;
+use egui::{Context, Style, ThemePreference, vec2};
 
 /// Space between a button's text and its border.
 pub const BUTTON_PADDING: egui::Vec2 = egui::Vec2::new(10.0, 5.0);
@@ -14,4 +15,16 @@ fn adjust(style: &mut Style) {
 /// Apply to both the light and the dark style.
 pub fn apply(ctx: &Context) {
     ctx.all_styles_mut(adjust);
+}
+
+/// Make `ctx` use the theme from the settings; cheap when it already does.
+pub fn apply_theme(ctx: &Context, theme: Theme) {
+    let preference = match theme {
+        Theme::System => ThemePreference::System,
+        Theme::Light => ThemePreference::Light,
+        Theme::Dark => ThemePreference::Dark,
+    };
+    if ctx.options(|o| o.theme_preference) != preference {
+        ctx.set_theme(preference);
+    }
 }

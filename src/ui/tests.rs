@@ -524,6 +524,29 @@ fn many_cards_wrap_into_rows_within_the_window() {
 }
 
 #[test]
+fn theme_setting_switches_between_light_and_dark() {
+    let mut app = app_with(Arc::default(), None);
+    app.settings_open = true;
+    let mut h = harness(app);
+    h.run();
+    h.get_by_label("Dark").click();
+    h.run();
+    assert_eq!(h.state().config.theme, crate::domain::config::Theme::Dark);
+    assert!(h.ctx.global_style().visuals.dark_mode);
+    h.get_by_label("Light").click();
+    h.run();
+    assert!(!h.ctx.global_style().visuals.dark_mode);
+    // The roomier buttons hold in every theme.
+    assert_eq!(
+        h.ctx.global_style().spacing.button_padding,
+        crate::ui::style::BUTTON_PADDING
+    );
+    h.get_by_label("System").click();
+    h.run();
+    assert_eq!(h.state().config.theme, crate::domain::config::Theme::System);
+}
+
+#[test]
 fn settings_button_editor() {
     let mut app = app_with(Arc::default(), None);
     app.settings_open = true;

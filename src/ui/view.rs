@@ -107,6 +107,7 @@ impl App {
     /// Draw the whole app into `ui` (the eframe root ui, or a test harness).
     pub fn show(&mut self, ui: &mut Ui) {
         self.handle_events();
+        crate::ui::style::apply_theme(ui.ctx(), self.config.theme);
         // Taken before the command line sees the key, which keeps focus under the dialog.
         let enter_confirms = self.confirm.is_some() && take_fresh_enter(ui);
         if let Some(folder) = self.take_picked_folder() {

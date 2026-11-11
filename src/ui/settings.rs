@@ -1,6 +1,6 @@
-//! Settings window: timers, limits, completion and the card button editor.
+//! Settings window: timers, limits, theme, completion and the card button editor.
 
-use crate::domain::config::{ButtonDef, button_presets};
+use crate::domain::config::{ButtonDef, Theme, button_presets};
 use crate::ui::app::App;
 use egui::{Context, DragValue, TextEdit};
 
@@ -36,6 +36,13 @@ pub fn show(app: &mut App, ctx: &Context) {
                     ui.end_row();
                     ui.label("Folder scan depth");
                     ui.add(DragValue::new(&mut config.scan_depth).range(1..=10));
+                    ui.end_row();
+                    ui.label("Theme");
+                    ui.horizontal(|ui| {
+                        for theme in Theme::ALL {
+                            ui.radio_value(&mut config.theme, theme, theme.label());
+                        }
+                    });
                     ui.end_row();
                 });
             ui.checkbox(

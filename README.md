@@ -142,8 +142,9 @@ Buttons and the command line run git as you would in a terminal, hooks and all.
 ## Settings and files
 
 **Settings** in the toolbar changes the fetch interval, the number of parallel
-git processes, the folder scan depth, Tab's single-match behaviour, and the card
-buttons (add, remove, reorder, or pick a preset).
+git processes, the folder scan depth, the theme (System, Light or Dark), Tab's
+single-match behaviour, and the card buttons (add, remove, reorder, or pick a
+preset).
 
 | File                                                           | Content                                           |
 |----------------------------------------------------------------|---------------------------------------------------|

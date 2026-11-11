@@ -564,6 +564,85 @@ fn terminal_button_opens_a_terminal_in_the_repository() {
 }
 
 #[test]
+fn right_click_on_the_branch_switches_this_repository() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut h = harness(marked_app(backend.clone(), &[]));
+    h.run();
+    h.get_by_label("main").click_secondary();
+    h.run();
+    h.get_by_label("Switch to");
+    h.get_by_label("Create new branch");
+    // Newest first: the snapshot lists main, feature-a, feature-b oldest first.
+    let top = |h: &Harness<'static, App>, label: &str| h.get_by_label(label).rect().top();
+    assert!(top(&h, "feature-b") < top(&h, "feature-a"));
+
+    // A click into a field of the menu leaves it open.
+    let mut fields: Vec<_> = h
+        .get_all_by_role(egui::accesskit::Role::TextInput)
+        .map(|n| n.rect())
+        .collect();
+    fields.sort_by(|a, b| a.top().total_cmp(&b.top()));
+    assert_eq!(
+        fields.len(),
+        4,
+        "board filter, menu filter, new branch, command line"
+    );
+    click_at(&mut h, fields[1].center());
+    type_text(&mut h, "-a");
+    h.get_by_label("Switch to");
+    assert!(h.query_by_label("feature-b").is_none(), "filtered out");
+    h.get_by_label("feature-a").click();
+    h.run();
+    assert!(h.query_by_label("Switch to").is_none(), "the menu closed");
+    settle(&mut h, |a| a.cards[0].last_command == Some(true));
+    let switched = (
+        PathBuf::from("/repo"),
+        vec!["switch".to_owned(), "feature-a".to_owned()],
+    );
+    assert_eq!(backend.runs.lock().unwrap().last(), Some(&switched));
+    assert!(h.state().marked.contains(&PathBuf::from("/repo")));
+}
+
+#[test]
+fn branch_menu_creates_a_new_branch() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut h = harness(marked_app(backend.clone(), &[]));
+    h.run();
+    h.get_by_label("main").click_secondary();
+    h.run();
+    let mut fields: Vec<_> = h
+        .get_all_by_role(egui::accesskit::Role::TextInput)
+        .map(|n| n.rect())
+        .collect();
+    fields.sort_by(|a, b| a.top().total_cmp(&b.top()));
+    click_at(&mut h, fields[2].center());
+    type_text(&mut h, "fix/it");
+    // The filter of the list is not what names the new branch.
+    h.get_by_label("feature-a");
+    h.get_by_label("Create").click();
+    h.run();
+    assert!(h.query_by_label("Switch to").is_none(), "the menu closed");
+    settle(&mut h, |a| a.cards[0].last_command == Some(true));
+    let created = (
+        PathBuf::from("/repo"),
+        vec!["switch".to_owned(), "-c".to_owned(), "fix/it".to_owned()],
+    );
+    assert_eq!(backend.runs.lock().unwrap().last(), Some(&created));
+
+    // Opened again, the fields are empty.
+    h.get_by_label("main").click_secondary();
+    h.run();
+    h.get_by_label("feature-b");
+    h.get_by_label("Create").click();
+    h.run();
+    assert_eq!(
+        backend.runs.lock().unwrap().last(),
+        Some(&created),
+        "a blank name creates nothing"
+    );
+}
+
+#[test]
 fn card_shows_the_tag() {
     let backend = Arc::new(FakeBackend::default());
     let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);

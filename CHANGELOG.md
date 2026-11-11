@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Filter field in the toolbar: only cards whose folder name contains the text are shown; hidden cards are skipped by commands, marking and "Remove marked".
 - Commit line on the card: short hash and subject of the checked-out commit; a click copies the full hash.
+- Right-click menu on a card's branch: switch to a local or remote branch of that repository, or create a new branch.
 - Terminal button on every card: opens a terminal window in that repository; the terminal command can be set in Settings.
 - "Open in editor" on a command and on each repository's section of the output panel opens that output as a text file.
 - "Output" button beside the command line hides the output panel completely and shows it again; while hidden it marks a running, succeeded or failed command.

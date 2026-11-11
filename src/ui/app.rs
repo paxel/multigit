@@ -627,6 +627,16 @@ pub(crate) mod tests {
             changed_paths: vec![],
         });
         snap.refs.branches = branches.iter().map(|s| s.to_string()).collect();
+        // Later in the list is newer.
+        snap.dated.branches = branches
+            .iter()
+            .zip(0..)
+            .map(|(name, date)| crate::domain::repo::DatedRef {
+                name: name.to_string(),
+                commit: String::new(),
+                date,
+            })
+            .collect();
         snap
     }
 

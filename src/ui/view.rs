@@ -4,6 +4,7 @@ use crate::domain::command::{Job, display, shell_name, shell_program};
 use crate::domain::naming::{parent_line, title};
 use crate::domain::output::{Run, SectionState};
 use crate::domain::status::{Head, RepoState, Upstream};
+use crate::domain::switch::{Choice, branch_choices, matching, new_branch_command};
 use crate::ui::app::{App, Card, CopyFlash};
 use crate::ui::cli::{CliAction, CliContext};
 use crate::ui::settings;
@@ -36,6 +37,8 @@ enum BoardAction {
     Button(usize, PathBuf),
     Toggle(PathBuf),
     Terminal(PathBuf),
+    /// Run these git arguments in this repository.
+    Run(PathBuf, String),
     /// A card text was clicked at this pointer position.
     Copy(String, egui::Pos2),
     /// The fetch error of this card was clicked at this pointer position.
@@ -285,6 +288,7 @@ impl App {
                 BoardAction::Remove(p) => self.remove(&p),
                 BoardAction::Button(i, p) => self.run_button(i, &p),
                 BoardAction::Terminal(p) => self.open_terminal(&p),
+                BoardAction::Run(p, command) => self.start_run(&command, vec![p]),
                 BoardAction::Toggle(p) => {
                     if !self.marked.remove(&p) {
                         self.marked.insert(p);
@@ -623,6 +627,92 @@ fn weak(text: impl Into<String>) -> RichText {
     RichText::new(text).weak()
 }
 
+/// The right-click menu of a card's branch or tag: a "Switch to" list with a
+/// filter and, for branches, a field that makes a new one.
+struct SwitchMenu<'a> {
+    id: egui::Id,
+    choices: &'a [Choice],
+    /// Shown instead of the list when there is nothing to switch to.
+    none: &'a str,
+    new_branch: bool,
+}
+
+impl SwitchMenu<'_> {
+    /// Attach the menu to `anchor`; the git arguments of what was picked.
+    fn show(&self, anchor: &egui::Response) -> Option<String> {
+        if anchor.secondary_clicked() {
+            // The menu opens: start with empty fields.
+            anchor.ctx.data_mut(|d| {
+                d.remove::<String>(self.id.with("filter"));
+                d.remove::<String>(self.id.with("new"));
+            });
+        }
+        let mut command = None;
+        // Typing into the fields must not close the menu.
+        egui::Popup::context_menu(anchor)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                command = self.contents(ui);
+                if command.is_some() {
+                    ui.close();
+                }
+            });
+        command
+    }
+
+    fn contents(&self, ui: &mut Ui) -> Option<String> {
+        let mut command = None;
+        ui.set_min_width(240.0);
+        ui.strong("Switch to");
+        if self.choices.is_empty() {
+            ui.add_enabled(false, egui::Button::new(self.none));
+        } else {
+            let filter = text_field(ui, self.id.with("filter"), "Filter");
+            egui::ScrollArea::vertical()
+                .max_height(260.0)
+                .show(ui, |ui| {
+                    for choice in matching(self.choices, &filter.text) {
+                        let entry = egui::Button::new(RichText::new(&choice.label).monospace());
+                        if ui.add(entry.frame(false)).clicked() {
+                            command = Some(choice.command.clone());
+                        }
+                    }
+                });
+        }
+        if self.new_branch {
+            ui.separator();
+            ui.strong("Create new branch");
+            ui.horizontal(|ui| {
+                let create = ui.button("Create");
+                let name = text_field(ui, self.id.with("new"), "name");
+                if create.clicked() || name.entered {
+                    command = new_branch_command(&name.text).or(command.take());
+                }
+            });
+        }
+        command
+    }
+}
+
+/// A text field of a menu, kept in egui's memory under `id`.
+struct MenuText {
+    text: String,
+    /// Enter was pressed in the field.
+    entered: bool,
+}
+
+fn text_field(ui: &mut Ui, id: egui::Id, hint: &str) -> MenuText {
+    let mut text: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut text)
+            .hint_text(hint)
+            .desired_width(f32::INFINITY),
+    );
+    let entered = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    ui.data_mut(|d| d.insert_temp(id, text.clone()));
+    MenuText { text, entered }
+}
+
 /// Width of `text` in the font of `style`.
 fn text_width(ui: &Ui, text: &str, style: egui::TextStyle) -> f32 {
     let font = style.resolve(ui.style());
@@ -702,18 +792,27 @@ fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
     let warn = ui.visuals().warn_fg_color;
     ui.horizontal(|ui| {
         ui.label(weak("branch"));
-        match &snap.status.head {
-            Head::Branch(b) => {
-                copyable(ui, RichText::new(b).monospace(), b.clone(), actions);
-            }
+        let head = match &snap.status.head {
+            Head::Branch(b) => copyable(ui, RichText::new(b).monospace(), b.clone(), actions),
             Head::Unborn(b) => {
-                copyable(ui, RichText::new(b).monospace(), b.clone(), actions);
+                let name = copyable(ui, RichText::new(b).monospace(), b.clone(), actions);
                 ui.label(RichText::new("(no commits)").monospace());
+                name
             }
             Head::Detached(sha) => {
                 ui.label(RichText::new("detached @").monospace());
-                copyable(ui, RichText::new(sha).monospace(), sha.clone(), actions);
+                copyable(ui, RichText::new(sha).monospace(), sha.clone(), actions)
             }
+        };
+        // A right click on the branch switches this one repository.
+        let menu = SwitchMenu {
+            id: egui::Id::new(("branch-menu", &card.path)),
+            choices: &branch_choices(&snap.dated, &snap.refs.remotes),
+            none: "no other branch",
+            new_branch: true,
+        };
+        if let Some(command) = menu.show(&head) {
+            actions.push(BoardAction::Run(card.path.clone(), command));
         }
         match snap.state {
             RepoState::Rebasing => {

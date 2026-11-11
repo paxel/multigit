@@ -71,6 +71,13 @@ greyed out, and comes back by itself when the folder returns.
   konsole, gnome-terminal, xfce4-terminal, kitty, alacritty, foot, wezterm and
   xterm that is installed; on macOS it opens Terminal.app. In a terminal
   command of your own, `{dir}` stands for the repository's folder.
+- **Switching branches**: a right click on a card's branch name (or the sha of
+  a detached HEAD) opens a menu for that one repository. **Switch to** lists
+  its local branches and then the remote branches that have no local branch
+  yet, each newest first, with a filter field; a remote branch gets its local
+  tracking branch. **Create new branch** makes a branch from the checked-out
+  commit and switches to it. Both run `git switch`, so git decides what
+  happens to uncommitted changes, and the result is in the output panel.
 - **Card buttons** run in that one repository. The defaults are
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
 - **Marking**: a click on a card marks it, a second click unmarks it; marked

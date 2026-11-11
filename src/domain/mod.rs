@@ -11,3 +11,4 @@ pub mod naming;
 pub mod output;
 pub mod repo;
 pub mod status;
+pub mod switch;

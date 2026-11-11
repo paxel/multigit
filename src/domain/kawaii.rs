@@ -1,6 +1,7 @@
 //! The motion of the Kawaii theme, as plain numbers. Everything is a function
-//! of the theme's clock, which only runs while the window has focus: a frozen
-//! clock is a frozen picture.
+//! of the theme's clock, which only runs while the window has focus, and for
+//! a few seconds after a repository changed: a frozen clock is a frozen
+//! picture.
 
 use std::f32::consts::TAU;
 
@@ -15,13 +16,33 @@ pub const WOBBLE_SECS: f64 = 0.5;
 /// Hearts and stars floating over the board.
 pub const PARTICLES: usize = 14;
 
-/// The clock after a frame that took `dt` seconds. It stands still without
-/// focus, and a long pause (a hidden window) does not make it jump.
-pub fn advance(clock: f64, dt: f32, focused: bool) -> f64 {
-    if focused {
-        clock + f64::from(dt.clamp(0.0, 0.1))
+/// How long a change in a repository keeps a window without focus moving,
+/// in seconds.
+pub const WAKE_SECS: f32 = 5.0;
+
+/// The part of a frame's `dt` seconds the clock takes: a long pause (a
+/// hidden window, a still picture) does not make it jump.
+fn step(dt: f32) -> f32 {
+    dt.clamp(0.0, 0.1)
+}
+
+/// The clock after a frame that took `dt` seconds. It stands still unless
+/// it is `running`.
+pub fn advance(clock: f64, dt: f32, running: bool) -> f64 {
+    if running {
+        clock + f64::from(step(dt))
     } else {
         clock
+    }
+}
+
+/// What is left of the seconds a change keeps the picture moving, after a
+/// frame of `dt` seconds. A window with focus moves anyway and uses none up.
+pub fn awake_after(awake: f32, dt: f32, focused: bool) -> f32 {
+    if focused {
+        0.0
+    } else {
+        (awake - step(dt)).max(0.0)
     }
 }
 
@@ -100,6 +121,21 @@ mod tests {
         // A frame after a long pause counts as a tenth of a second.
         assert!((advance(5.0, 30.0, true) - 5.1).abs() < 1e-6);
         assert_eq!(advance(5.0, -1.0, true), 5.0);
+    }
+
+    #[test]
+    fn a_change_keeps_a_window_without_focus_moving_for_five_seconds() {
+        let mut awake = WAKE_SECS;
+        let mut frames = 0;
+        while awake > 0.0 {
+            awake = awake_after(awake, 1.0 / FPS, false);
+            frames += 1;
+        }
+        assert!((149..=152).contains(&frames), "{frames}");
+        // The first frame after a long still picture counts as a tenth.
+        assert!((awake_after(WAKE_SECS, 60.0, false) - 4.9).abs() < 1e-5);
+        assert_eq!(awake_after(0.0, 0.033, false), 0.0);
+        assert_eq!(awake_after(WAKE_SECS, 0.033, true), 0.0);
     }
 
     #[test]

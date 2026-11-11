@@ -200,8 +200,9 @@ preset).
 The **Kawaii** theme is round and pastel, in the Fredoka font, with a rainbow
 drifting behind the cards, hearts and stars floating up, cards that bob, grow
 under the pointer and swing when marked, and a burst of stars on a copy. It
-moves only while the window has focus; without focus the picture stands still
-and the app draws no more often than in the other themes.
+moves while the window has focus. Without focus the picture stands still and
+the app draws no more often than in the other themes, except for five seconds
+after something changed on a card.
 
 **About multigit** in the Settings window shows the version and opens the
 source code, the issue tracker, a mail to the developer, the donation page and

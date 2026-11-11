@@ -172,8 +172,9 @@ impl App {
         }
         ui.ctx()
             .request_repaint_after(next.max(std::time::Duration::from_millis(200)));
-        // The Kawaii theme moves, but only while the window has focus:
-        // without it no frame is asked for and the picture stands still.
+        // The Kawaii theme moves, but only while the window has focus and
+        // for a few seconds after a repository changed: otherwise no frame
+        // is asked for and the picture stands still.
         let (dt, focused) = ui.input(|i| (i.stable_dt, i.focused));
         if self.advance_kawaii(dt, focused) {
             let frame = std::time::Duration::from_secs_f32(1.0 / kawaii::FPS);

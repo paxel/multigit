@@ -163,6 +163,9 @@ pub struct App {
     /// The clock of the Kawaii theme's motion, in seconds; it runs only
     /// while the window has focus.
     pub kawaii_clock: f64,
+    /// Seconds a change in a repository still keeps the Kawaii theme moving
+    /// in a window without focus.
+    kawaii_awake: f32,
     /// Cards that swing because they were just marked, with the clock time
     /// of the mark.
     wobbles: HashMap<PathBuf, f64>,
@@ -222,6 +225,7 @@ impl App {
             toasts: Vec::new(),
             copy_flash: None,
             kawaii_clock: 0.0,
+            kawaii_awake: 0.0,
             wobbles: HashMap::new(),
             confirm: None,
             settings_open: false,
@@ -324,17 +328,29 @@ impl App {
         self.marked.insert(path);
     }
 
-    /// One frame of the Kawaii theme's clock; `true` while it runs.
+    /// One frame of the Kawaii theme's clock; `true` while it runs: with
+    /// focus, and for a few seconds after a repository changed.
     pub fn advance_kawaii(&mut self, dt: f32, focused: bool) -> bool {
         if !self.is_kawaii() {
             self.wobbles.clear();
+            self.kawaii_awake = 0.0;
             return false;
         }
-        self.kawaii_clock = kawaii::advance(self.kawaii_clock, dt, focused);
+        let running = focused || self.kawaii_awake > 0.0;
+        self.kawaii_clock = kawaii::advance(self.kawaii_clock, dt, running);
+        self.kawaii_awake = kawaii::awake_after(self.kawaii_awake, dt, focused);
         let clock = self.kawaii_clock;
         self.wobbles
             .retain(|_, marked_at| kawaii::wobble(clock, *marked_at).is_some());
-        focused
+        running
+    }
+
+    /// Something on a card changed: the Kawaii theme moves for a while, also
+    /// in a window without focus.
+    fn wake_kawaii(&mut self) {
+        if self.is_kawaii() {
+            self.kawaii_awake = kawaii::WAKE_SECS;
+        }
     }
 
     /// How far the Kawaii theme moves the card at position `index` of the
@@ -652,13 +668,25 @@ impl App {
     fn handle_event(&mut self, event: Event) {
         match event {
             Event::Probed { repo, result } => {
+                let mut changed = false;
                 if let Some(card) = self.card_mut(&repo) {
-                    card.probe = Some(*result);
+                    let new = Some(*result);
+                    // The first probe of a card is no change.
+                    changed = card.probe.is_some() && card.probe != new;
+                    card.probe = new;
+                }
+                if changed {
+                    self.wake_kawaii();
                 }
             }
             Event::Fetched { repo, error } => {
+                let mut appeared = false;
                 if let Some(card) = self.card_mut(&repo) {
+                    appeared = error.is_some() && card.fetch_error != error;
                     card.fetch_error = error;
+                }
+                if appeared {
+                    self.wake_kawaii();
                 }
             }
             Event::Section { run, repo, state } => {
@@ -1277,6 +1305,63 @@ pub(crate) mod tests {
         assert_eq!(app.card_offset(&path, 1).0, 0.0);
         app.toggle_mark(path.clone());
         assert_eq!(app.card_offset(&path, 1).0, 0.0);
+    }
+
+    #[test]
+    fn a_change_on_a_card_wakes_the_kawaii_theme_without_focus() {
+        let mut app = app_with(Arc::default(), None);
+        app.config.theme = Theme::Kawaii;
+        app.cards = vec![Card::new("/x/a".into())];
+        let clean = snapshot(Counts::default(), Upstream::None, &["main"]);
+        let dirty = snapshot(
+            Counts {
+                modified: 1,
+                ..Counts::default()
+            },
+            Upstream::None,
+            &["main"],
+        );
+        let probed = |snap: &Snapshot| Event::Probed {
+            repo: "/x/a".into(),
+            result: Box::new(Ok(snap.clone())),
+        };
+        // The first probe and an unchanged one wake nothing.
+        app.handle_event(probed(&clean));
+        app.handle_event(probed(&clean));
+        assert!(!app.advance_kawaii(0.033, false));
+
+        // A change runs it for five seconds, then it stands still again.
+        app.handle_event(probed(&dirty));
+        let mut frames = 0;
+        while app.advance_kawaii(0.033, false) {
+            frames += 1;
+        }
+        assert!((150..=154).contains(&frames), "{frames}");
+        let clock = app.kawaii_clock;
+        assert!(clock > 4.9);
+        assert!(!app.advance_kawaii(0.033, false));
+        assert_eq!(app.kawaii_clock, clock);
+
+        // So does a fetch error that appears; one that goes away does not.
+        let fetched = |error: Option<&str>| Event::Fetched {
+            repo: "/x/a".into(),
+            error: error.map(|e| FetchError::from_message(e.into())),
+        };
+        app.handle_event(fetched(Some("auth failed")));
+        assert!(app.advance_kawaii(0.033, false));
+        // Focus uses the rest up: no burst left over when it is lost again.
+        assert!(app.advance_kawaii(0.033, true));
+        assert!(!app.advance_kawaii(0.033, false));
+        app.handle_event(fetched(Some("auth failed")));
+        app.handle_event(fetched(None));
+        assert!(!app.advance_kawaii(0.033, false));
+
+        // Other themes are not woken.
+        app.config.theme = Theme::Dark;
+        app.handle_event(probed(&clean));
+        assert!(!app.advance_kawaii(0.033, false));
+        app.config.theme = Theme::Kawaii;
+        assert!(!app.advance_kawaii(0.033, false));
     }
 
     #[test]

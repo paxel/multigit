@@ -120,6 +120,8 @@ impl GitRunner {
     ///
     /// Each remote is fetched on its own: `--upload-pack`, which overrides the
     /// configured program, does not reach the per-remote fetches of `--all`.
+    /// An SSH remote keeps its `uploadpack`: there it names a program on the
+    /// server, which may need it to find git.
     /// Like `--all`, a failing remote does not stop the others; the result is
     /// the first failure, or the last fetch.
     #[tracing::instrument(skip_all, fields(dir = %dir.display()))]
@@ -139,8 +141,11 @@ impl GitRunner {
             for setting in BACKGROUND_FETCH_CONFIG {
                 cmd.args(["-c", setting]);
             }
-            cmd.args(["fetch", "--prune", "--upload-pack=git-upload-pack", "--"])
-                .arg(&remote);
+            cmd.args(["fetch", "--prune"]);
+            if !self.is_ssh_remote(dir, &remote) {
+                cmd.arg("--upload-pack=git-upload-pack");
+            }
+            cmd.arg("--").arg(&remote);
             last = Self::output(cmd)?;
             if !last.success() && failed.is_none() {
                 failed = Some(last.clone());
@@ -149,7 +154,18 @@ impl GitRunner {
         Ok(failed.unwrap_or(last))
     }
 
-    /// The remotes `fetch --all` covers: all but those with `skipFetchAll` set.
+    /// Whether `remote` is reached over SSH, judged by the URL git really uses
+    /// (after `url.<base>.insteadOf`, which the repository's config also
+    /// controls). Unknown counts as not SSH, so the override stays on.
+    fn is_ssh_remote(&self, dir: &Path, remote: &str) -> bool {
+        self.query(dir, &["remote", "get-url", "--", remote])
+            .ok()
+            .filter(ProcessOutput::success)
+            .is_some_and(|out| is_ssh_url(out.stdout.trim()))
+    }
+
+    /// The remotes `fetch --all` covers: all but those with `skipFetchAll` (or
+    /// its older name `skipDefaultUpdate`) set.
     fn remotes_to_fetch(&self, dir: &Path) -> io::Result<Vec<String>> {
         let skipped = self.query(
             dir,
@@ -157,7 +173,7 @@ impl GitRunner {
                 "config",
                 "--type=bool",
                 "--get-regexp",
-                r"^remote\..*\.skipfetchall$",
+                r"^remote\..*\.(skipfetchall|skipdefaultupdate)$",
             ],
         )?;
         let skipped: Vec<&str> = skipped
@@ -165,7 +181,10 @@ impl GitRunner {
             .lines()
             .filter_map(|line| line.strip_suffix(" true"))
             .filter_map(|key| key.strip_prefix("remote."))
-            .filter_map(|key| key.strip_suffix(".skipfetchall"))
+            .filter_map(|key| {
+                key.strip_suffix(".skipfetchall")
+                    .or_else(|| key.strip_suffix(".skipdefaultupdate"))
+            })
             .collect();
         let remotes = self.query(dir, &["remote"])?;
         Ok(remotes
@@ -213,6 +232,21 @@ impl GitRunner {
             configured.as_deref().unwrap_or("ssh"),
         )))
     }
+}
+
+/// Whether git reaches `url` over SSH: an `ssh://` URL (also `git+ssh://` and
+/// `ssh+git://`), or the scp-like `[user@]host:path`, which has a colon before
+/// the first slash. Everything else is a local path or another transport.
+fn is_ssh_url(url: &str) -> bool {
+    if let Some((scheme, _)) = url.split_once("://") {
+        return matches!(scheme, "ssh" | "git+ssh" | "ssh+git");
+    }
+    if url.contains("::") {
+        // `<helper>::<address>`, such as `ext::`.
+        return false;
+    }
+    url.split_once(':')
+        .is_some_and(|(host, _)| !host.is_empty() && !host.contains('/'))
 }
 
 fn append_batch_mode(ssh: &OsStr) -> OsString {
@@ -412,6 +446,8 @@ mod tests {
         clone.git(&["remote", "add", "second", &url]);
         clone.git(&["remote", "add", "skipped", &url]);
         clone.git(&["config", "remote.skipped.skipFetchAll", "yes"]);
+        clone.git(&["remote", "add", "old-skip", &url]);
+        clone.git(&["config", "remote.old-skip.skipDefaultUpdate", "true"]);
         let head = advance(&pusher, "two.txt");
 
         let out = isolated_runner().background_fetch(clone.path()).unwrap();
@@ -420,8 +456,10 @@ mod tests {
             let fetched = clone.git(&["rev-parse", &format!("{name}/main")]);
             assert_eq!(fetched.trim(), head, "{name}");
         }
-        let refs = clone.git(&["for-each-ref", "refs/remotes/skipped"]);
-        assert_eq!(refs, "", "a skipFetchAll remote was fetched");
+        for name in ["skipped", "old-skip"] {
+            let refs = clone.git(&["for-each-ref", &format!("refs/remotes/{name}")]);
+            assert_eq!(refs, "", "{name} was fetched");
+        }
     }
 
     #[cfg(unix)]
@@ -504,6 +542,66 @@ mod tests {
         assert!(out.success(), "{out:?}");
         assert_eq!(clone.git(&["rev-parse", "origin/main"]).trim(), head);
         assert!(!marker.exists(), "uploadpack ran for the background fetch");
+    }
+
+    #[test]
+    fn ssh_urls_are_told_from_local_and_other_transports() {
+        for url in [
+            "ssh://git@host/repo.git",
+            "git+ssh://host/repo",
+            "git@github.com:paxel/multigit.git",
+            "host:repo.git",
+        ] {
+            assert!(is_ssh_url(url), "{url}");
+        }
+        for url in [
+            "/srv/git/repo.git",
+            "./relative:odd",
+            "../up/repo",
+            "file:///srv/repo.git",
+            "https://github.com/paxel/multigit.git",
+            "git://host/repo",
+            "ext::sh -c touch",
+            "",
+        ] {
+            assert!(!is_ssh_url(url), "{url}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn insteadof_cannot_disguise_a_local_remote_as_ssh() {
+        let (remote, pusher, clone) = remote_pusher_and_clone();
+        let marker = clone.path().join(".git/uploadpack-ran");
+        let script = clone.path().join(".git/uploadpack.sh");
+        marker_script(&script, &marker, "exec git-upload-pack \"$@\"");
+        // The configured URL looks like SSH; git rewrites it to the local path.
+        let local = remote.path().to_string_lossy().into_owned();
+        clone.git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "git@example.invalid:repo.git",
+        ]);
+        clone.git(&[
+            "config",
+            &format!("url.{local}.insteadOf"),
+            "git@example.invalid:repo.git",
+        ]);
+        clone.git(&[
+            "config",
+            "remote.origin.uploadpack",
+            &script.to_string_lossy(),
+        ]);
+
+        let head = advance(&pusher, "two.txt");
+        let out = isolated_runner().background_fetch(clone.path()).unwrap();
+        assert!(out.success(), "{out:?}");
+        assert_eq!(clone.git(&["rev-parse", "origin/main"]).trim(), head);
+        assert!(
+            !marker.exists(),
+            "uploadpack ran for a rewritten local remote"
+        );
     }
 
     #[test]

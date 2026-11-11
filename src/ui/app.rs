@@ -1,20 +1,25 @@
 //! Board state and the actions the UI triggers on it (no drawing here).
 
+use crate::application::desktop::Desktop;
 use crate::application::engine::{Backend, Engine, Event, Notify};
 use crate::application::schedule::{Due, Schedule};
-use crate::domain::command::{Job, shell_line};
+use crate::domain::board::{SortKey, Sorted, compare, matches_filter};
+use crate::domain::command::{Job, display, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
-use crate::domain::config::Config;
+use crate::domain::config::{Config, Theme};
 use crate::domain::destructive::is_destructive;
+use crate::domain::favorites::{FavoriteDraft, active_after_delete, forget};
 use crate::domain::history::History;
-use crate::domain::naming::board_order;
+use crate::domain::kawaii;
+use crate::domain::naming::{board_order, title};
 use crate::domain::output::OutputLog;
-use crate::domain::repo::{ProbeError, Snapshot};
+use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use crate::domain::status::{RepoState, Upstream};
+use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
 use crate::infrastructure::scan::scan;
 use crate::infrastructure::store::{self, Paths};
 use crate::ui::cli::CliState;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -29,8 +34,9 @@ pub struct Card {
     pub path: PathBuf,
     /// `None` until the first probe returns.
     pub probe: Option<Result<Snapshot, ProbeError>>,
-    /// Text of the last failed background fetch; cleared by a successful one.
-    pub fetch_error: Option<String>,
+    /// The last failed background fetch; replaced by every fetch result and
+    /// taken off by a click on it.
+    pub fetch_error: Option<FetchError>,
     /// Outcome of the last command run on this card.
     pub last_command: Option<bool>,
 }
@@ -47,6 +53,14 @@ impl Card {
 
     pub fn snapshot(&self) -> Option<&Snapshot> {
         self.probe.as_ref().and_then(|p| p.as_ref().ok())
+    }
+
+    /// As sorting sees the card.
+    fn sorted(&self) -> Sorted<'_> {
+        Sorted {
+            path: &self.path,
+            snapshot: self.snapshot(),
+        }
     }
 
     /// Has changes or an operation in progress.
@@ -70,6 +84,25 @@ pub struct PendingRun {
     /// As typed (without a leading `git`); a shell line keeps its `!`.
     pub command: String,
     pub job: Job,
+    pub repos: Vec<PathBuf>,
+}
+
+/// What the settings window shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsPage {
+    #[default]
+    Settings,
+    About,
+    Licenses,
+}
+
+/// The open dialog that makes a favorite or changes one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FavoriteDialog {
+    pub draft: FavoriteDraft,
+    /// The favorite that is changed; `None` makes a new one.
+    pub editing: Option<usize>,
+    /// The repositories a new favorite starts with.
     pub repos: Vec<PathBuf>,
 }
 
@@ -97,12 +130,28 @@ pub struct App {
     pub config_error: Option<String>,
     paths: Option<Paths>,
     pub cards: Vec<Card>,
+    /// Marks of all cards, also of the ones the filter hides.
     pub marked: BTreeSet<PathBuf>,
+    /// Text of the filter field; not saved.
+    pub filter: String,
+    /// What the board is sorted by; not saved.
+    pub sort: SortKey,
+    /// The favorite whose repositories alone are shown, by its position in
+    /// the config; not saved.
+    pub active_favorite: Option<usize>,
+    pub favorite_dialog: Option<FavoriteDialog>,
     engine: Engine,
+    desktop: Arc<dyn Desktop>,
+    /// Where files for other programs are written; removed on exit.
+    pub scratch: PathBuf,
     events: Receiver<Event>,
     schedule: Schedule,
     applied_concurrency: usize,
     pub log: OutputLog,
+    /// The output panel is folded away; not saved.
+    pub output_hidden: bool,
+    /// The last run the open output panel showed.
+    output_seen: Option<u64>,
     pub history: History,
     pub cli: CliState,
     pub vocab: Vocabulary,
@@ -111,8 +160,20 @@ pub struct App {
     commands_requested: bool,
     pub toasts: Vec<Toast>,
     pub copy_flash: Option<CopyFlash>,
+    /// The clock of the Kawaii theme's motion, in seconds; it runs only
+    /// while the window has focus.
+    pub kawaii_clock: f64,
+    /// Seconds a change in a repository still keeps the Kawaii theme moving
+    /// in a window without focus.
+    kawaii_awake: f32,
+    /// Cards that swing because they were just marked, with the clock time
+    /// of the mark.
+    wobbles: HashMap<PathBuf, f64>,
     pub confirm: Option<PendingRun>,
     pub settings_open: bool,
+    pub settings_page: SettingsPage,
+    /// The app icon for the About page, once it was drawn.
+    pub icon: Option<egui::TextureHandle>,
     notify: Notify,
     /// Folder dialog running on its own thread; yields the picked folder.
     picker: Option<Receiver<Option<PathBuf>>>,
@@ -125,6 +186,7 @@ impl App {
         paths: Option<Paths>,
         history: History,
         backend: Arc<dyn Backend>,
+        desktop: Arc<dyn Desktop>,
         notify: Notify,
     ) -> Self {
         let (config, config_error) = match config {
@@ -142,10 +204,18 @@ impl App {
             paths,
             cards,
             marked: BTreeSet::new(),
+            filter: String::new(),
+            sort: SortKey::default(),
+            active_favorite: None,
+            favorite_dialog: None,
             engine,
+            desktop,
+            scratch: scratch_dir(),
             events,
             schedule: Schedule::default(),
             log: OutputLog::default(),
+            output_hidden: false,
+            output_seen: None,
             history,
             cli: CliState::default(),
             vocab: Vocabulary::default(),
@@ -154,8 +224,13 @@ impl App {
             commands_requested: false,
             toasts: Vec::new(),
             copy_flash: None,
+            kawaii_clock: 0.0,
+            kawaii_awake: 0.0,
+            wobbles: HashMap::new(),
             confirm: None,
             settings_open: false,
+            settings_page: SettingsPage::default(),
+            icon: None,
             notify,
             picker: None,
         }
@@ -233,29 +308,198 @@ impl App {
     pub fn remove(&mut self, path: &Path) {
         self.cards.retain(|c| c.path != path);
         self.marked.remove(path);
+        forget(&mut self.config.favorites, &[path.to_path_buf()]);
         self.sync_repos_to_config();
+    }
+
+    pub fn is_kawaii(&self) -> bool {
+        self.config.theme == Theme::Kawaii
+    }
+
+    /// A click on a card: mark it, or take the mark off. In the Kawaii theme
+    /// a card that gets its mark swings.
+    pub fn toggle_mark(&mut self, path: PathBuf) {
+        if self.marked.remove(&path) {
+            return;
+        }
+        if self.is_kawaii() {
+            self.wobbles.insert(path.clone(), self.kawaii_clock);
+        }
+        self.marked.insert(path);
+    }
+
+    /// One frame of the Kawaii theme's clock; `true` while it runs: with
+    /// focus, and for a few seconds after a repository changed.
+    pub fn advance_kawaii(&mut self, dt: f32, focused: bool) -> bool {
+        if !self.is_kawaii() {
+            self.wobbles.clear();
+            self.kawaii_awake = 0.0;
+            return false;
+        }
+        let running = focused || self.kawaii_awake > 0.0;
+        self.kawaii_clock = kawaii::advance(self.kawaii_clock, dt, running);
+        self.kawaii_awake = kawaii::awake_after(self.kawaii_awake, dt, focused);
+        let clock = self.kawaii_clock;
+        self.wobbles
+            .retain(|_, marked_at| kawaii::wobble(clock, *marked_at).is_some());
+        running
+    }
+
+    /// Something on a card changed: the Kawaii theme moves for a while, also
+    /// in a window without focus.
+    fn wake_kawaii(&mut self) {
+        if self.is_kawaii() {
+            self.kawaii_awake = kawaii::WAKE_SECS;
+        }
+    }
+
+    /// How far the Kawaii theme moves the card at position `index` of the
+    /// board right now: right and down, in points. Nothing in other themes.
+    pub fn card_offset(&self, path: &Path, index: usize) -> (f32, f32) {
+        if !self.is_kawaii() {
+            return (0.0, 0.0);
+        }
+        let swing = self
+            .wobbles
+            .get(path)
+            .and_then(|marked_at| kawaii::wobble(self.kawaii_clock, *marked_at));
+        (swing.unwrap_or(0.0), kawaii::bob(self.kawaii_clock, index))
+    }
+
+    /// What a right click on the card of `clicked` acts on: that card, or,
+    /// when it is marked, all marked cards the board shows.
+    pub fn menu_targets(&self, clicked: &Path) -> Vec<PathBuf> {
+        if self.marked.contains(clicked) {
+            self.marked_repos()
+        } else {
+            vec![clicked.to_path_buf()]
+        }
+    }
+
+    pub fn add_to_favorite(&mut self, index: usize, repos: &[PathBuf]) {
+        if let Some(favorite) = self.config.favorites.get_mut(index) {
+            favorite.add(repos);
+        }
+    }
+
+    pub fn remove_from_favorite(&mut self, index: usize, repos: &[PathBuf]) {
+        if let Some(favorite) = self.config.favorites.get_mut(index) {
+            favorite.remove(repos);
+        }
+    }
+
+    /// Open the dialog for a new favorite of `repos`.
+    pub fn new_favorite(&mut self, repos: Vec<PathBuf>) {
+        self.favorite_dialog = Some(FavoriteDialog {
+            draft: FavoriteDraft::default(),
+            editing: None,
+            repos,
+        });
+    }
+
+    /// Open the dialog that changes the favorite at `index`.
+    pub fn edit_favorite(&mut self, index: usize) {
+        if let Some(favorite) = self.config.favorites.get(index) {
+            self.favorite_dialog = Some(FavoriteDialog {
+                draft: FavoriteDraft::of(favorite),
+                editing: Some(index),
+                repos: Vec::new(),
+            });
+        }
+    }
+
+    /// Save of the favorite dialog; a draft without a name keeps it open.
+    pub fn save_favorite(&mut self) {
+        let Some(dialog) = self.favorite_dialog.take_if(|d| d.draft.is_valid()) else {
+            return;
+        };
+        match dialog.editing {
+            Some(index) => {
+                if let Some(favorite) = self.config.favorites.get_mut(index) {
+                    dialog.draft.apply(favorite);
+                }
+            }
+            None => self
+                .config
+                .favorites
+                .push(dialog.draft.create(dialog.repos)),
+        }
+    }
+
+    /// Delete the favorite at `index`; its repositories stay on the board.
+    pub fn delete_favorite(&mut self, index: usize) {
+        if index < self.config.favorites.len() {
+            self.config.favorites.remove(index);
+            self.active_favorite = active_after_delete(self.active_favorite, index);
+        }
+    }
+
+    /// A click on a favorite's button: show only its repositories, or all
+    /// again when it was the active one.
+    pub fn toggle_favorite(&mut self, index: usize) {
+        self.active_favorite = (self.active_favorite != Some(index)).then_some(index);
+    }
+
+    /// Whether the board shows this card.
+    pub fn shows(&self, card: &Card) -> bool {
+        let in_active = self
+            .active_favorite
+            .and_then(|i| self.config.favorites.get(i))
+            .is_none_or(|f| f.contains(&card.path));
+        in_active && matches_filter(&card.path, &self.filter)
+    }
+
+    /// The cards the board shows, in the order of the sort key. Everything that acts on
+    /// "the marked cards" acts on the marked ones among these: a hidden card
+    /// keeps its mark but is never run in, marked, unmarked or removed.
+    pub fn shown_cards(&self) -> Vec<&Card> {
+        let mut shown: Vec<&Card> = self.cards.iter().filter(|c| self.shows(c)).collect();
+        // `cards` is in name order already.
+        if self.sort != SortKey::Name {
+            shown.sort_by(|a, b| compare(self.sort, a.sorted(), b.sorted()));
+        }
+        shown
+    }
+
+    fn shown_paths(&self) -> BTreeSet<PathBuf> {
+        self.shown_cards().iter().map(|c| c.path.clone()).collect()
     }
 
     pub fn remove_marked(&mut self) {
-        let marked = std::mem::take(&mut self.marked);
-        self.cards.retain(|c| !marked.contains(&c.path));
+        let gone: BTreeSet<PathBuf> = self.marked_repos().into_iter().collect();
+        self.cards.retain(|c| !gone.contains(&c.path));
+        self.marked.retain(|p| !gone.contains(p));
+        forget(
+            &mut self.config.favorites,
+            &gone.iter().cloned().collect::<Vec<_>>(),
+        );
         self.sync_repos_to_config();
     }
 
+    /// A click on a card's fetch error: its whole output for the clipboard;
+    /// the error leaves the card until a fetch fails again.
+    pub fn take_fetch_error(&mut self, path: &Path) -> Option<String> {
+        let error = self.card_mut(path)?.fetch_error.take()?;
+        Some(error.output)
+    }
+
     fn mark_where(&mut self, keep: impl Fn(&Card) -> bool) {
-        self.marked = self
-            .cards
-            .iter()
+        let shown = self.shown_paths();
+        let picked: Vec<PathBuf> = self
+            .shown_cards()
+            .into_iter()
             .filter(|c| keep(c))
             .map(|c| c.path.clone())
             .collect();
+        self.marked.retain(|p| !shown.contains(p));
+        self.marked.extend(picked);
     }
 
     pub fn mark_all(&mut self) {
         self.mark_where(|_| true);
     }
     pub fn mark_none(&mut self) {
-        self.marked.clear();
+        self.mark_where(|_| false);
     }
     pub fn mark_dirty(&mut self) {
         self.mark_where(Card::is_dirty);
@@ -264,10 +508,10 @@ impl App {
         self.mark_where(Card::is_behind);
     }
 
-    /// Marked repositories in board order.
+    /// The marked repositories the board shows, in board order.
     pub fn marked_repos(&self) -> Vec<PathBuf> {
-        self.cards
-            .iter()
+        self.shown_cards()
+            .into_iter()
             .filter(|c| self.marked.contains(&c.path))
             .map(|c| c.path.clone())
             .collect()
@@ -320,6 +564,52 @@ impl App {
         for repo in &run.repos {
             self.engine.run_command(id, repo, run.job.clone());
         }
+    }
+
+    /// A link of the About page: a web page or a mail in the system's
+    /// program for it.
+    pub fn open_url(&mut self, url: &str) {
+        if let Err(e) = self.desktop.open_url(url) {
+            self.toast(format!("Cannot open {url}: {e}"));
+        }
+    }
+
+    /// The card's terminal button: a terminal window in the repository.
+    pub fn open_terminal(&mut self, repo: &Path) {
+        if let Err(e) = self.desktop.open_terminal(repo, &self.config.terminal) {
+            self.toast(format!("Cannot open a terminal: {e}"));
+        }
+    }
+
+    /// Write the output of run `id` (of all its repositories, or of `repo`
+    /// alone) to a text file and open it with the system's default program.
+    /// Nothing happens while that output is not complete.
+    pub fn open_output(&mut self, id: u64, repo: Option<&Path>) {
+        let Some(run) = self.log.run(id).filter(|r| r.is_done(repo)) else {
+            return;
+        };
+        let text = run.text(&display(&run.command), repo);
+        let name = match repo {
+            Some(repo) => format!("output-{id}-{}.txt", title(repo)),
+            None => format!("output-{id}.txt"),
+        };
+        let opened = write_scratch_file(&self.scratch, &name, &text)
+            .and_then(|file| self.desktop.open_file(&file));
+        if let Err(e) = opened {
+            self.toast(format!("Cannot open the output: {e}"));
+        }
+    }
+
+    /// The open output panel shows every run: none is news any more.
+    pub fn output_shown(&mut self) {
+        self.output_seen = self.log.last().map(|r| r.id);
+    }
+
+    /// For the mark on the button of the hidden output panel: the outcome of
+    /// the last run when the panel has not shown it. `Some(None)` = running.
+    pub fn unseen_outcome(&self) -> Option<Option<bool>> {
+        let last = self.log.last()?;
+        (self.output_seen != Some(last.id)).then(|| last.outcome())
     }
 
     pub fn confirm_run(&mut self) {
@@ -378,13 +668,25 @@ impl App {
     fn handle_event(&mut self, event: Event) {
         match event {
             Event::Probed { repo, result } => {
+                let mut changed = false;
                 if let Some(card) = self.card_mut(&repo) {
-                    card.probe = Some(result);
+                    let new = Some(*result);
+                    // The first probe of a card is no change.
+                    changed = card.probe.is_some() && card.probe != new;
+                    card.probe = new;
+                }
+                if changed {
+                    self.wake_kawaii();
                 }
             }
             Event::Fetched { repo, error } => {
+                let mut appeared = false;
                 if let Some(card) = self.card_mut(&repo) {
+                    appeared = error.is_some() && card.fetch_error != error;
                     card.fetch_error = error;
+                }
+                if appeared {
+                    self.wake_kawaii();
                 }
             }
             Event::Section { run, repo, state } => {
@@ -439,8 +741,8 @@ impl App {
     /// Union of the refs of all marked repos, for completion values.
     pub fn repo_values(&self) -> RepoValues {
         RepoValues::union(
-            self.cards
-                .iter()
+            self.shown_cards()
+                .into_iter()
                 .filter(|c| self.marked.contains(&c.path))
                 .filter_map(|c| c.snapshot().map(|s| &s.refs)),
         )
@@ -494,10 +796,17 @@ impl App {
     }
 }
 
+impl Drop for App {
+    /// Take the files written for other programs away again.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.scratch);
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::domain::completion::RepoRefs;
+    use crate::application::engine::FETCH_ARGS;
     use crate::domain::output::{ProcessOutput, SectionState};
     use crate::domain::status::{Counts, Head, Status};
     use std::io;
@@ -512,24 +821,28 @@ pub(crate) mod tests {
     }
 
     pub fn snapshot(counts: Counts, upstream: Upstream, branches: &[&str]) -> Snapshot {
-        Snapshot {
-            status: Status {
-                head: Head::Branch("main".into()),
-                upstream,
-                counts,
-                changed_paths: vec![],
-            },
-            state: RepoState::Normal,
-            refs: RepoRefs {
-                branches: branches.iter().map(|s| s.to_string()).collect(),
-                ..RepoRefs::default()
-            },
-            tag: None,
-        }
+        let mut snap = Snapshot::of(Status {
+            head: Head::Branch("main".into()),
+            upstream,
+            counts,
+            changed_paths: vec![],
+        });
+        snap.refs.branches = branches.iter().map(|s| s.to_string()).collect();
+        // Later in the list is newer.
+        snap.dated.branches = branches
+            .iter()
+            .zip(0..)
+            .map(|(name, date)| crate::domain::repo::DatedRef {
+                name: name.to_string(),
+                commit: String::new(),
+                date,
+            })
+            .collect();
+        snap
     }
 
     impl Backend for FakeBackend {
-        fn probe(&self, _dir: &Path) -> Result<Snapshot, ProbeError> {
+        fn probe(&self, _dir: &Path, _fresh: bool) -> Result<Snapshot, ProbeError> {
             self.snapshot
                 .lock()
                 .unwrap()
@@ -546,6 +859,10 @@ pub(crate) mod tests {
                 stdout: format!("ran {}", args.join(" ")),
                 stderr: String::new(),
             })
+        }
+        fn fetch(&self, dir: &Path) -> io::Result<ProcessOutput> {
+            let args: Vec<String> = FETCH_ARGS.iter().map(|s| s.to_string()).collect();
+            self.run(dir, &args)
         }
         fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput> {
             self.shell_runs
@@ -569,14 +886,63 @@ pub(crate) mod tests {
         }
     }
 
+    /// Desktop that opens nothing and records what it was asked to open.
+    #[derive(Default)]
+    pub struct FakeDesktop {
+        pub files: Mutex<Vec<PathBuf>>,
+        pub urls: Mutex<Vec<String>>,
+        /// Folder and configured command of every terminal asked for.
+        pub terminals: Mutex<Vec<(PathBuf, String)>>,
+        pub fail: bool,
+    }
+
+    impl Desktop for FakeDesktop {
+        fn open_file(&self, file: &Path) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::other("no opener"));
+            }
+            self.files.lock().unwrap().push(file.to_path_buf());
+            Ok(())
+        }
+        fn open_url(&self, url: &str) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::other("no browser"));
+            }
+            self.urls.lock().unwrap().push(url.to_owned());
+            Ok(())
+        }
+        fn open_terminal(&self, dir: &Path, configured: &str) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::other("no terminal"));
+            }
+            let asked = (dir.to_path_buf(), configured.to_owned());
+            self.terminals.lock().unwrap().push(asked);
+            Ok(())
+        }
+    }
+
     pub fn app_with(backend: Arc<FakeBackend>, paths: Option<Paths>) -> App {
-        App::new(
+        app_on(backend, Arc::default(), paths)
+    }
+
+    /// An app on fakes. Its scratch folder is one no other test or app uses.
+    pub fn app_on(
+        backend: Arc<FakeBackend>,
+        desktop: Arc<FakeDesktop>,
+        paths: Option<Paths>,
+    ) -> App {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut app = App::new(
             Ok(Config::default()),
             paths,
             History::default(),
             backend,
+            desktop,
             Arc::new(|| {}),
-        )
+        );
+        app.scratch = scratch_dir().join(format!("test-{n}"));
+        app
     }
 
     /// Wait until `done` holds, applying events meanwhile.
@@ -702,6 +1068,300 @@ pub(crate) mod tests {
         assert_eq!(app.marked.len(), 3);
         app.mark_none();
         assert!(app.marked.is_empty());
+    }
+
+    #[test]
+    fn cards_hidden_by_the_filter_keep_their_mark_but_nothing_touches_them() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut app = app_with(backend.clone(), None);
+        app.cards = ["/x/etl-load", "/x/etl-store", "/x/web"]
+            .into_iter()
+            .map(|p| Card::new(p.into()))
+            .collect();
+        app.mark_all();
+        app.filter = "ETL".into();
+        let etl = vec![PathBuf::from("/x/etl-load"), PathBuf::from("/x/etl-store")];
+        assert_eq!(app.marked_repos(), etl);
+
+        // Command line and toolbar buttons run in the shown cards only.
+        app.run_cli_line("status");
+        app.run_button_on_marked(2);
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 4);
+        let ran: BTreeSet<PathBuf> = backend
+            .runs
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.0.clone())
+            .collect();
+        assert_eq!(ran, etl.iter().cloned().collect());
+
+        // Marking touches the shown cards only: the hidden mark stays.
+        app.mark_none();
+        assert_eq!(app.marked, BTreeSet::from([PathBuf::from("/x/web")]));
+        app.marked.clear();
+        app.mark_all();
+        assert_eq!(app.marked, etl.iter().cloned().collect());
+
+        // "Remove marked" leaves a marked hidden card on the board.
+        app.marked.insert("/x/web".into());
+        app.remove_marked();
+        assert_eq!(app.config.repos, vec![PathBuf::from("/x/web")]);
+        app.filter.clear();
+        assert_eq!(app.marked_repos(), vec![PathBuf::from("/x/web")]);
+    }
+
+    #[test]
+    fn output_opens_as_a_text_file_that_goes_away_with_the_app() {
+        let backend = Arc::new(FakeBackend::default());
+        let desktop = Arc::new(FakeDesktop::default());
+        let mut app = app_on(backend.clone(), desktop.clone(), None);
+        app.cards = vec![Card::new("/x/a".into()), Card::new("/x/b".into())];
+        app.start_run("status", vec!["/x/a".into(), "/x/b".into()]);
+        // Not while it runs: the gate of the fake is open, so wait for it.
+        settle(&mut app, |a| a.log.last().unwrap().outcome().is_some());
+        app.open_output(0, None);
+        app.open_output(0, Some(Path::new("/x/b")));
+        app.open_output(7, None);
+        let files = desktop.files.lock().unwrap().clone();
+        assert_eq!(
+            files,
+            vec![
+                app.scratch.join("output-0.txt"),
+                app.scratch.join("output-0-b.txt")
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(&files[0]).unwrap(),
+            "git status\n\n== /x/a (exit 0) ==\nran status\n\n== /x/b (exit 0) ==\nran status\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&files[1]).unwrap(),
+            "git status\n\n== /x/b (exit 0) ==\nran status\n"
+        );
+        assert!(app.toasts.is_empty());
+        let scratch = app.scratch.clone();
+        drop(app);
+        assert!(!scratch.exists());
+    }
+
+    #[test]
+    fn a_failing_opener_is_reported() {
+        let desktop = Arc::new(FakeDesktop {
+            fail: true,
+            ..FakeDesktop::default()
+        });
+        let mut app = app_on(Arc::default(), desktop, None);
+        app.start_run("status", vec!["/x/a".into()]);
+        settle(&mut app, |a| a.log.last().unwrap().outcome().is_some());
+        app.open_output(0, None);
+        assert_eq!(
+            app.toasts.last().unwrap().text,
+            "Cannot open the output: no opener"
+        );
+        app.open_url("https://example.org");
+        assert_eq!(
+            app.toasts.last().unwrap().text,
+            "Cannot open https://example.org: no browser"
+        );
+        app.open_terminal(Path::new("/x/a"));
+        assert_eq!(
+            app.toasts.last().unwrap().text,
+            "Cannot open a terminal: no terminal"
+        );
+    }
+
+    #[test]
+    fn favorites_group_cards_and_the_active_one_hides_the_rest() {
+        let mut app = app_with(Arc::default(), None);
+        app.cards = ["/x/etl-load", "/x/etl-store", "/x/web"]
+            .into_iter()
+            .map(|p| Card::new(p.into()))
+            .collect();
+        let etl = vec![PathBuf::from("/x/etl-load"), PathBuf::from("/x/etl-store")];
+
+        // An unmarked card is the target alone; a marked one brings the marked.
+        assert_eq!(
+            app.menu_targets(Path::new("/x/web")),
+            vec![PathBuf::from("/x/web")]
+        );
+        app.marked.extend(etl.iter().cloned());
+        assert_eq!(
+            app.menu_targets(Path::new("/x/web")),
+            vec![PathBuf::from("/x/web")]
+        );
+        assert_eq!(app.menu_targets(Path::new("/x/etl-load")), etl);
+
+        app.new_favorite(etl.clone());
+        app.save_favorite();
+        assert!(app.favorite_dialog.is_some(), "no name: the dialog stays");
+        app.favorite_dialog.as_mut().unwrap().draft.name = "ETL".into();
+        app.save_favorite();
+        assert!(app.favorite_dialog.is_none());
+        assert_eq!(app.config.favorites[0].repos, etl);
+
+        app.new_favorite(vec![]);
+        app.favorite_dialog.as_mut().unwrap().draft.name = "Front".into();
+        app.save_favorite();
+        app.add_to_favorite(1, &[PathBuf::from("/x/web"), PathBuf::from("/x/etl-load")]);
+        app.add_to_favorite(9, &etl);
+
+        app.toggle_favorite(1);
+        let shown = |app: &App| -> Vec<PathBuf> {
+            app.shown_cards().iter().map(|c| c.path.clone()).collect()
+        };
+        assert_eq!(
+            shown(&app),
+            vec![PathBuf::from("/x/etl-load"), PathBuf::from("/x/web")]
+        );
+        // The hidden marked card is not run in; the text filter narrows further.
+        assert_eq!(app.marked_repos(), vec![PathBuf::from("/x/etl-load")]);
+        app.filter = "web".into();
+        assert_eq!(shown(&app), vec![PathBuf::from("/x/web")]);
+        app.filter.clear();
+        app.toggle_favorite(1);
+        assert_eq!(shown(&app).len(), 3);
+
+        app.edit_favorite(1);
+        app.edit_favorite(9);
+        let dialog = app.favorite_dialog.as_mut().unwrap();
+        assert_eq!(
+            (dialog.editing, dialog.draft.name.as_str()),
+            (Some(1), "Front")
+        );
+        dialog.draft.color = "pink".into();
+        app.save_favorite();
+        assert_eq!(app.config.favorites[1].color, "pink");
+        assert_eq!(
+            app.config.favorites[1].repos.len(),
+            2,
+            "the repositories stay"
+        );
+
+        app.remove_from_favorite(1, &[PathBuf::from("/x/web")]);
+        app.remove_from_favorite(9, &etl);
+        assert_eq!(
+            app.config.favorites[1].repos,
+            vec![PathBuf::from("/x/etl-load")]
+        );
+
+        // A card that leaves the board leaves its favorites.
+        app.remove(Path::new("/x/etl-load"));
+        assert_eq!(
+            app.config.favorites[0].repos,
+            vec![PathBuf::from("/x/etl-store")]
+        );
+        assert!(app.config.favorites[1].repos.is_empty());
+        app.marked = BTreeSet::from([PathBuf::from("/x/etl-store")]);
+        app.remove_marked();
+        assert!(app.config.favorites[0].repos.is_empty());
+
+        // Deleting keeps the active favorite the same one.
+        app.toggle_favorite(1);
+        app.delete_favorite(0);
+        app.delete_favorite(9);
+        assert_eq!(app.active_favorite, Some(0));
+        assert_eq!(app.config.favorites[0].name, "Front");
+        app.delete_favorite(0);
+        assert_eq!(app.active_favorite, None);
+        assert_eq!(shown(&app), vec![PathBuf::from("/x/web")]);
+    }
+
+    #[test]
+    fn kawaii_moves_cards_only_in_its_theme_and_only_with_focus() {
+        let mut app = app_with(Arc::default(), None);
+        let path = PathBuf::from("/x/a");
+        // Other themes: no clock, no motion, no swing on a mark.
+        assert!(!app.advance_kawaii(0.05, true));
+        app.toggle_mark(path.clone());
+        assert_eq!(app.card_offset(&path, 1), (0.0, 0.0));
+        assert_eq!(app.kawaii_clock, 0.0);
+        app.toggle_mark(path.clone());
+        assert!(app.marked.is_empty());
+
+        app.config.theme = Theme::Kawaii;
+        assert!(app.advance_kawaii(0.05, true));
+        app.toggle_mark(path.clone());
+        assert!(app.advance_kawaii(0.05, true));
+        let (swing, bob) = app.card_offset(&path, 1);
+        assert!(swing != 0.0 && bob != 0.0, "{swing} {bob}");
+        assert_eq!(
+            app.card_offset(Path::new("/x/b"), 1).0,
+            0.0,
+            "only the marked card swings"
+        );
+
+        // Without focus the clock stands still: the same picture every frame.
+        let frozen = (app.kawaii_clock, app.card_offset(&path, 1));
+        for _ in 0..5 {
+            assert!(!app.advance_kawaii(0.05, false));
+        }
+        assert_eq!((app.kawaii_clock, app.card_offset(&path, 1)), frozen);
+
+        // The swing ends; taking the mark off starts none.
+        for _ in 0..20 {
+            app.advance_kawaii(0.05, true);
+        }
+        assert_eq!(app.card_offset(&path, 1).0, 0.0);
+        app.toggle_mark(path.clone());
+        assert_eq!(app.card_offset(&path, 1).0, 0.0);
+    }
+
+    #[test]
+    fn a_change_on_a_card_wakes_the_kawaii_theme_without_focus() {
+        let mut app = app_with(Arc::default(), None);
+        app.config.theme = Theme::Kawaii;
+        app.cards = vec![Card::new("/x/a".into())];
+        let clean = snapshot(Counts::default(), Upstream::None, &["main"]);
+        let dirty = snapshot(
+            Counts {
+                modified: 1,
+                ..Counts::default()
+            },
+            Upstream::None,
+            &["main"],
+        );
+        let probed = |snap: &Snapshot| Event::Probed {
+            repo: "/x/a".into(),
+            result: Box::new(Ok(snap.clone())),
+        };
+        // The first probe and an unchanged one wake nothing.
+        app.handle_event(probed(&clean));
+        app.handle_event(probed(&clean));
+        assert!(!app.advance_kawaii(0.033, false));
+
+        // A change runs it for five seconds, then it stands still again.
+        app.handle_event(probed(&dirty));
+        let mut frames = 0;
+        while app.advance_kawaii(0.033, false) {
+            frames += 1;
+        }
+        assert!((150..=154).contains(&frames), "{frames}");
+        let clock = app.kawaii_clock;
+        assert!(clock > 4.9);
+        assert!(!app.advance_kawaii(0.033, false));
+        assert_eq!(app.kawaii_clock, clock);
+
+        // So does a fetch error that appears; one that goes away does not.
+        let fetched = |error: Option<&str>| Event::Fetched {
+            repo: "/x/a".into(),
+            error: error.map(|e| FetchError::from_message(e.into())),
+        };
+        app.handle_event(fetched(Some("auth failed")));
+        assert!(app.advance_kawaii(0.033, false));
+        // Focus uses the rest up: no burst left over when it is lost again.
+        assert!(app.advance_kawaii(0.033, true));
+        assert!(!app.advance_kawaii(0.033, false));
+        app.handle_event(fetched(Some("auth failed")));
+        app.handle_event(fetched(None));
+        assert!(!app.advance_kawaii(0.033, false));
+
+        // Other themes are not woken.
+        app.config.theme = Theme::Dark;
+        app.handle_event(probed(&clean));
+        assert!(!app.advance_kawaii(0.033, false));
+        app.config.theme = Theme::Kawaii;
+        assert!(!app.advance_kawaii(0.033, false));
     }
 
     #[test]
@@ -885,6 +1545,7 @@ pub(crate) mod tests {
             Some(paths.clone()),
             History::default(),
             Arc::new(FakeBackend::default()),
+            Arc::new(FakeDesktop::default()),
             Arc::new(|| {}),
         );
         app.config.concurrency = 9;

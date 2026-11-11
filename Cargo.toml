@@ -1,8 +1,10 @@
 [package]
 name = "multigit"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Desktop dashboard for many git repositories"
+license = "MIT"
+repository = "https://github.com/paxel/multigit"
 publish = false
 
 [dependencies]
@@ -18,7 +20,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 egui_kittest = "0.35"
+# The fonts egui draws with and a reader for them: a test looks up the
+# glyphs the app relies on.
+epaint_default_fonts = "0.35"
 tempfile = "3"
+ttf-parser = "0.25"
 
 # Production code may not unwrap, expect, panic or index; tests may
 # (clippy.toml). CI runs clippy with -D warnings, so these fail the build.

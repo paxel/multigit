@@ -272,3 +272,28 @@ fn render_channels_fills_version_and_checksums() {
     assert!(!render("9.9.9").status.success());
     assert!(!render("1.2.3/x").status.success());
 }
+
+/// The About page's licence list names only crates of the lock file: after a
+/// dependency update, `tool/licenses.sh` has to write it again.
+#[test]
+fn license_list_matches_the_lock_file() {
+    let lock = fs::read_to_string(root().join("Cargo.lock")).unwrap();
+    let mut locked = std::collections::HashSet::new();
+    let mut name = "";
+    for line in lock.lines() {
+        if let Some(n) = line.strip_prefix("name = ") {
+            name = n.trim_matches('"');
+        } else if let Some(v) = line.strip_prefix("version = ") {
+            locked.insert(format!("{name} {}", v.trim_matches('"')));
+        }
+    }
+    let list = fs::read_to_string(root().join("assets/licenses.txt")).unwrap();
+    let stale: Vec<&str> = list
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(krate, _)| krate)
+        .filter(|krate| !locked.contains(*krate))
+        .collect();
+    assert!(stale.is_empty(), "run tool/licenses.sh: {stale:?}");
+    assert!(list.lines().count() > 100);
+}

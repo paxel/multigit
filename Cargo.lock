@@ -1851,11 +1851,12 @@ dependencies = [
 
 [[package]]
 name = "multigit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui",
  "egui_kittest",
+ "epaint_default_fonts",
  "rfd",
  "serde",
  "shell-words",
@@ -1864,6 +1865,7 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "ttf-parser",
 ]
 
 [[package]]

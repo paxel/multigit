@@ -2,7 +2,7 @@
 
 use crate::domain::completion::RepoRefs;
 use crate::domain::output::ProcessOutput;
-use crate::domain::repo::{ProbeError, Snapshot};
+use crate::domain::repo::{Commit, DatedRef, DatedRefs, ProbeError, Snapshot, tags_on_commit_of};
 use crate::domain::status::{RepoState, parse_porcelain_v2};
 use crate::infrastructure::git::GitRunner;
 use std::path::{Path, PathBuf};
@@ -26,9 +26,62 @@ fn query(runner: &GitRunner, dir: &Path, args: &[&str]) -> Result<ProcessOutput,
     }
 }
 
+/// A snapshot with what the next probe needs to tell whether the slow parts
+/// are still right.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probed {
+    pub snapshot: Snapshot,
+    git_dir: PathBuf,
+    /// `branch.oid` of the status: the hash of HEAD.
+    head: String,
+}
+
+/// The hash of HEAD from the output of `status --porcelain=v2 --branch`.
+fn head_of(status_output: &str) -> String {
+    status_output
+        .lines()
+        .find_map(|l| l.strip_prefix("# branch.oid "))
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn status(
+    runner: &GitRunner,
+    dir: &Path,
+) -> Result<(crate::domain::status::Status, String), ProbeError> {
+    let out = query(runner, dir, &["status", "--porcelain=v2", "--branch"])?;
+    let status = parse_porcelain_v2(&out.stdout).map_err(|e| ProbeError::Git(e.to_string()))?;
+    Ok((status, head_of(&out.stdout)))
+}
+
 /// Status, in-progress operation and refs of the repository at `dir`.
-#[tracing::instrument(skip_all, fields(dir = %dir.display()))]
 pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
+    probe_full(runner, dir).map(|p| p.snapshot)
+}
+
+/// The cheap probe: one `git status`. While HEAD is where `previous` saw
+/// it, the branches, tags and commit line of `previous` are taken as they
+/// are. `None` when HEAD moved or the status failed: then only
+/// [`probe_full`] knows.
+pub fn probe_light(runner: &GitRunner, dir: &Path, previous: &Probed) -> Option<Probed> {
+    let (status, head) = status(runner, dir).ok()?;
+    if head != previous.head {
+        return None;
+    }
+    let mut snapshot = previous.snapshot.clone();
+    snapshot.refs.files = status.changed_paths.clone();
+    snapshot.status = status;
+    snapshot.state = repo_state(&previous.git_dir);
+    Some(Probed {
+        snapshot,
+        git_dir: previous.git_dir.clone(),
+        head,
+    })
+}
+
+/// The whole probe: six git processes.
+#[tracing::instrument(skip_all, fields(dir = %dir.display()))]
+pub fn probe_full(runner: &GitRunner, dir: &Path) -> Result<Probed, ProbeError> {
     if !dir.is_dir() {
         return Err(ProbeError::PathMissing);
     }
@@ -36,37 +89,61 @@ pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
         .map_err(|_| ProbeError::NotARepo)?;
     let git_dir = PathBuf::from(git_dir.stdout.trim());
 
-    let status_out = query(runner, dir, &["status", "--porcelain=v2", "--branch"])?;
-    let status =
-        parse_porcelain_v2(&status_out.stdout).map_err(|e| ProbeError::Git(e.to_string()))?;
+    let (status, head) = status(runner, dir)?;
 
     let refs_out = query(
         runner,
         dir,
         &[
             "for-each-ref",
-            "--format=%(refname)",
+            REF_FORMAT,
             "refs/heads",
             "refs/remotes",
             "refs/tags",
         ],
     )?;
     let remotes_out = query(runner, dir, &["remote"])?;
-    let mut refs = parse_refs(&refs_out.stdout);
+    let (mut refs, dated) = parse_refs(&refs_out.stdout);
     refs.remotes = remotes_out.stdout.lines().map(str::to_owned).collect();
     refs.files = status.changed_paths.clone();
 
-    // Fails without a reachable tag (and on an unborn branch): no tag, not an error.
-    let tag = query(runner, dir, &["describe", "--tags", "--abbrev=0"])
-        .ok()
-        .map(|out| out.stdout.trim().to_owned())
-        .filter(|t| !t.is_empty());
+    // Fails without a reachable tag (and on an unborn branch): no tag, not an
+    // error. Not asked at all in a repository without tags, where describe
+    // would walk the whole history on every refresh.
+    let nearest = if refs.tags.is_empty() {
+        None
+    } else {
+        query(runner, dir, &["describe", "--tags", "--abbrev=0"])
+            .ok()
+            .map(|out| out.stdout.trim().to_owned())
+            .filter(|t| !t.is_empty())
+    };
+    let tags = nearest.map_or_else(Vec::new, |tag| tags_on_commit_of(&tag, &dated.tags));
 
-    Ok(Snapshot {
+    // Fails before the first commit. Without the option, a repository with
+    // `log.showSignature` would make this run its `gpg.program`.
+    let log = [
+        "log",
+        "-1",
+        "--no-show-signature",
+        "--format=%H%x09%h%x09%s",
+    ];
+    let commit = query(runner, dir, &log)
+        .ok()
+        .and_then(|out| Commit::parse(&out.stdout));
+
+    let snapshot = Snapshot {
         status,
         state: repo_state(&git_dir),
         refs,
-        tag,
+        dated,
+        tags,
+        commit,
+    };
+    Ok(Probed {
+        snapshot,
+        git_dir,
+        head,
     })
 }
 
@@ -81,21 +158,42 @@ fn repo_state(git_dir: &Path) -> RepoState {
     }
 }
 
-/// Sort full ref names into branches, remote branches and tags.
-pub fn parse_refs(output: &str) -> RepoRefs {
+/// One line per ref, tab separated: full name, object, the commit an
+/// annotated tag points at (empty otherwise), and the date the ref's object
+/// was made (the tag's own date, or the commit's).
+const REF_FORMAT: &str =
+    "--format=%(refname)%09%(objectname)%09%(*objectname)%09%(creatordate:unix)";
+
+/// Sort the lines of [`REF_FORMAT`] into branches, remote branches and tags:
+/// their names for completion, and with commit and date for the card.
+pub fn parse_refs(output: &str) -> (RepoRefs, DatedRefs) {
     let mut refs = RepoRefs::default();
+    let mut dated = DatedRefs::default();
     for line in output.lines() {
-        if let Some(b) = line.strip_prefix("refs/heads/") {
+        let mut fields = line.split('\t');
+        let full_name = fields.next().unwrap_or_default();
+        let object = fields.next().unwrap_or_default();
+        let peeled = fields.next().unwrap_or_default();
+        let date = fields.next().and_then(|d| d.parse().ok()).unwrap_or(0);
+        let entry = |name: &str| DatedRef {
+            name: name.to_owned(),
+            commit: if peeled.is_empty() { object } else { peeled }.to_owned(),
+            date,
+        };
+        if let Some(b) = full_name.strip_prefix("refs/heads/") {
             refs.branches.push(b.to_owned());
-        } else if let Some(r) = line.strip_prefix("refs/remotes/") {
+            dated.branches.push(entry(b));
+        } else if let Some(r) = full_name.strip_prefix("refs/remotes/") {
             if !r.ends_with("/HEAD") {
                 refs.remote_branches.push(r.to_owned());
+                dated.remote_branches.push(entry(r));
             }
-        } else if let Some(t) = line.strip_prefix("refs/tags/") {
+        } else if let Some(t) = full_name.strip_prefix("refs/tags/") {
             refs.tags.push(t.to_owned());
+            dated.tags.push(entry(t));
         }
     }
-    refs
+    (refs, dated)
 }
 
 #[cfg(test)]
@@ -125,7 +223,8 @@ mod tests {
         assert_eq!(snap.status.counts.untracked, 1);
         assert_eq!(snap.refs.files, vec!["new.txt".to_owned()]);
         assert_eq!(snap.state, RepoState::Normal);
-        assert_eq!(snap.tag, None);
+        assert!(snap.tags.is_empty());
+        assert_eq!(snap.commit, None);
     }
 
     #[test]
@@ -133,31 +232,114 @@ mod tests {
         let repo = TestRepo::new();
         let runner = isolated_runner();
         repo.commit("a.txt", "1");
-        assert_eq!(probe(&runner, repo.path()).unwrap().tag, None);
+        let snap = probe(&runner, repo.path()).unwrap();
+        assert!(snap.tags.is_empty());
+        let commit = snap.commit.unwrap();
+        assert_eq!(commit.hash, repo.git(&["rev-parse", "HEAD"]).trim());
+        assert!(commit.hash.starts_with(&commit.short) && commit.short.len() >= 7);
+        assert_eq!(
+            commit.subject,
+            repo.git(&["log", "-1", "--format=%s"]).trim()
+        );
 
         // Lightweight tags count; commits after the tag still show it.
         repo.git(&["tag", "v1"]);
         repo.commit("a.txt", "2");
-        assert_eq!(
-            probe(&runner, repo.path()).unwrap().tag.as_deref(),
-            Some("v1")
-        );
+        assert_eq!(probe(&runner, repo.path()).unwrap().tags, ["v1"]);
 
         // A tag on another branch is not reachable from HEAD.
         repo.git(&["switch", "-q", "-c", "side"]);
         repo.commit("b.txt", "s");
         repo.git(&["tag", "side-tag"]);
         repo.git(&["switch", "-q", "main"]);
-        assert_eq!(
-            probe(&runner, repo.path()).unwrap().tag.as_deref(),
-            Some("v1")
-        );
+        assert_eq!(probe(&runner, repo.path()).unwrap().tags, ["v1"]);
 
+        // Every tag of that commit shows, annotated or not, highest version
+        // first; the tag of the older commit does not.
         repo.git(&["tag", "-a", "v2", "-m", "release"]);
+        repo.git(&["tag", "latest"]);
+        repo.git(&["tag", "-a", "v10", "-m", "release"]);
         assert_eq!(
-            probe(&runner, repo.path()).unwrap().tag.as_deref(),
-            Some("v2")
+            probe(&runner, repo.path()).unwrap().tags,
+            ["v10", "v2", "latest"]
         );
+    }
+
+    /// A signed commit and `log.showSignature` make `git log` run the
+    /// repository's `gpg.program`; the probe must not.
+    #[cfg(unix)]
+    #[test]
+    fn probe_does_not_run_the_repository_gpg_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = TestRepo::new();
+        repo.commit("a.txt", "a");
+        // The same commit with a signature header, as HEAD.
+        let plain = repo.git(&["cat-file", "commit", "HEAD"]);
+        let (headers, message) = plain.split_once("\n\n").unwrap();
+        let signed = format!(
+            "{headers}\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n abcd\n -----END PGP SIGNATURE-----\n\n{message}"
+        );
+        let file = repo.path().join(".git/signed-commit");
+        std::fs::write(&file, signed).unwrap();
+        let hash = repo.git(&["hash-object", "-t", "commit", "-w", &file.to_string_lossy()]);
+        repo.git(&["update-ref", "refs/heads/main", hash.trim()]);
+
+        let marker = repo.path().join(".git/gpg-ran");
+        let script = repo.path().join(".git/gpg.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\n: > '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        repo.git(&["config", "gpg.program", &script.to_string_lossy()]);
+        repo.git(&["config", "log.showSignature", "true"]);
+        let runner = isolated_runner();
+
+        // A plain `git log` as a user command runs it: the setting is live.
+        runner.run(repo.path(), &["log", "-1"]).unwrap();
+        assert!(
+            marker.exists(),
+            "gpg.program did not run for a user command"
+        );
+        std::fs::remove_file(&marker).unwrap();
+
+        let snap = probe(&runner, repo.path()).unwrap();
+        assert!(
+            !marker.exists(),
+            "the probe ran the repository's gpg.program"
+        );
+        assert_eq!(snap.commit.unwrap().hash, hash.trim());
+    }
+
+    #[test]
+    fn light_probe_reads_the_status_and_keeps_the_rest_while_head_stays() {
+        let repo = TestRepo::new();
+        let runner = isolated_runner();
+        repo.commit("a.txt", "1");
+        repo.git(&["tag", "v1"]);
+        let full = probe_full(&runner, repo.path()).unwrap();
+        assert_eq!(head_of("# branch.oid abc\n# branch.head main\n"), "abc");
+        assert_eq!(head_of("1 .M N... a.txt\n"), "");
+
+        // A changed file shows; refs made meanwhile do not, by design.
+        repo.write("a.txt", "2");
+        repo.git(&["tag", "v2"]);
+        std::fs::write(repo.path().join(".git/MERGE_HEAD"), "x").unwrap();
+        let light = probe_light(&runner, repo.path(), &full).unwrap();
+        assert_eq!(light.snapshot.status.counts.modified, 1);
+        assert_eq!(light.snapshot.refs.files, vec!["a.txt".to_owned()]);
+        assert_eq!(light.snapshot.state, RepoState::Merging);
+        assert_eq!(light.snapshot.tags, ["v1"]);
+        assert_eq!(light.snapshot.commit, full.snapshot.commit);
+        std::fs::remove_file(repo.path().join(".git/MERGE_HEAD")).unwrap();
+
+        // HEAD moved: the light probe gives up.
+        repo.git(&["commit", "-q", "-am", "two"]);
+        assert_eq!(probe_light(&runner, repo.path(), &light), None);
+        // The repository is gone: it gives up as well.
+        std::fs::remove_dir_all(repo.path().join(".git")).unwrap();
+        assert_eq!(probe_light(&runner, repo.path(), &light), None);
     }
 
     #[test]
@@ -213,11 +395,21 @@ mod tests {
 
     #[test]
     fn parse_refs_skips_remote_head() {
-        let refs = parse_refs(
-            "refs/heads/main\nrefs/remotes/origin/HEAD\nrefs/remotes/origin/main\nrefs/tags/v1\n",
+        let (refs, dated) = parse_refs(
+            "refs/heads/main\taaa\t\t100\nrefs/remotes/origin/HEAD\taaa\t\t100\n\
+             refs/remotes/origin/main\taaa\t\t100\nrefs/tags/v1\tttt\tbbb\t200\nrefs/tags/light\tbbb\t\t150\n",
         );
         assert_eq!(refs.branches, vec!["main"]);
         assert_eq!(refs.remote_branches, vec!["origin/main"]);
-        assert_eq!(refs.tags, vec!["v1"]);
+        assert_eq!(refs.tags, vec!["v1", "light"]);
+        assert_eq!(dated.branches[0].commit, "aaa");
+        assert_eq!(dated.remote_branches[0].date, 100);
+        // An annotated tag carries the commit it points at and its own date.
+        let tags: Vec<_> = dated
+            .tags
+            .iter()
+            .map(|t| (t.name.as_str(), t.commit.as_str(), t.date))
+            .collect();
+        assert_eq!(tags, [("v1", "bbb", 200), ("light", "bbb", 150)]);
     }
 }

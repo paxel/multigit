@@ -1,5 +1,6 @@
 //! User configuration stored in `~/.config/multigit/config.toml`.
 
+use crate::domain::favorites::Favorite;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -43,6 +44,34 @@ pub fn button_presets() -> Vec<ButtonDef> {
     presets
 }
 
+/// The look of the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Light or dark, as the system says.
+    #[default]
+    System,
+    Light,
+    Dark,
+    /// Round, pastel and animated.
+    Kawaii,
+}
+
+impl Theme {
+    /// Every theme, in the order Settings offers them.
+    pub const ALL: [Self; 4] = [Self::System, Self::Light, Self::Dark, Self::Kawaii];
+
+    /// As Settings names it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "System",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+            Self::Kawaii => "Kawaii",
+        }
+    }
+}
+
 fn default_fetch_interval() -> u64 {
     60
 }
@@ -72,9 +101,18 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub auto_insert_single_match: bool,
     #[serde(default)]
+    pub theme: Theme,
+    /// Command that opens a terminal in a repository; `{dir}` stands for the
+    /// folder. Empty: the app finds a terminal.
+    #[serde(default)]
+    pub terminal: String,
+    #[serde(default)]
     pub repos: Vec<PathBuf>,
     #[serde(default = "default_buttons")]
     pub buttons: Vec<ButtonDef>,
+    /// In the order they were made, which is the order of their buttons.
+    #[serde(default)]
+    pub favorites: Vec<Favorite>,
 }
 
 impl Default for Config {
@@ -84,8 +122,11 @@ impl Default for Config {
             concurrency: default_concurrency(),
             scan_depth: default_scan_depth(),
             auto_insert_single_match: true,
+            theme: Theme::default(),
+            terminal: String::new(),
             repos: Vec::new(),
             buttons: default_buttons(),
+            favorites: Vec::new(),
         }
     }
 }
@@ -117,6 +158,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn favorites_survive_the_config_file() {
+        let mut config = Config::default();
+        config.favorites.push(Favorite {
+            name: "ETL".into(),
+            color: "teal".into(),
+            emoji: Some("\u{1f680}".into()),
+            repos: vec!["/x/etl-load".into()],
+        });
+        config.favorites.push(Favorite {
+            name: "empty".into(),
+            color: "red".into(),
+            emoji: None,
+            repos: vec![],
+        });
+        let text = config.to_toml().unwrap();
+        assert!(text.contains("[[favorites]]"), "{text}");
+        assert_eq!(Config::from_toml(&text).unwrap(), config);
+        // Written by hand with the least there is.
+        let by_hand = Config::from_toml("[[favorites]]\nname = \"a\"\ncolor = \"blue\"").unwrap();
+        assert_eq!(by_hand.favorites[0].repos, Vec::<PathBuf>::new());
+        assert_eq!(by_hand.favorites[0].emoji, None);
+    }
+
+    #[test]
+    fn theme_is_stored_as_a_lowercase_word() {
+        let mut config = Config::from_toml("theme = \"dark\"").unwrap();
+        assert_eq!(config.theme, Theme::Dark);
+        config.theme = Theme::Light;
+        let text = config.to_toml().unwrap();
+        assert!(text.contains("theme = \"light\""), "{text}");
+        assert_eq!(Config::from_toml(&text).unwrap(), config);
+        assert!(Config::from_toml("theme = \"pink\"").is_err());
+        assert_eq!(
+            Theme::ALL.map(Theme::label),
+            ["System", "Light", "Dark", "Kawaii"]
+        );
+        assert_eq!(
+            Config::from_toml("theme = \"kawaii\"").unwrap().theme,
+            Theme::Kawaii
+        );
+    }
+
+    #[test]
     fn empty_file_gives_defaults() {
         let config = Config::from_toml("").unwrap();
         assert_eq!(config, Config::default());
@@ -124,6 +208,8 @@ mod tests {
         assert_eq!(config.concurrency, 4);
         assert_eq!(config.scan_depth, 2);
         assert!(config.auto_insert_single_match);
+        assert_eq!(config.theme, Theme::System);
+        assert_eq!(config.terminal, "");
         assert_eq!(
             config
                 .buttons

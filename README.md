@@ -23,24 +23,59 @@ git in one or many repositories at once.
 
 Each card shows:
 
-- the folder name (with the shortest distinguishing parent path when two
-  repositories share a name; the full path is in the tooltip)
+- the folder name, and under it the folders above it (as many as fit; the
+  full path is in the tooltip)
 - the branch, or `detached @ <sha>`
 - the nearest tag reachable from the checked-out commit (lightweight tags
-  included), or `no tag`
+  included) and every other tag on the same commit, highest version first,
+  or `no tag`
+- the checked-out commit: short hash and subject
 - the working tree: `clean`, or `+staged ~modified ?untracked !conflicts`
 - `rebasing` or `merging` while one is in progress
 - unpushed and unpulled commits, `no upstream`, or `upstream gone`
-- the result of the last command run on it, and a failed background fetch
-  (`fetch: auth failed`, for example)
+- the result of the last command run on it
+- a failed background fetch as one red line (`Error: auth failed`, for
+  example); a click on it copies everything git printed and takes the line
+  off the card until a fetch fails again
 
-Cards are sorted by folder name. The status of every card refreshes every
+Cards are sorted by folder name. The **Sort** button in the toolbar switches
+to the next sort key with every click: name, path, branch, tag, dirty first,
+behind first. Cards without a branch or tag come last, equal cards are in name
+order, and a card moves as soon as its status changes. The status of every card refreshes every
 10 seconds; a background `git fetch --all --prune` runs every minute so the
 unpulled count stays current. A repository with a running command is skipped by
 both until the command is done, and is refreshed right after it.
 
+The filter field at the right end of the toolbar shows only the cards whose
+folder name contains the typed text (case ignored), and how many those are. A
+hidden card keeps its mark, but nothing touches it: commands, the toolbar's
+mark buttons and **Remove marked** act on the shown cards only.
+
+A refresh of a repository whose checked-out commit did not move is one
+`git status`. Branches, tags and the commit line are read again after a fetch,
+after a command in that repository, when the commit moved, and at least once a
+minute; so a branch or tag made in a terminal can take up to a minute to show.
+
 A card whose folder is gone or is no longer a repository stays on the board,
 greyed out, and comes back by itself when the folder returns.
+
+## Favorites
+
+A favorite is a named group of repositories with a color and, if you like, an
+emoji. A repository can be in several.
+
+- A right click on a card adds it to a favorite, takes it out of one, or makes
+  a **New favorite** with it. On a marked card the menu is about all marked
+  cards: filter by `etl`, mark all, right click, add to a favorite.
+- Every favorite has a button in a second toolbar line (there is no such line
+  without favorites). A click shows only that favorite's cards, a second click
+  all again. One favorite is active at a time, together with the filter field;
+  hidden cards are skipped as with the filter.
+- A right click on a favorite's button edits its name, color and emoji, adds
+  or removes the marked cards, or deletes it. Deleting a favorite leaves its
+  repositories on the board.
+- A card shows a stripe in the color of each of its favorites at its left
+  edge, and their emojis in front of its name.
 
 ## Adding and removing repositories
 
@@ -53,13 +88,32 @@ greyed out, and comes back by itself when the folder returns.
 
 ## Running git
 
+- **Terminal**: the `>_` button in a card's top row opens a terminal window
+  with a shell in that repository. Without a terminal command in Settings,
+  multigit takes `$TERMINAL`, then `xdg-terminal-exec`, then the first of
+  konsole, gnome-terminal, xfce4-terminal, kitty, alacritty, foot, wezterm and
+  xterm that is installed; on macOS it opens Terminal.app. In a terminal
+  command of your own, `{dir}` stands for the repository's folder.
+- **Switching branches**: a right click on a card's branch name (or the sha of
+  a detached HEAD) opens a menu for that one repository. **Switch to** lists
+  its local branches and then the remote branches that have no local branch
+  yet, each newest first, with a filter field; a remote branch gets its local
+  tracking branch. **Create new branch** makes a branch from the checked-out
+  commit and switches to it. Both run `git switch`, so git decides what
+  happens to uncommitted changes, and the result is in the output panel.
+- **Switching to a tag**: a right click on a card's tag line (also on
+  `no tag`) lists all tags of that repository, the one made last first, with
+  a filter field. A click checks the tag out with `git switch --detach`.
 - **Card buttons** run in that one repository. The defaults are
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
-- **Marking**: a click on a card's empty space marks it, a second click
-  unmarks it; marked cards get a coloured border. A click on any text of a
-  card copies that text to the clipboard instead. The toolbar marks all, none, dirty (changes or an operation in
-  progress) or behind (unpulled commits). The toolbar repeats the card buttons
+- **Marking**: a click on a card marks it, a second click unmarks it; marked
+  cards get a coloured border. The toolbar marks all, none, dirty (changes or
+  an operation in progress) or behind (unpulled commits). The toolbar repeats the card buttons
   for all marked repositories.
+- **Copying**: a click on a card's folder name, branch name (or the sha of a
+  detached HEAD) or tag copies it to the clipboard instead of marking the
+  card; a click on the path line copies the repository's full path, and a
+  click on the commit line the full commit hash.
 - **Command line** at the bottom: type git arguments after the fixed `git`
   label (typing `git` first anyway is fine; it is ignored); Enter runs them in
   all marked repositories. It is disabled while nothing is marked.
@@ -76,7 +130,14 @@ Commands run in parallel, four at a time by default. Destructive commands
 more than one repository.
 
 The output panel above the command line keeps the last 50 commands, one
-collapsible section per repository with its exit code.
+collapsible section per repository with its exit code. **Open in editor**, on
+a command or on one repository's section, writes that output to a text file
+and opens it with the system's default program for text files (`xdg-open` on
+Linux, `open` on macOS); the files are in the temp folder and are removed when
+multigit exits. Drag its upper edge to
+make it bigger. The **Output** button left of the command line hides the panel
+completely and brings it back; while it is hidden, a mark on the button tells
+about the last command: running, then green or red by its result.
 
 ### Command line keys
 
@@ -104,15 +165,52 @@ ssh-agent or a credential helper), no pager, and no editor. A command that
 needs an editor, such as `commit` without `-m` or `rebase -i`, fails with a
 message saying so.
 
+### Add only folders you trust
+
+multigit runs git in every repository on the board by itself: a status query
+every 10 seconds and a fetch every minute. A repository's own `.git/config` and
+`.git/hooks` can name programs that git runs. A cloned repository does not
+bring those along, but a folder that arrives with its `.git` directory does (an
+unpacked archive, a USB stick, a shared folder), and **+** on a folder such as
+`~/Downloads` adds every repository below it.
+
+For what it runs by itself, multigit switches off `core.fsmonitor`, hooks,
+`ext::` remotes, the signature check of `log.showSignature` (it runs
+`gpg.program`), and `remote.<name>.uploadpack` for remotes that are not
+reached over SSH (over SSH it names a program on the server). Other settings
+that make git run a program stay in effect, because switching them off breaks
+legitimate setups such as git-lfs or a key per repository. Among them:
+
+- clean filters (`filter.<driver>.clean`), which can run during the status query
+- `core.sshCommand`, `credential.helper`, `core.gitProxy` and
+  `core.alternateRefsCommand`, which can run during the fetch
+
+So the board is no sandbox: add only folders whose origin you know.
+
+Buttons and the command line run git as you would in a terminal, hooks and all.
+
 ## Settings and files
 
 **Settings** in the toolbar changes the fetch interval, the number of parallel
-git processes, the folder scan depth, Tab's single-match behaviour, and the card
-buttons (add, remove, reorder, or pick a preset).
+git processes, the folder scan depth, the terminal command, the theme (System,
+Light, Dark or Kawaii), Tab's
+single-match behaviour, and the card buttons (add, remove, reorder, or pick a
+preset).
+
+The **Kawaii** theme is round and pastel, in the Fredoka font, with a rainbow
+drifting behind the cards, hearts and stars floating up, cards that bob, grow
+under the pointer and swing when marked, and a burst of stars on a copy. It
+moves while the window has focus. Without focus the picture stands still and
+the app draws no more often than in the other themes, except for five seconds
+after something changed on a card.
+
+**About multigit** in the Settings window shows the version and opens the
+source code, the issue tracker, a mail to the developer, the donation page and
+the list of the crates in multigit with their licences.
 
 | File                                                           | Content                                           |
 |----------------------------------------------------------------|---------------------------------------------------|
-| `~/.config/multigit/config.toml`                               | Repositories, buttons, settings; editable by hand |
+| `~/.config/multigit/config.toml`                               | Repositories, favorites, buttons, settings        |
 | `~/.local/state/multigit/history`                              | Command line history, last 500 entries            |
 | `~/.local/share/applications/io.github.paxel.multigit.desktop` | Menu entry, written on every start (Linux only)   |
 | `~/.local/share/icons/hicolor/256x256/apps/multigit.png`       | Icon (Linux only)                                 |
@@ -169,7 +267,7 @@ To build the bundle yourself:
 
 ```sh
 cargo build --release
-packaging/macos/bundle.sh target/release/multigit 0.1.0 .
+packaging/macos/bundle.sh target/release/multigit 0.2.0 .
 ```
 
 ### From source
@@ -189,7 +287,11 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 tool/coverage.sh    # needs cargo-llvm-cov; COVERAGE_JOBS=1 for a small machine
+tool/licenses.sh    # after a change of Cargo.lock: the About page's licence list
 ```
+
+The Kawaii theme's font, Fredoka, is in `assets/fonts` under the SIL Open
+Font License (`assets/fonts/Fredoka-OFL.txt`).
 
 Clippy denies `unsafe`, and `unwrap`, `expect`, `panic` and indexing outside
 tests (`Cargo.toml`, `clippy.toml`).

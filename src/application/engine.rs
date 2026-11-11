@@ -11,7 +11,7 @@
 use crate::application::semaphore::Semaphore;
 use crate::domain::command::Job;
 use crate::domain::output::{ProcessOutput, SectionState};
-use crate::domain::repo::{ProbeError, Snapshot, summarize_fetch_error};
+use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -20,13 +20,19 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread;
 
-/// Arguments of the automatic background fetch.
+/// What the automatic background fetch does, as git arguments.
 pub const FETCH_ARGS: &[&str] = &["fetch", "--all", "--prune"];
 
 /// The git operations the engine needs (port; implemented over the system git).
 pub trait Backend: Send + Sync + 'static {
-    fn probe(&self, dir: &Path) -> Result<Snapshot, ProbeError>;
+    /// The state of the repository for its card. `fresh` says its branches
+    /// or tags may have changed (a fetch or a command just ran), so nothing
+    /// remembered from an earlier probe may be used.
+    fn probe(&self, dir: &Path, fresh: bool) -> Result<Snapshot, ProbeError>;
     fn run(&self, dir: &Path, args: &[String]) -> io::Result<ProcessOutput>;
+    /// The automatic background fetch ([`FETCH_ARGS`]). Nobody started it, so
+    /// it must not run programs the repository's own config names.
+    fn fetch(&self, dir: &Path) -> io::Result<ProcessOutput>;
     /// A `!` line through the user's shell, in `dir`.
     fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput>;
     /// All subcommand names (incl. aliases) and the names of builtins.
@@ -40,12 +46,13 @@ pub trait Backend: Send + Sync + 'static {
 pub enum Event {
     Probed {
         repo: PathBuf,
-        result: Result<Snapshot, ProbeError>,
+        /// Boxed: a snapshot is far bigger than the other events.
+        result: Box<Result<Snapshot, ProbeError>>,
     },
-    /// A background fetch finished; `error` is the card text on failure.
+    /// A background fetch finished; `error` is set when it failed.
     Fetched {
         repo: PathBuf,
-        error: Option<String>,
+        error: Option<FetchError>,
     },
     Section {
         run: u64,
@@ -175,21 +182,20 @@ impl Engine {
                     .flatten();
                 if guard.is_some() {
                     if fetch {
-                        let args: Vec<String> = FETCH_ARGS.iter().map(|s| s.to_string()).collect();
-                        let error = match shared.backend.run(&repo, &args) {
+                        let error = match shared.backend.fetch(&repo) {
                             Ok(out) if out.success() => None,
-                            Ok(out) => Some(summarize_fetch_error(&out.stderr)),
-                            Err(e) => Some(e.to_string()),
+                            Ok(out) => Some(FetchError::from_output(&out.stdout, &out.stderr)),
+                            Err(e) => Some(FetchError::from_message(e.to_string())),
                         };
                         shared.send(Event::Fetched {
                             repo: repo.clone(),
                             error,
                         });
                     }
-                    let result = shared.backend.probe(&repo);
+                    let result = shared.backend.probe(&repo, fetch);
                     shared.send(Event::Probed {
                         repo: repo.clone(),
-                        result,
+                        result: Box::new(result),
                     });
                 }
             }
@@ -228,10 +234,10 @@ impl Engine {
                     repo: repo.clone(),
                     state,
                 });
-                let result = shared.backend.probe(&repo);
+                let result = shared.backend.probe(&repo, true);
                 shared.send(Event::Probed {
                     repo: repo.clone(),
-                    result,
+                    result: Box::new(result),
                 });
             }
             slot.pending_commands.fetch_sub(1, Ordering::SeqCst);
@@ -261,8 +267,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::completion::RepoRefs;
-    use crate::domain::status::{Counts, Head, RepoState, Status, Upstream};
+    use crate::domain::status::{Counts, Head, Status, Upstream};
     use std::sync::Condvar;
     use std::time::Duration;
 
@@ -270,6 +275,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         calls: Mutex<Vec<String>>,
+        /// The `fresh` flag of every probe.
+        fresh: Mutex<Vec<bool>>,
         gate: Mutex<bool>,
         cv: Condvar,
         fail_fetch: bool,
@@ -286,21 +293,17 @@ mod tests {
     }
 
     fn snapshot() -> Snapshot {
-        Snapshot {
-            status: Status {
-                head: Head::Branch("main".into()),
-                upstream: Upstream::None,
-                counts: Counts::default(),
-                changed_paths: vec![],
-            },
-            state: RepoState::Normal,
-            refs: RepoRefs::default(),
-            tag: None,
-        }
+        Snapshot::of(Status {
+            head: Head::Branch("main".into()),
+            upstream: Upstream::None,
+            counts: Counts::default(),
+            changed_paths: vec![],
+        })
     }
 
     impl Backend for Fake {
-        fn probe(&self, dir: &Path) -> Result<Snapshot, ProbeError> {
+        fn probe(&self, dir: &Path, fresh: bool) -> Result<Snapshot, ProbeError> {
+            self.fresh.lock().unwrap().push(fresh);
             self.calls
                 .lock()
                 .unwrap()
@@ -326,6 +329,10 @@ mod tests {
                     String::new()
                 },
             })
+        }
+        fn fetch(&self, dir: &Path) -> io::Result<ProcessOutput> {
+            let args: Vec<String> = FETCH_ARGS.iter().map(|s| s.to_string()).collect();
+            self.run(dir, &args)
         }
         fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput> {
             self.calls
@@ -363,7 +370,7 @@ mod tests {
             recv(&rx),
             Event::Probed {
                 repo: "/r".into(),
-                result: Ok(snapshot())
+                result: Box::new(Ok(snapshot()))
             }
         );
     }
@@ -471,6 +478,25 @@ mod tests {
     }
 
     #[test]
+    fn only_a_plain_poll_may_build_on_an_earlier_probe() {
+        let fake = Arc::new(Fake::default());
+        fake.open();
+        let (mut engine, rx) = engine(fake.clone());
+        let probed = |rx: &Receiver<Event>| loop {
+            if matches!(recv(rx), Event::Probed { .. }) {
+                break;
+            }
+        };
+        engine.poll(Path::new("/r"));
+        probed(&rx);
+        engine.fetch(Path::new("/r"));
+        probed(&rx);
+        engine.run_command(1, Path::new("/r"), Job::Git(vec!["push".into()]));
+        probed(&rx);
+        assert_eq!(fake.fresh.lock().unwrap().clone(), [false, true, true]);
+    }
+
+    #[test]
     fn failed_fetch_reports_auth() {
         let fake = Arc::new(Fake {
             fail_fetch: true,
@@ -483,7 +509,10 @@ mod tests {
             recv(&rx),
             Event::Fetched {
                 repo: "/r".into(),
-                error: Some("auth failed".into())
+                error: Some(FetchError {
+                    summary: "auth failed".into(),
+                    output: "ok\nPermission denied (publickey).".into(),
+                })
             }
         );
     }

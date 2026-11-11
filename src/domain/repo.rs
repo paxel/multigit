@@ -23,6 +23,31 @@ pub struct DatedRefs {
     pub tags: Vec<DatedRef>,
 }
 
+/// The checked-out commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit {
+    /// Full hash.
+    pub hash: String,
+    /// The hash as git abbreviates it.
+    pub short: String,
+    /// First line of the message.
+    pub subject: String,
+}
+
+impl Commit {
+    /// From a line of `git log --format=%H%x09%h%x09%s`.
+    pub fn parse(line: &str) -> Option<Self> {
+        let mut fields = line.trim_end_matches(['\n', '\r']).splitn(3, '\t');
+        let hash = fields.next().filter(|h| !h.is_empty())?;
+        let short = fields.next()?;
+        Some(Self {
+            hash: hash.to_owned(),
+            short: short.to_owned(),
+            subject: fields.next().unwrap_or_default().to_owned(),
+        })
+    }
+}
+
 /// Result of one successful status probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
@@ -34,6 +59,8 @@ pub struct Snapshot {
     /// every other tag on the same commit, highest version first; empty
     /// without a reachable tag.
     pub tags: Vec<String>,
+    /// `None` before the first commit.
+    pub commit: Option<Commit>,
 }
 
 impl Snapshot {
@@ -46,6 +73,7 @@ impl Snapshot {
             refs: RepoRefs::default(),
             dated: DatedRefs::default(),
             tags: Vec::new(),
+            commit: None,
         }
     }
 }
@@ -182,6 +210,17 @@ mod tests {
             commit: commit.into(),
             date: 0,
         }
+    }
+
+    #[test]
+    fn commit_line_is_hash_short_hash_and_subject() {
+        let commit = Commit::parse("0123456789abcdef\t0123456\tFix a\tb: c\n").unwrap();
+        assert_eq!(commit.hash, "0123456789abcdef");
+        assert_eq!(commit.short, "0123456");
+        assert_eq!(commit.subject, "Fix a\tb: c");
+        assert_eq!(Commit::parse("abc\tab\t").unwrap().subject, "");
+        assert_eq!(Commit::parse(""), None);
+        assert_eq!(Commit::parse("abc"), None);
     }
 
     #[test]

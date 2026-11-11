@@ -2,7 +2,7 @@
 
 use crate::domain::completion::RepoRefs;
 use crate::domain::output::ProcessOutput;
-use crate::domain::repo::{DatedRef, DatedRefs, ProbeError, Snapshot, tags_on_commit_of};
+use crate::domain::repo::{Commit, DatedRef, DatedRefs, ProbeError, Snapshot, tags_on_commit_of};
 use crate::domain::status::{RepoState, parse_porcelain_v2};
 use crate::infrastructure::git::GitRunner;
 use std::path::{Path, PathBuf};
@@ -69,12 +69,18 @@ pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
     };
     let tags = nearest.map_or_else(Vec::new, |tag| tags_on_commit_of(&tag, &dated.tags));
 
+    // Fails before the first commit.
+    let commit = query(runner, dir, &["log", "-1", "--format=%H%x09%h%x09%s"])
+        .ok()
+        .and_then(|out| Commit::parse(&out.stdout));
+
     Ok(Snapshot {
         status,
         state: repo_state(&git_dir),
         refs,
         dated,
         tags,
+        commit,
     })
 }
 
@@ -155,6 +161,7 @@ mod tests {
         assert_eq!(snap.refs.files, vec!["new.txt".to_owned()]);
         assert_eq!(snap.state, RepoState::Normal);
         assert!(snap.tags.is_empty());
+        assert_eq!(snap.commit, None);
     }
 
     #[test]
@@ -162,7 +169,15 @@ mod tests {
         let repo = TestRepo::new();
         let runner = isolated_runner();
         repo.commit("a.txt", "1");
-        assert!(probe(&runner, repo.path()).unwrap().tags.is_empty());
+        let snap = probe(&runner, repo.path()).unwrap();
+        assert!(snap.tags.is_empty());
+        let commit = snap.commit.unwrap();
+        assert_eq!(commit.hash, repo.git(&["rev-parse", "HEAD"]).trim());
+        assert!(commit.hash.starts_with(&commit.short) && commit.short.len() >= 7);
+        assert_eq!(
+            commit.subject,
+            repo.git(&["log", "-1", "--format=%s"]).trim()
+        );
 
         // Lightweight tags count; commits after the tag still show it.
         repo.git(&["tag", "v1"]);

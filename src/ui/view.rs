@@ -666,6 +666,14 @@ fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
         }
     });
     ui.horizontal(|ui| tag_line(ui, &snap.tags, actions));
+    if let Some(commit) = &snap.commit {
+        ui.horizontal(|ui| {
+            ui.label(weak("commit"));
+            let text = format!("{} {}", commit.short, commit.subject);
+            ui.add(egui::Label::new(text).truncate())
+                .on_hover_text(&commit.subject);
+        });
+    }
     let c = snap.status.counts;
     ui.horizontal(|ui| {
         ui.label(weak("status"));

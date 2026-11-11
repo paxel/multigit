@@ -29,6 +29,7 @@ Each card shows:
 - the nearest tag reachable from the checked-out commit (lightweight tags
   included) and every other tag on the same commit, highest version first,
   or `no tag`
+- the checked-out commit: short hash and subject
 - the working tree: `clean`, or `+staged ~modified ?untracked !conflicts`
 - `rebasing` or `merging` while one is in progress
 - unpushed and unpulled commits, `no upstream`, or `upstream gone`

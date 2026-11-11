@@ -425,6 +425,38 @@ fn sort_button_cycles_the_key_and_reorders_the_cards() {
     assert!(left_of(&h, "alpha", "zeta"));
 }
 
+/// A harness with one card whose checked-out commit has this subject.
+fn commit_card(subject: &str) -> Harness<'static, App> {
+    let backend = Arc::new(FakeBackend::default());
+    let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);
+    snap.commit = Some(crate::domain::repo::Commit {
+        hash: "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d".into(),
+        short: "1a2b3c4".into(),
+        subject: subject.into(),
+    });
+    *backend.snapshot.lock().unwrap() = Some(snap.clone());
+    let mut app = app_with(backend, None);
+    app.cards = vec![card("/r/repo")];
+    app.cards[0].probe = Some(Ok(snap));
+    let mut h = harness(app);
+    h.run();
+    h
+}
+
+#[test]
+fn card_shows_the_commit_on_one_line() {
+    let h = commit_card("Fix race in SSE handler");
+    h.get_by_label("commit");
+    h.get_by_label("1a2b3c4 Fix race in SSE handler");
+
+    let long = "Rewrite the whole thing from scratch, twice, with a very long subject line";
+    let h = commit_card(long);
+    let line = h.get_by_label_contains("1a2b3c4 Rewrite").rect();
+    let card_right = h.get_by_label("status").rect().left() + 290.0;
+    assert!(line.right() <= card_right + 1.0, "{line:?}");
+    assert!(line.height() < 30.0, "{line:?}");
+}
+
 #[test]
 fn card_shows_the_tag() {
     let backend = Arc::new(FakeBackend::default());

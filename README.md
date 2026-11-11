@@ -170,7 +170,8 @@ unpacked archive, a USB stick, a shared folder), and **+** on a folder such as
 `~/Downloads` adds every repository below it.
 
 For what it runs by itself, multigit switches off `core.fsmonitor`, hooks,
-`ext::` remotes, and `remote.<name>.uploadpack` for remotes that are not
+`ext::` remotes, the signature check of `log.showSignature` (it runs
+`gpg.program`), and `remote.<name>.uploadpack` for remotes that are not
 reached over SSH (over SSH it names a program on the server). Other settings
 that make git run a program stay in effect, because switching them off breaks
 legitimate setups such as git-lfs or a key per repository. Among them:

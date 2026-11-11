@@ -69,8 +69,15 @@ pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
     };
     let tags = nearest.map_or_else(Vec::new, |tag| tags_on_commit_of(&tag, &dated.tags));
 
-    // Fails before the first commit.
-    let commit = query(runner, dir, &["log", "-1", "--format=%H%x09%h%x09%s"])
+    // Fails before the first commit. Without the option, a repository with
+    // `log.showSignature` would make this run its `gpg.program`.
+    let log = [
+        "log",
+        "-1",
+        "--no-show-signature",
+        "--format=%H%x09%h%x09%s",
+    ];
+    let commit = query(runner, dir, &log)
         .ok()
         .and_then(|out| Commit::parse(&out.stdout));
 
@@ -200,6 +207,53 @@ mod tests {
             probe(&runner, repo.path()).unwrap().tags,
             ["v10", "v2", "latest"]
         );
+    }
+
+    /// A signed commit and `log.showSignature` make `git log` run the
+    /// repository's `gpg.program`; the probe must not.
+    #[cfg(unix)]
+    #[test]
+    fn probe_does_not_run_the_repository_gpg_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = TestRepo::new();
+        repo.commit("a.txt", "a");
+        // The same commit with a signature header, as HEAD.
+        let plain = repo.git(&["cat-file", "commit", "HEAD"]);
+        let (headers, message) = plain.split_once("\n\n").unwrap();
+        let signed = format!(
+            "{headers}\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n abcd\n -----END PGP SIGNATURE-----\n\n{message}"
+        );
+        let file = repo.path().join(".git/signed-commit");
+        std::fs::write(&file, signed).unwrap();
+        let hash = repo.git(&["hash-object", "-t", "commit", "-w", &file.to_string_lossy()]);
+        repo.git(&["update-ref", "refs/heads/main", hash.trim()]);
+
+        let marker = repo.path().join(".git/gpg-ran");
+        let script = repo.path().join(".git/gpg.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\n: > '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        repo.git(&["config", "gpg.program", &script.to_string_lossy()]);
+        repo.git(&["config", "log.showSignature", "true"]);
+        let runner = isolated_runner();
+
+        // A plain `git log` as a user command runs it: the setting is live.
+        runner.run(repo.path(), &["log", "-1"]).unwrap();
+        assert!(
+            marker.exists(),
+            "gpg.program did not run for a user command"
+        );
+        std::fs::remove_file(&marker).unwrap();
+
+        let snap = probe(&runner, repo.path()).unwrap();
+        assert!(
+            !marker.exists(),
+            "the probe ran the repository's gpg.program"
+        );
+        assert_eq!(snap.commit.unwrap().hash, hash.trim());
     }
 
     #[test]

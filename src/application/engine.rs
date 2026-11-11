@@ -487,9 +487,15 @@ mod tests {
                 break;
             }
         };
-        engine.poll(Path::new("/r"));
+        assert!(engine.poll(Path::new("/r")));
         probed(&rx);
-        engine.fetch(Path::new("/r"));
+        // The poll sent its result just before it is done: a fetch asked for
+        // in between is skipped, so ask until it is taken.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !engine.fetch(Path::new("/r")) {
+            assert!(std::time::Instant::now() < deadline, "the poll never ended");
+            thread::sleep(Duration::from_millis(1));
+        }
         probed(&rx);
         engine.run_command(1, Path::new("/r"), Job::Git(vec!["push".into()]));
         probed(&rx);

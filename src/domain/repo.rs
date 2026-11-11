@@ -26,7 +26,9 @@ pub enum ProbeError {
 }
 
 /// Short card text for a failed fetch: "auth failed" for credential problems,
-/// otherwise the first line git printed.
+/// otherwise git's first `error:` or `fatal:` line. A fetch that fails in part
+/// prints its normal `From <url>` lines first, so the first line it printed is
+/// only used when it marked none as an error.
 pub fn summarize_fetch_error(stderr: &str) -> String {
     const AUTH_MARKERS: &[&str] = &[
         "Permission denied",
@@ -39,10 +41,11 @@ pub fn summarize_fetch_error(stderr: &str) -> String {
     if AUTH_MARKERS.iter().any(|m| stderr.contains(m)) {
         return "auth failed".to_owned();
     }
-    stderr
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
+    let mut lines = stderr.lines().map(str::trim).filter(|l| !l.is_empty());
+    lines
+        .clone()
+        .find(|l| l.starts_with("error:") || l.starts_with("fatal:"))
+        .or_else(|| lines.next())
         .unwrap_or("fetch failed")
         .to_owned()
 }
@@ -66,5 +69,17 @@ mod tests {
             "fatal: unable to access 'x': Could not resolve host"
         );
         assert_eq!(summarize_fetch_error(""), "fetch failed");
+    }
+
+    #[test]
+    fn partial_failure_shows_the_error_line_not_the_progress_before_it() {
+        let stderr = "From github.com:o/r\n   1a2b3c4..5d6e7f8  main -> origin/main\n\
+                      error: cannot lock ref 'refs/remotes/origin/a/b': 'refs/remotes/origin/a' exists\n\
+                      ! [new branch] a/b -> origin/a/b (unable to update local ref)\n";
+        assert_eq!(
+            summarize_fetch_error(stderr),
+            "error: cannot lock ref 'refs/remotes/origin/a/b': 'refs/remotes/origin/a' exists"
+        );
+        assert_eq!(summarize_fetch_error("From x\n ! [rejected] a\n"), "From x");
     }
 }

@@ -1078,7 +1078,9 @@ fn kawaii_theme_animates_with_focus_and_stands_still_without() {
     let mut h = harness(app);
     // Until the first probes are in and the window has faded in.
     h.run();
-    settle(&mut h, |a| a.cards.iter().all(|c| c.snapshot().is_some()));
+    settle(&mut h, |a| {
+        a.cards.iter().all(|c| c.snapshot().is_some()) && !a.vocab.subcommands.is_empty()
+    });
     h.run();
     h.step();
     // Plain themes ask for a frame only for their timers.

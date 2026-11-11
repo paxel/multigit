@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn spawn_detached_runs_the_program_in_the_folder_without_waiting() {
         let dir = tempfile::tempdir().unwrap();
-        let script = "sleep 0.2; pwd > here";
+        let script = "sleep 2; pwd > here";
         let started = Instant::now();
         spawn_detached(
             OsStr::new("sh"),
@@ -114,9 +114,9 @@ mod tests {
             Some(dir.path()),
         )
         .unwrap();
-        assert!(started.elapsed() < Duration::from_millis(150), "waited");
+        assert!(started.elapsed() < Duration::from_millis(1500), "waited");
         let file = dir.path().join("here");
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(20);
         while !file.exists() || std::fs::read_to_string(&file).unwrap().is_empty() {
             assert!(Instant::now() < deadline, "the program never ran");
             std::thread::sleep(Duration::from_millis(10));

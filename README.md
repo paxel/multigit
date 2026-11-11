@@ -104,6 +104,25 @@ ssh-agent or a credential helper), no pager, and no editor. A command that
 needs an editor, such as `commit` without `-m` or `rebase -i`, fails with a
 message saying so.
 
+### Add only folders you trust
+
+multigit runs git in every repository on the board by itself: a status query
+every 10 seconds and a fetch every minute. A repository's own `.git/config` and
+`.git/hooks` can name programs that git runs. A cloned repository does not
+bring those along, but a folder that arrives with its `.git` directory does (an
+unpacked archive, a USB stick, a shared folder), and **+** on a folder such as
+`~/Downloads` adds every repository below it.
+
+For what it runs by itself, multigit switches off the settings that are not
+needed for a status or a fetch: `core.fsmonitor`, hooks, `ext::` remotes and
+`remote.<name>.uploadpack`. These stay in effect, because switching them off
+breaks legitimate setups such as git-lfs or a key per repository:
+
+- clean filters (`filter.<driver>.clean`), which can run during the status query
+- `core.sshCommand` and `credential.helper`, which run during the fetch
+
+Buttons and the command line run git as you would in a terminal, hooks and all.
+
 ## Settings and files
 
 **Settings** in the toolbar changes the fetch interval, the number of parallel

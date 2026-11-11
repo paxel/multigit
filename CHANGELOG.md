@@ -23,3 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Application menu entry and icon on Linux, registered on every start and by the release tarball's `install.sh`.
 - macOS support: releases include `multigit.app` as a universal (Apple silicon and Intel) zip.
 - Homebrew install from `paxel/tap`: a formula for Linux and a cask for macOS.
+
+### Security
+
+- The automatic status refresh and background fetch do not run programs named in a repository's own configuration: `core.fsmonitor`, hooks, `ext::` remotes and `remote.<name>.uploadpack`.

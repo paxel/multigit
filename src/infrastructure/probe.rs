@@ -2,7 +2,7 @@
 
 use crate::domain::completion::RepoRefs;
 use crate::domain::output::ProcessOutput;
-use crate::domain::repo::{ProbeError, Snapshot};
+use crate::domain::repo::{DatedRef, DatedRefs, ProbeError, Snapshot, tags_on_commit_of};
 use crate::domain::status::{RepoState, parse_porcelain_v2};
 use crate::infrastructure::git::GitRunner;
 use std::path::{Path, PathBuf};
@@ -45,21 +45,21 @@ pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
         dir,
         &[
             "for-each-ref",
-            "--format=%(refname)",
+            REF_FORMAT,
             "refs/heads",
             "refs/remotes",
             "refs/tags",
         ],
     )?;
     let remotes_out = query(runner, dir, &["remote"])?;
-    let mut refs = parse_refs(&refs_out.stdout);
+    let (mut refs, dated) = parse_refs(&refs_out.stdout);
     refs.remotes = remotes_out.stdout.lines().map(str::to_owned).collect();
     refs.files = status.changed_paths.clone();
 
     // Fails without a reachable tag (and on an unborn branch): no tag, not an
     // error. Not asked at all in a repository without tags, where describe
     // would walk the whole history on every refresh.
-    let tag = if refs.tags.is_empty() {
+    let nearest = if refs.tags.is_empty() {
         None
     } else {
         query(runner, dir, &["describe", "--tags", "--abbrev=0"])
@@ -67,12 +67,14 @@ pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
             .map(|out| out.stdout.trim().to_owned())
             .filter(|t| !t.is_empty())
     };
+    let tags = nearest.map_or_else(Vec::new, |tag| tags_on_commit_of(&tag, &dated.tags));
 
     Ok(Snapshot {
         status,
         state: repo_state(&git_dir),
         refs,
-        tag,
+        dated,
+        tags,
     })
 }
 
@@ -87,21 +89,42 @@ fn repo_state(git_dir: &Path) -> RepoState {
     }
 }
 
-/// Sort full ref names into branches, remote branches and tags.
-pub fn parse_refs(output: &str) -> RepoRefs {
+/// One line per ref, tab separated: full name, object, the commit an
+/// annotated tag points at (empty otherwise), and the date the ref's object
+/// was made (the tag's own date, or the commit's).
+const REF_FORMAT: &str =
+    "--format=%(refname)%09%(objectname)%09%(*objectname)%09%(creatordate:unix)";
+
+/// Sort the lines of [`REF_FORMAT`] into branches, remote branches and tags:
+/// their names for completion, and with commit and date for the card.
+pub fn parse_refs(output: &str) -> (RepoRefs, DatedRefs) {
     let mut refs = RepoRefs::default();
+    let mut dated = DatedRefs::default();
     for line in output.lines() {
-        if let Some(b) = line.strip_prefix("refs/heads/") {
+        let mut fields = line.split('\t');
+        let full_name = fields.next().unwrap_or_default();
+        let object = fields.next().unwrap_or_default();
+        let peeled = fields.next().unwrap_or_default();
+        let date = fields.next().and_then(|d| d.parse().ok()).unwrap_or(0);
+        let entry = |name: &str| DatedRef {
+            name: name.to_owned(),
+            commit: if peeled.is_empty() { object } else { peeled }.to_owned(),
+            date,
+        };
+        if let Some(b) = full_name.strip_prefix("refs/heads/") {
             refs.branches.push(b.to_owned());
-        } else if let Some(r) = line.strip_prefix("refs/remotes/") {
+            dated.branches.push(entry(b));
+        } else if let Some(r) = full_name.strip_prefix("refs/remotes/") {
             if !r.ends_with("/HEAD") {
                 refs.remote_branches.push(r.to_owned());
+                dated.remote_branches.push(entry(r));
             }
-        } else if let Some(t) = line.strip_prefix("refs/tags/") {
+        } else if let Some(t) = full_name.strip_prefix("refs/tags/") {
             refs.tags.push(t.to_owned());
+            dated.tags.push(entry(t));
         }
     }
-    refs
+    (refs, dated)
 }
 
 #[cfg(test)]
@@ -131,7 +154,7 @@ mod tests {
         assert_eq!(snap.status.counts.untracked, 1);
         assert_eq!(snap.refs.files, vec!["new.txt".to_owned()]);
         assert_eq!(snap.state, RepoState::Normal);
-        assert_eq!(snap.tag, None);
+        assert!(snap.tags.is_empty());
     }
 
     #[test]
@@ -139,30 +162,28 @@ mod tests {
         let repo = TestRepo::new();
         let runner = isolated_runner();
         repo.commit("a.txt", "1");
-        assert_eq!(probe(&runner, repo.path()).unwrap().tag, None);
+        assert!(probe(&runner, repo.path()).unwrap().tags.is_empty());
 
         // Lightweight tags count; commits after the tag still show it.
         repo.git(&["tag", "v1"]);
         repo.commit("a.txt", "2");
-        assert_eq!(
-            probe(&runner, repo.path()).unwrap().tag.as_deref(),
-            Some("v1")
-        );
+        assert_eq!(probe(&runner, repo.path()).unwrap().tags, ["v1"]);
 
         // A tag on another branch is not reachable from HEAD.
         repo.git(&["switch", "-q", "-c", "side"]);
         repo.commit("b.txt", "s");
         repo.git(&["tag", "side-tag"]);
         repo.git(&["switch", "-q", "main"]);
-        assert_eq!(
-            probe(&runner, repo.path()).unwrap().tag.as_deref(),
-            Some("v1")
-        );
+        assert_eq!(probe(&runner, repo.path()).unwrap().tags, ["v1"]);
 
+        // Every tag of that commit shows, annotated or not, highest version
+        // first; the tag of the older commit does not.
         repo.git(&["tag", "-a", "v2", "-m", "release"]);
+        repo.git(&["tag", "latest"]);
+        repo.git(&["tag", "-a", "v10", "-m", "release"]);
         assert_eq!(
-            probe(&runner, repo.path()).unwrap().tag.as_deref(),
-            Some("v2")
+            probe(&runner, repo.path()).unwrap().tags,
+            ["v10", "v2", "latest"]
         );
     }
 
@@ -219,11 +240,21 @@ mod tests {
 
     #[test]
     fn parse_refs_skips_remote_head() {
-        let refs = parse_refs(
-            "refs/heads/main\nrefs/remotes/origin/HEAD\nrefs/remotes/origin/main\nrefs/tags/v1\n",
+        let (refs, dated) = parse_refs(
+            "refs/heads/main\taaa\t\t100\nrefs/remotes/origin/HEAD\taaa\t\t100\n\
+             refs/remotes/origin/main\taaa\t\t100\nrefs/tags/v1\tttt\tbbb\t200\nrefs/tags/light\tbbb\t\t150\n",
         );
         assert_eq!(refs.branches, vec!["main"]);
         assert_eq!(refs.remote_branches, vec!["origin/main"]);
-        assert_eq!(refs.tags, vec!["v1"]);
+        assert_eq!(refs.tags, vec!["v1", "light"]);
+        assert_eq!(dated.branches[0].commit, "aaa");
+        assert_eq!(dated.remote_branches[0].date, 100);
+        // An annotated tag carries the commit it points at and its own date.
+        let tags: Vec<_> = dated
+            .tags
+            .iter()
+            .map(|t| (t.name.as_str(), t.commit.as_str(), t.date))
+            .collect();
+        assert_eq!(tags, [("v1", "bbb", 200), ("light", "bbb", 150)]);
     }
 }

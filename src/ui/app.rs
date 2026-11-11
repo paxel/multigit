@@ -428,7 +428,7 @@ impl App {
         match event {
             Event::Probed { repo, result } => {
                 if let Some(card) = self.card_mut(&repo) {
-                    card.probe = Some(result);
+                    card.probe = Some(*result);
                 }
             }
             Event::Fetched { repo, error } => {
@@ -547,7 +547,6 @@ impl App {
 pub(crate) mod tests {
     use super::*;
     use crate::application::engine::FETCH_ARGS;
-    use crate::domain::completion::RepoRefs;
     use crate::domain::output::{ProcessOutput, SectionState};
     use crate::domain::status::{Counts, Head, Status};
     use std::io;
@@ -562,20 +561,14 @@ pub(crate) mod tests {
     }
 
     pub fn snapshot(counts: Counts, upstream: Upstream, branches: &[&str]) -> Snapshot {
-        Snapshot {
-            status: Status {
-                head: Head::Branch("main".into()),
-                upstream,
-                counts,
-                changed_paths: vec![],
-            },
-            state: RepoState::Normal,
-            refs: RepoRefs {
-                branches: branches.iter().map(|s| s.to_string()).collect(),
-                ..RepoRefs::default()
-            },
-            tag: None,
-        }
+        let mut snap = Snapshot::of(Status {
+            head: Head::Branch("main".into()),
+            upstream,
+            counts,
+            changed_paths: vec![],
+        });
+        snap.refs.branches = branches.iter().map(|s| s.to_string()).collect();
+        snap
     }
 
     impl Backend for FakeBackend {

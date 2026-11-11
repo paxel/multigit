@@ -43,7 +43,8 @@ pub trait Backend: Send + Sync + 'static {
 pub enum Event {
     Probed {
         repo: PathBuf,
-        result: Result<Snapshot, ProbeError>,
+        /// Boxed: a snapshot is far bigger than the other events.
+        result: Box<Result<Snapshot, ProbeError>>,
     },
     /// A background fetch finished; `error` is set when it failed.
     Fetched {
@@ -191,7 +192,7 @@ impl Engine {
                     let result = shared.backend.probe(&repo);
                     shared.send(Event::Probed {
                         repo: repo.clone(),
-                        result,
+                        result: Box::new(result),
                     });
                 }
             }
@@ -233,7 +234,7 @@ impl Engine {
                 let result = shared.backend.probe(&repo);
                 shared.send(Event::Probed {
                     repo: repo.clone(),
-                    result,
+                    result: Box::new(result),
                 });
             }
             slot.pending_commands.fetch_sub(1, Ordering::SeqCst);
@@ -263,8 +264,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::completion::RepoRefs;
-    use crate::domain::status::{Counts, Head, RepoState, Status, Upstream};
+    use crate::domain::status::{Counts, Head, Status, Upstream};
     use std::sync::Condvar;
     use std::time::Duration;
 
@@ -288,17 +288,12 @@ mod tests {
     }
 
     fn snapshot() -> Snapshot {
-        Snapshot {
-            status: Status {
-                head: Head::Branch("main".into()),
-                upstream: Upstream::None,
-                counts: Counts::default(),
-                changed_paths: vec![],
-            },
-            state: RepoState::Normal,
-            refs: RepoRefs::default(),
-            tag: None,
-        }
+        Snapshot::of(Status {
+            head: Head::Branch("main".into()),
+            upstream: Upstream::None,
+            counts: Counts::default(),
+            changed_paths: vec![],
+        })
     }
 
     impl Backend for Fake {
@@ -369,7 +364,7 @@ mod tests {
             recv(&rx),
             Event::Probed {
                 repo: "/r".into(),
-                result: Ok(snapshot())
+                result: Box::new(Ok(snapshot()))
             }
         );
     }

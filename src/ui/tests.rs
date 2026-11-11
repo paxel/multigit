@@ -429,18 +429,44 @@ fn sort_button_cycles_the_key_and_reorders_the_cards() {
 fn card_shows_the_tag() {
     let backend = Arc::new(FakeBackend::default());
     let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);
-    snap.tag = Some("v1.2.0".into());
+    snap.tags = vec!["v1.2.0".into(), "latest".into()];
     *backend.snapshot.lock().unwrap() = Some(snap);
     let mut app = app_with(backend, None);
     app.cards = vec![card("/r/tagged")];
     let mut h = harness(app);
     h.run();
     settle(&mut h, |a| {
-        a.cards[0].snapshot().is_some_and(|s| s.tag.is_some())
+        a.cards[0].snapshot().is_some_and(|s| !s.tags.is_empty())
     });
     h.run();
     h.get_by_label("tag");
+    // Every tag is its own text and copies itself.
     h.get_by_label("v1.2.0");
+    h.get_by_label("latest").click();
+    h.step();
+    assert_eq!(copied(&h), vec!["latest".to_owned()]);
+}
+
+#[test]
+fn tags_that_do_not_fit_the_card_are_cut_with_an_ellipsis() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);
+    snap.tags = (0..12).map(|i| format!("release-candidate-{i}")).collect();
+    *backend.snapshot.lock().unwrap() = Some(snap.clone());
+    let mut app = app_with(backend, None);
+    app.cards = vec![card("/r/tagged")];
+    app.cards[0].probe = Some(Ok(snap));
+    let mut h = harness(app);
+    h.run();
+    let first = h.get_by_label("release-candidate-0").rect();
+    let ellipsis = h.get_by_label(", \u{2026}").rect();
+    assert!(
+        (first.center().y - ellipsis.center().y).abs() < 2.0,
+        "one line"
+    );
+    assert!(h.query_by_label("release-candidate-11").is_none());
+    let card_right = h.get_by_label("status").rect().left() + 290.0;
+    assert!(ellipsis.right() <= card_right + 1.0, "{ellipsis:?}");
 }
 
 #[test]

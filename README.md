@@ -27,7 +27,8 @@ Each card shows:
   full path is in the tooltip)
 - the branch, or `detached @ <sha>`
 - the nearest tag reachable from the checked-out commit (lightweight tags
-  included), or `no tag`
+  included) and every other tag on the same commit, highest version first,
+  or `no tag`
 - the working tree: `clean`, or `+staged ~modified ?untracked !conflicts`
 - `rebasing` or `merging` while one is in progress
 - unpushed and unpulled commits, `no upstream`, or `upstream gone`

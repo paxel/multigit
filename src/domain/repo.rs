@@ -2,6 +2,26 @@
 
 use crate::domain::completion::RepoRefs;
 use crate::domain::status::{RepoState, Status};
+use std::cmp::Ordering;
+
+/// A branch or tag with the commit it leads to and its date.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatedRef {
+    pub name: String,
+    /// Full hash of the commit (for an annotated tag: the tagged commit).
+    pub commit: String,
+    /// Seconds since the epoch: when the tag was made, or the branch's last
+    /// commit.
+    pub date: i64,
+}
+
+/// The branches and tags of a repository with commit and date.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DatedRefs {
+    pub branches: Vec<DatedRef>,
+    pub remote_branches: Vec<DatedRef>,
+    pub tags: Vec<DatedRef>,
+}
 
 /// Result of one successful status probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,9 +29,67 @@ pub struct Snapshot {
     pub status: Status,
     pub state: RepoState,
     pub refs: RepoRefs,
-    /// Nearest tag reachable from HEAD (lightweight tags included); `None`
-    /// without one.
-    pub tag: Option<String>,
+    pub dated: DatedRefs,
+    /// The nearest tag reachable from HEAD (lightweight tags included) and
+    /// every other tag on the same commit, highest version first; empty
+    /// without a reachable tag.
+    pub tags: Vec<String>,
+}
+
+impl Snapshot {
+    /// A snapshot with this status and nothing else: no operation in
+    /// progress, no refs, no tag.
+    pub fn of(status: Status) -> Self {
+        Self {
+            status,
+            state: RepoState::Normal,
+            refs: RepoRefs::default(),
+            dated: DatedRefs::default(),
+            tags: Vec::new(),
+        }
+    }
+}
+
+/// The numbers of a version tag such as `v1.10.0` or `2.3`; `None` for a
+/// name that does not start like a version.
+fn version_numbers(tag: &str) -> Option<Vec<u64>> {
+    let digits = tag.strip_prefix(['v', 'V']).unwrap_or(tag);
+    if !digits.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(
+        digits
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|part| part.parse().ok())
+            .collect(),
+    )
+}
+
+/// Order of tags on a card: versions first, the highest in front
+/// (`v1.10.0` before `v1.9.0`), then other names alphabetically.
+pub fn tag_order(a: &str, b: &str) -> Ordering {
+    match (version_numbers(a), version_numbers(b)) {
+        (Some(x), Some(y)) => y.cmp(&x).then_with(|| a.cmp(b)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => a.cmp(b),
+    }
+}
+
+/// `nearest` and every other tag of `tags` on the same commit, in
+/// [`tag_order`].
+pub fn tags_on_commit_of(nearest: &str, tags: &[DatedRef]) -> Vec<String> {
+    let commit = tags.iter().find(|t| t.name == nearest).map(|t| &t.commit);
+    let mut names: Vec<String> = tags
+        .iter()
+        .filter(|t| t.name == nearest || (Some(&t.commit) == commit && !t.commit.is_empty()))
+        .map(|t| t.name.clone())
+        .collect();
+    if !names.iter().any(|n| n == nearest) {
+        names.push(nearest.to_owned());
+    }
+    names.sort_by(|a, b| tag_order(a, b));
+    names
 }
 
 /// Why a repository could not be probed.
@@ -97,6 +175,34 @@ pub fn summarize_fetch_error(stderr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tag(name: &str, commit: &str) -> DatedRef {
+        DatedRef {
+            name: name.into(),
+            commit: commit.into(),
+            date: 0,
+        }
+    }
+
+    #[test]
+    fn tags_of_one_commit_are_listed_versions_first_highest_in_front() {
+        let tags = [
+            tag("latest", "c2"),
+            tag("v1.9.0", "c2"),
+            tag("v1.10.0", "c2"),
+            tag("2.0", "c2"),
+            tag("stable", "c2"),
+            tag("v0.1", "c1"),
+        ];
+        assert_eq!(
+            tags_on_commit_of("v1.9.0", &tags),
+            ["2.0", "v1.10.0", "v1.9.0", "latest", "stable"]
+        );
+        assert_eq!(tags_on_commit_of("v0.1", &tags), ["v0.1"]);
+        // A tag the ref list does not know still shows.
+        assert_eq!(tags_on_commit_of("new", &tags), ["new"]);
+        assert_eq!(tags_on_commit_of("a", &[tag("a", ""), tag("b", "")]), ["a"]);
+    }
 
     #[test]
     fn fetch_error_keeps_all_output_and_shortens_the_card_line() {

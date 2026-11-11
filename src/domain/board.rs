@@ -62,7 +62,7 @@ impl Sorted<'_> {
     }
 
     fn tag(&self) -> Option<String> {
-        self.snapshot?.tag.as_ref().map(|t| t.to_lowercase())
+        self.snapshot?.tags.first().map(|t| t.to_lowercase())
     }
 
     fn dirty(&self) -> bool {
@@ -110,28 +110,24 @@ pub fn matches_filter(path: &Path, filter: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::completion::RepoRefs;
     use crate::domain::status::{Counts, Status};
     use std::path::PathBuf;
 
     fn snap(branch: Option<&str>, tag: Option<&str>, modified: u32, behind: u32) -> Snapshot {
-        Snapshot {
-            status: Status {
-                head: match branch {
-                    Some(b) => Head::Branch(b.into()),
-                    None => Head::Detached("1a2b3c4".into()),
-                },
-                upstream: Upstream::Tracking { ahead: 0, behind },
-                counts: Counts {
-                    modified,
-                    ..Counts::default()
-                },
-                changed_paths: vec![],
+        let mut snap = Snapshot::of(Status {
+            head: match branch {
+                Some(b) => Head::Branch(b.into()),
+                None => Head::Detached("1a2b3c4".into()),
             },
-            state: RepoState::Normal,
-            refs: RepoRefs::default(),
-            tag: tag.map(str::to_owned),
-        }
+            upstream: Upstream::Tracking { ahead: 0, behind },
+            counts: Counts {
+                modified,
+                ..Counts::default()
+            },
+            changed_paths: vec![],
+        });
+        snap.tags = tag.into_iter().map(str::to_owned).collect();
+        snap
     }
 
     /// Folder names of the cards sorted by `key`.

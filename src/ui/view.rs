@@ -563,13 +563,66 @@ fn weak(text: impl Into<String>) -> RichText {
     RichText::new(text).weak()
 }
 
-/// Whether `text` in the body font is at most `width` wide.
-fn fits(ui: &Ui, text: &str, width: f32) -> bool {
-    let font = egui::TextStyle::Body.resolve(ui.style());
+/// Width of `text` in the font of `style`.
+fn text_width(ui: &Ui, text: &str, style: egui::TextStyle) -> f32 {
+    let font = style.resolve(ui.style());
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
-    galley.size().x <= width
+    galley.size().x
+}
+
+/// Whether `text` in the body font is at most `width` wide.
+fn fits(ui: &Ui, text: &str, width: f32) -> bool {
+    text_width(ui, text, egui::TextStyle::Body) <= width
+}
+
+/// How many of the items with these widths fit into `room` on one line,
+/// `separator` wide gaps between them and an `ellipsis` after them when some
+/// are left out. The first always shows.
+fn fitting(widths: &[f32], separator: f32, ellipsis: f32, room: f32) -> usize {
+    let mut used = 0.0;
+    let mut count = 0;
+    for (i, width) in widths.iter().enumerate() {
+        used += width + if i > 0 { separator } else { 0.0 };
+        let rest = if i + 1 < widths.len() { ellipsis } else { 0.0 };
+        if i > 0 && used + rest > room {
+            break;
+        }
+        count = i + 1;
+    }
+    count
+}
+
+/// The card's tag line: every tag of the tagged commit, each copying itself
+/// on a click, on one line; the tooltip has them all.
+fn tag_line(ui: &mut Ui, tags: &[String], actions: &mut Vec<BoardAction>) {
+    if tags.is_empty() {
+        ui.label(weak("no tag"));
+        return;
+    }
+    ui.label(weak("tag"));
+    let mono = egui::TextStyle::Monospace;
+    let widths: Vec<f32> = tags
+        .iter()
+        .map(|t| text_width(ui, t, mono.clone()))
+        .collect();
+    let separator = text_width(ui, ", ", mono.clone());
+    let ellipsis = text_width(ui, ", \u{2026}", mono);
+    let shown = fitting(&widths, separator, ellipsis, ui.available_width());
+    let all = tags.join(", ");
+    // The commas sit right behind their tag.
+    ui.spacing_mut().item_spacing.x = 0.0;
+    for (i, tag) in tags.iter().take(shown).enumerate() {
+        if i > 0 {
+            ui.label(RichText::new(", ").monospace());
+        }
+        copyable(ui, RichText::new(tag).monospace(), tag.clone(), actions).on_hover_text(&all);
+    }
+    if shown < tags.len() {
+        ui.label(RichText::new(", \u{2026}").monospace())
+            .on_hover_text(&all);
+    }
 }
 
 /// The status of a card. Only names a user pastes somewhere copy themselves
@@ -612,15 +665,7 @@ fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
             RepoState::Normal => {}
         }
     });
-    ui.horizontal(|ui| match &snap.tag {
-        Some(tag) => {
-            ui.label(weak("tag"));
-            copyable(ui, RichText::new(tag).monospace(), tag.clone(), actions);
-        }
-        None => {
-            ui.label(weak("no tag"));
-        }
-    });
+    ui.horizontal(|ui| tag_line(ui, &snap.tags, actions));
     let c = snap.status.counts;
     ui.horizontal(|ui| {
         ui.label(weak("status"));
@@ -692,6 +737,17 @@ fn run_ui(ui: &mut Ui, run: &Run) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn as_many_items_as_fit_show_and_the_first_always() {
+        let widths = [30.0, 30.0, 30.0];
+        assert_eq!(fitting(&widths, 5.0, 10.0, 100.0), 3);
+        // Two and the ellipsis need 75; three need 100.
+        assert_eq!(fitting(&widths, 5.0, 10.0, 99.0), 2);
+        assert_eq!(fitting(&widths, 5.0, 10.0, 74.0), 1);
+        assert_eq!(fitting(&widths, 5.0, 10.0, 0.0), 1);
+        assert_eq!(fitting(&[], 5.0, 10.0, 100.0), 0);
+    }
 
     #[test]
     fn copy_flash_runs_for_its_duration_then_ends() {

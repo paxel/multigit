@@ -81,10 +81,13 @@ impl GitRunner {
     }
 
     /// Read-only query: `git --no-optional-locks <args>`, never touches the network.
+    /// Queries run automatically and all the time, so the program a repository
+    /// names in `core.fsmonitor` is not run for them.
     #[tracing::instrument(skip_all, fields(dir = %dir.display()))]
     pub fn query<S: AsRef<OsStr>>(&self, dir: &Path, args: &[S]) -> io::Result<ProcessOutput> {
         let mut cmd = self.command(dir);
-        cmd.arg("--no-optional-locks").args(args);
+        cmd.args(["--no-optional-locks", "-c", "core.fsmonitor=false"])
+            .args(args);
         Self::output(cmd)
     }
 
@@ -244,6 +247,39 @@ mod tests {
         let repo = TestRepo::new();
         let runner = isolated_runner().with_env("SHELL", "/does/not/exist/sh");
         assert!(runner.run_shell(repo.path(), "true").is_err());
+    }
+
+    /// An executable script at `path` that creates `marker` when it runs, then
+    /// runs `then` (shell code).
+    #[cfg(unix)]
+    fn marker_script(path: &Path, marker: &Path, then: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let script = format!("#!/bin/sh\n: > '{}'\n{then}\n", marker.display());
+        std::fs::write(path, script).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn queries_do_not_run_the_repository_fsmonitor() {
+        let repo = TestRepo::new();
+        repo.commit("a.txt", "a");
+        let marker = repo.path().join(".git/fsmonitor-ran");
+        let script = repo.path().join(".git/fsmonitor.sh");
+        marker_script(&script, &marker, "exit 1");
+        repo.git(&["config", "core.fsmonitor", &script.to_string_lossy()]);
+        let runner = isolated_runner();
+
+        // The same status as a user command runs it: the setting is live.
+        runner.run(repo.path(), &["status"]).unwrap();
+        assert!(marker.exists(), "fsmonitor did not run for a user command");
+        std::fs::remove_file(&marker).unwrap();
+
+        let out = runner
+            .query(repo.path(), &["status", "--porcelain=v2", "--branch"])
+            .unwrap();
+        assert!(out.success(), "{out:?}");
+        assert!(!marker.exists(), "fsmonitor ran for an automatic query");
     }
 
     #[test]

@@ -134,6 +134,12 @@ fn macos_bundle_has_binary_plist_and_icon() {
         fs::read_to_string(contents.join("MacOS/multigit")).unwrap(),
         "#!/bin/sh\necho fake\n"
     );
+    for license in ["LICENSE", "Fredoka-OFL.txt"] {
+        assert!(
+            contents.join("Resources").join(license).is_file(),
+            "{license}"
+        );
+    }
     let plist = contents.join("Info.plist");
     let lint = Command::new("plutil")
         .arg("-lint")
@@ -271,6 +277,29 @@ fn render_channels_fills_version_and_checksums() {
     // A missing artifact or a bad version renders nothing.
     assert!(!render("9.9.9").status.success());
     assert!(!render("1.2.3/x").status.success());
+}
+
+/// A release may not go out without the licences: multigit's own and the
+/// one of the font in the binary are in the Linux tarball and in the macOS
+/// bundle (the bundle itself is checked on macOS above).
+#[test]
+fn release_archives_carry_the_licenses() {
+    assert!(
+        fs::read_to_string(root().join("LICENSE"))
+            .unwrap()
+            .starts_with("MIT License")
+    );
+    let font_license = fs::read_to_string(root().join("assets/fonts/Fredoka-OFL.txt")).unwrap();
+    assert!(font_license.contains("SIL Open Font License"));
+    for packer in [".github/workflows/release.yml", "packaging/macos/bundle.sh"] {
+        let text = fs::read_to_string(root().join(packer)).unwrap();
+        let copies = text
+            .lines()
+            .any(|l| l.contains("cp ") && l.contains("LICENSE") && l.contains("Fredoka-OFL.txt"));
+        assert!(copies, "{packer} does not pack the licences");
+    }
+    let formula = fs::read_to_string(root().join("packaging/homebrew/formula.rb.tmpl")).unwrap();
+    assert!(formula.contains("license \"MIT\""));
 }
 
 /// The About page's licence list names only crates of the lock file: after a

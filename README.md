@@ -291,7 +291,8 @@ tool/licenses.sh    # after a change of Cargo.lock: the About page's licence lis
 ```
 
 The Kawaii theme's font, Fredoka, is in `assets/fonts` under the SIL Open
-Font License (`assets/fonts/Fredoka-OFL.txt`).
+Font License (`assets/fonts/Fredoka-OFL.txt`). The release tarball and
+`multigit.app` carry that licence text and multigit's own `LICENSE`.
 
 Clippy denies `unsafe`, and `unwrap`, `expect`, `panic` and indexing outside
 tests (`Cargo.toml`, `clippy.toml`).

@@ -1020,6 +1020,50 @@ fn theme_setting_switches_between_light_and_dark() {
 }
 
 #[test]
+fn about_page_opens_from_settings_and_its_rows_open_links() {
+    use crate::domain::about;
+    let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
+    let mut app = crate::ui::app::tests::app_on(Arc::default(), desktop.clone(), None);
+    app.settings_open = true;
+    let mut h = harness(app);
+    h.run();
+    h.get_by_label("About multigit").click();
+    h.run();
+    h.get_by_label("multigit");
+    h.get_by_label(&format!("Version {}", about::VERSION));
+    h.get_by_label(about::TAGLINE);
+    assert!(h.state().icon.is_some(), "the icon was loaded");
+    for link in about::LINKS {
+        h.get_by_label(link.subtitle);
+        h.get_by_label(link.title).click();
+        h.run();
+    }
+    assert_eq!(
+        desktop.urls.lock().unwrap().clone(),
+        about::LINKS.map(|l| l.url.to_owned())
+    );
+
+    h.get_by_label("Open-source licenses").click();
+    h.run();
+    h.get_by_label_contains("ab_glyph ");
+    h.get_by_label("Back").click();
+    h.run();
+    h.get_by_label(about::TAGLINE);
+    h.get_by_label("Back").click();
+    h.run();
+    h.get_by_label("Card buttons");
+
+    // Closed on the About page, the window opens with the settings again.
+    h.get_by_label("About multigit").click();
+    h.run();
+    h.state_mut().settings_open = false;
+    h.run();
+    h.state_mut().settings_open = true;
+    h.run();
+    h.get_by_label("Card buttons");
+}
+
+#[test]
 fn settings_button_editor() {
     let mut app = app_with(Arc::default(), None);
     app.settings_open = true;

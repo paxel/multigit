@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Favorites: named groups of repositories with a color and an emoji. Each has a toolbar button that shows only its cards; cards and favorite buttons have right-click menus to fill and change them.
+- About page, opened from Settings: version, links to the source code, the issue tracker, a mail to the developer and the donation page, and the licences of the crates in multigit.
 - Filter field in the toolbar: only cards whose folder name contains the text are shown; hidden cards are skipped by commands, marking and "Remove marked".
 - Commit line on the card: short hash and subject of the checked-out commit; a click copies the full hash.
 - Right-click menu on a card's branch: switch to a local or remote branch of that repository, or create a new branch.

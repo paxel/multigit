@@ -9,6 +9,9 @@ pub trait Desktop: Send + Sync {
     /// Open `file` with the system's default program for it.
     fn open_file(&self, file: &Path) -> io::Result<()>;
 
+    /// Open a web or mail address with the system's default program for it.
+    fn open_url(&self, url: &str) -> io::Result<()>;
+
     /// Open a terminal window with a shell in `dir`. `configured` is the
     /// terminal command from the settings; blank means find one.
     fn open_terminal(&self, dir: &Path, configured: &str) -> io::Result<()>;

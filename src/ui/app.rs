@@ -86,6 +86,15 @@ pub struct PendingRun {
     pub repos: Vec<PathBuf>,
 }
 
+/// What the settings window shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsPage {
+    #[default]
+    Settings,
+    About,
+    Licenses,
+}
+
 /// The open dialog that makes a favorite or changes one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FavoriteDialog {
@@ -152,6 +161,9 @@ pub struct App {
     pub copy_flash: Option<CopyFlash>,
     pub confirm: Option<PendingRun>,
     pub settings_open: bool,
+    pub settings_page: SettingsPage,
+    /// The app icon for the About page, once it was drawn.
+    pub icon: Option<egui::TextureHandle>,
     notify: Notify,
     /// Folder dialog running on its own thread; yields the picked folder.
     picker: Option<Receiver<Option<PathBuf>>>,
@@ -204,6 +216,8 @@ impl App {
             copy_flash: None,
             confirm: None,
             settings_open: false,
+            settings_page: SettingsPage::default(),
+            icon: None,
             notify,
             picker: None,
         }
@@ -482,6 +496,14 @@ impl App {
         let id = self.log.start(&run.command, &run.repos);
         for repo in &run.repos {
             self.engine.run_command(id, repo, run.job.clone());
+        }
+    }
+
+    /// A link of the About page: a web page or a mail in the system's
+    /// program for it.
+    pub fn open_url(&mut self, url: &str) {
+        if let Err(e) = self.desktop.open_url(url) {
+            self.toast(format!("Cannot open {url}: {e}"));
         }
     }
 
@@ -789,6 +811,7 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub struct FakeDesktop {
         pub files: Mutex<Vec<PathBuf>>,
+        pub urls: Mutex<Vec<String>>,
         /// Folder and configured command of every terminal asked for.
         pub terminals: Mutex<Vec<(PathBuf, String)>>,
         pub fail: bool,
@@ -800,6 +823,13 @@ pub(crate) mod tests {
                 return Err(io::Error::other("no opener"));
             }
             self.files.lock().unwrap().push(file.to_path_buf());
+            Ok(())
+        }
+        fn open_url(&self, url: &str) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::other("no browser"));
+            }
+            self.urls.lock().unwrap().push(url.to_owned());
             Ok(())
         }
         fn open_terminal(&self, dir: &Path, configured: &str) -> io::Result<()> {
@@ -1049,6 +1079,11 @@ pub(crate) mod tests {
         assert_eq!(
             app.toasts.last().unwrap().text,
             "Cannot open the output: no opener"
+        );
+        app.open_url("https://example.org");
+        assert_eq!(
+            app.toasts.last().unwrap().text,
+            "Cannot open https://example.org: no browser"
         );
         app.open_terminal(Path::new("/x/a"));
         assert_eq!(

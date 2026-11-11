@@ -81,6 +81,10 @@ impl Desktop for SystemDesktop {
         spawn_detached(OsStr::new(opener()), &[file.as_os_str()], None)
     }
 
+    fn open_url(&self, url: &str) -> io::Result<()> {
+        spawn_detached(OsStr::new(opener()), &[OsStr::new(url)], None)
+    }
+
     fn open_terminal(&self, dir: &Path, configured: &str) -> io::Result<()> {
         let env_terminal = std::env::var("TERMINAL").ok();
         let commands = terminal_commands(

@@ -3,6 +3,8 @@ name = "multigit"
 version = "0.2.0"
 edition = "2024"
 description = "Desktop dashboard for many git repositories"
+license = "MIT"
+repository = "https://github.com/paxel/multigit"
 publish = false
 
 [dependencies]

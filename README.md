@@ -191,6 +191,10 @@ Light or Dark), Tab's
 single-match behaviour, and the card buttons (add, remove, reorder, or pick a
 preset).
 
+**About multigit** in the Settings window shows the version and opens the
+source code, the issue tracker, a mail to the developer, the donation page and
+the list of the crates in multigit with their licences.
+
 | File                                                           | Content                                           |
 |----------------------------------------------------------------|---------------------------------------------------|
 | `~/.config/multigit/config.toml`                               | Repositories, favorites, buttons, settings        |
@@ -270,6 +274,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 tool/coverage.sh    # needs cargo-llvm-cov; COVERAGE_JOBS=1 for a small machine
+tool/licenses.sh    # after a change of Cargo.lock: the About page's licence list
 ```
 
 Clippy denies `unsafe`, and `unwrap`, `expect`, `panic` and indexing outside

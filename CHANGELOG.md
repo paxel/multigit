@@ -4,16 +4,6 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
-
-### Added
-
-- macOS support: CI runs on macOS, and releases include `multigit.app` as a universal (Apple silicon and Intel) zip.
-
-### Changed
-
-- The menu entry and icon are only written on Linux and other freedesktop.org systems, not on macOS.
-
 ## [0.1.0]
 
 ### Added
@@ -30,5 +20,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Output panel with one section per repository and exit code for the last 50 commands.
 - Confirmation before destructive commands (such as `reset --hard` or `push --force`) run in more than one repository.
 - git runs without prompts, pager or editor; commands that need an editor fail with a clear message and failed logins show as "auth failed" on the card.
-- Application menu entry and icon, registered on every start and by the release tarball's `install.sh`.
+- Application menu entry and icon on Linux, registered on every start and by the release tarball's `install.sh`.
+- macOS support: releases include `multigit.app` as a universal (Apple silicon and Intel) zip.
 - Homebrew install from `paxel/tap`: a formula for Linux and a cask for macOS.

@@ -458,6 +458,22 @@ fn card_shows_the_commit_on_one_line() {
 }
 
 #[test]
+fn clicking_the_commit_line_copies_the_full_hash() {
+    let mut h = commit_card("Fix race in SSE handler");
+    h.get_by_label("1a2b3c4 Fix race in SSE handler").click();
+    h.step();
+    assert_eq!(
+        copied(&h),
+        vec!["1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d".to_owned()]
+    );
+    h.run();
+    assert!(
+        h.state().marked.is_empty(),
+        "the click does not mark the card"
+    );
+}
+
+#[test]
 fn card_shows_the_tag() {
     let backend = Arc::new(FakeBackend::default());
     let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);

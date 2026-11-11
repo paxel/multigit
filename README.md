@@ -73,7 +73,8 @@ greyed out, and comes back by itself when the folder returns.
   for all marked repositories.
 - **Copying**: a click on a card's folder name, branch name (or the sha of a
   detached HEAD) or tag copies it to the clipboard instead of marking the
-  card; a click on the path line copies the repository's full path.
+  card; a click on the path line copies the repository's full path, and a
+  click on the commit line the full commit hash.
 - **Command line** at the bottom: type git arguments after the fixed `git`
   label (typing `git` first anyway is fine; it is ignored); Enter runs them in
   all marked repositories. It is disabled while nothing is marked.

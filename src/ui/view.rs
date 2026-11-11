@@ -670,8 +670,20 @@ fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
         ui.horizontal(|ui| {
             ui.label(weak("commit"));
             let text = format!("{} {}", commit.short, commit.subject);
-            ui.add(egui::Label::new(text).truncate())
+            // A click copies the whole hash, not the short one shown.
+            let line = egui::Label::new(text)
+                .truncate()
+                .sense(egui::Sense::click());
+            let response = ui
+                .add(line)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text(&commit.subject);
+            if response.clicked() {
+                let at = response
+                    .interact_pointer_pos()
+                    .unwrap_or_else(|| response.rect.center());
+                actions.push(BoardAction::Copy(commit.hash.clone(), at));
+            }
         });
     }
     let c = snap.status.counts;

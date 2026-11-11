@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Filter field in the toolbar: only cards whose folder name contains the text are shown; hidden cards are skipped by commands, marking and "Remove marked".
-- Commit line on the card: short hash and subject of the checked-out commit.
+- Commit line on the card: short hash and subject of the checked-out commit; a click copies the full hash.
 - Theme setting: System, Light or Dark.
 - Sort button in the toolbar: orders the cards by name, path, branch, tag, dirty first or behind first.
 

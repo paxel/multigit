@@ -35,6 +35,10 @@ impl Backend for GitBackend {
         self.runner.run(dir, args)
     }
 
+    fn fetch(&self, dir: &Path) -> io::Result<ProcessOutput> {
+        self.runner.background_fetch(dir)
+    }
+
     fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput> {
         self.runner.run_shell(dir, line)
     }

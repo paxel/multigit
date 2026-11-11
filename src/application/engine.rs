@@ -20,13 +20,16 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread;
 
-/// Arguments of the automatic background fetch.
+/// What the automatic background fetch does, as git arguments.
 pub const FETCH_ARGS: &[&str] = &["fetch", "--all", "--prune"];
 
 /// The git operations the engine needs (port; implemented over the system git).
 pub trait Backend: Send + Sync + 'static {
     fn probe(&self, dir: &Path) -> Result<Snapshot, ProbeError>;
     fn run(&self, dir: &Path, args: &[String]) -> io::Result<ProcessOutput>;
+    /// The automatic background fetch ([`FETCH_ARGS`]). Nobody started it, so
+    /// it must not run programs the repository's own config names.
+    fn fetch(&self, dir: &Path) -> io::Result<ProcessOutput>;
     /// A `!` line through the user's shell, in `dir`.
     fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput>;
     /// All subcommand names (incl. aliases) and the names of builtins.
@@ -175,8 +178,7 @@ impl Engine {
                     .flatten();
                 if guard.is_some() {
                     if fetch {
-                        let args: Vec<String> = FETCH_ARGS.iter().map(|s| s.to_string()).collect();
-                        let error = match shared.backend.run(&repo, &args) {
+                        let error = match shared.backend.fetch(&repo) {
                             Ok(out) if out.success() => None,
                             Ok(out) => Some(summarize_fetch_error(&out.stderr)),
                             Err(e) => Some(e.to_string()),
@@ -326,6 +328,10 @@ mod tests {
                     String::new()
                 },
             })
+        }
+        fn fetch(&self, dir: &Path) -> io::Result<ProcessOutput> {
+            let args: Vec<String> = FETCH_ARGS.iter().map(|s| s.to_string()).collect();
+            self.run(dir, &args)
         }
         fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput> {
             self.calls

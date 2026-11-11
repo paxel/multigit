@@ -497,6 +497,7 @@ impl App {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::application::engine::FETCH_ARGS;
     use crate::domain::completion::RepoRefs;
     use crate::domain::output::{ProcessOutput, SectionState};
     use crate::domain::status::{Counts, Head, Status};
@@ -546,6 +547,10 @@ pub(crate) mod tests {
                 stdout: format!("ran {}", args.join(" ")),
                 stderr: String::new(),
             })
+        }
+        fn fetch(&self, dir: &Path) -> io::Result<ProcessOutput> {
+            let args: Vec<String> = FETCH_ARGS.iter().map(|s| s.to_string()).collect();
+            self.run(dir, &args)
         }
         fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput> {
             self.shell_runs

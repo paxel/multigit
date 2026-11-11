@@ -215,10 +215,152 @@ fn card_shows_status_and_remove_button_works() {
     h.get_by_label("repo");
     h.get_by_label("clean");
     h.get_by_label("no upstream");
+    h.get_by_label("no tag");
     h.get_by_label("×").click();
     h.run();
     assert!(h.state().cards.is_empty());
     assert!(h.state().marked.is_empty());
+}
+
+/// A primary click at `pos` (for places without a widget of their own).
+fn click_at(h: &mut Harness<'static, App>, pos: egui::Pos2) {
+    h.event(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.run();
+}
+
+/// Empty card space right of the title, left of the × button.
+fn card_space(h: &Harness<'static, App>) -> egui::Pos2 {
+    let title = h.get_by_label("repo").rect();
+    title.right_center() + egui::vec2(60.0, 0.0)
+}
+
+#[test]
+fn clicking_card_space_toggles_its_mark_but_its_buttons_do_not() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut h = harness(marked_app(backend.clone(), &[]));
+    h.run();
+    let space = card_space(&h);
+    click_at(&mut h, space);
+    assert!(h.state().marked.is_empty());
+    click_at(&mut h, space);
+    assert!(h.state().marked.contains(&PathBuf::from("/repo")));
+
+    // A card button runs its command and leaves the mark alone.
+    h.get_all_by_label("push").last().unwrap().click();
+    h.run();
+    settle(&mut h, |a| a.cards[0].last_command == Some(true));
+    assert!(h.state().marked.contains(&PathBuf::from("/repo")));
+    assert!(
+        backend
+            .runs
+            .lock()
+            .unwrap()
+            .contains(&(PathBuf::from("/repo"), vec!["push".to_owned()]))
+    );
+}
+
+fn copied(h: &Harness<'static, App>) -> Vec<String> {
+    h.output()
+        .platform_output
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn clicking_a_card_text_copies_it_and_keeps_the_mark() {
+    let mut h = harness(marked_app(Arc::default(), &[]));
+    h.run();
+    for text in ["repo", "branch", "main", "clean", "no upstream", "no tag"] {
+        h.get_by_label(text).click();
+        // The click lands on the last of the queued events: read that pass.
+        h.step();
+        assert_eq!(copied(&h), vec![text.to_owned()], "{text}");
+        assert!(h.state().copy_flash.is_some(), "{text}");
+        h.run();
+    }
+    assert!(h.state().marked.contains(&PathBuf::from("/repo")));
+}
+
+#[test]
+fn card_shows_the_tag() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);
+    snap.tag = Some("v1.2.0".into());
+    *backend.snapshot.lock().unwrap() = Some(snap);
+    let mut app = app_with(backend, None);
+    app.cards = vec![card("/r/tagged")];
+    let mut h = harness(app);
+    h.run();
+    settle(&mut h, |a| {
+        a.cards[0].snapshot().is_some_and(|s| s.tag.is_some())
+    });
+    h.run();
+    h.get_by_label("tag");
+    h.get_by_label("v1.2.0");
+}
+
+#[test]
+fn shell_line_asks_with_the_shell_name_and_cancel_runs_nothing() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut h = ready(backend.clone(), &[]);
+    type_text(&mut h, "!ls");
+    let shell = crate::ui::view::login_shell_name();
+    h.get_by_label(&shell);
+    key(&mut h, Key::Enter);
+    h.get_by_label("Shell command");
+    h.get_by_label(&format!("Run `ls` with {shell} in 1 repository?"));
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert!(h.state().confirm.is_none());
+    assert!(backend.shell_runs.lock().unwrap().is_empty());
+    assert_eq!(h.state().history.entries(), &["!ls"]);
+}
+
+fn enter_event(pressed: bool) -> egui::Event {
+    egui::Event::Key {
+        key: Key::Enter,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+#[test]
+fn enter_confirms_a_shell_line_but_a_key_repeat_does_not() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut h = ready(backend.clone(), &[]);
+    type_text(&mut h, "!ls");
+    // Enter runs the line and stays held: egui marks the next presses as repeats.
+    h.event(enter_event(true));
+    h.run();
+    assert!(h.state().confirm.is_some());
+    h.event(enter_event(true));
+    h.run();
+    assert!(h.state().confirm.is_some(), "a held Enter must not confirm");
+    h.event(enter_event(false));
+    h.run();
+    assert!(h.state().confirm.is_some());
+    key(&mut h, Key::Enter);
+    assert!(h.state().confirm.is_none());
+    settle(&mut h, |a| a.cards[0].last_command == Some(true));
+    assert_eq!(
+        backend.shell_runs.lock().unwrap().clone(),
+        vec![(PathBuf::from("/repo"), "ls".to_owned())]
+    );
 }
 
 fn card(path: &str) -> Card {

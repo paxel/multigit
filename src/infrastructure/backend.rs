@@ -35,6 +35,10 @@ impl Backend for GitBackend {
         self.runner.run(dir, args)
     }
 
+    fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput> {
+        self.runner.run_shell(dir, line)
+    }
+
     fn list_commands(&self, dir: &Path) -> (Vec<String>, Vec<String>) {
         (
             self.words(dir, &["--list-cmds=main,others,alias,nohelpers"]),

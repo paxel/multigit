@@ -52,7 +52,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                 .spacing([6.0, 4.0])
                 .show(ui, |ui| {
                     ui.weak("Label");
-                    ui.weak("git arguments");
+                    ui.weak("git arguments, or ! and a shell line");
                     ui.end_row();
                     for (i, b) in config.buttons.iter_mut().enumerate() {
                         ui.add(TextEdit::singleline(&mut b.label).desired_width(140.0));

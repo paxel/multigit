@@ -9,6 +9,9 @@ pub struct Snapshot {
     pub status: Status,
     pub state: RepoState,
     pub refs: RepoRefs,
+    /// Nearest tag reachable from HEAD (lightweight tags included); `None`
+    /// without one.
+    pub tag: Option<String>,
 }
 
 /// Why a repository could not be probed.

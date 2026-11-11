@@ -1,9 +1,10 @@
 //! Drawing of the board: toolbar, cards, output panel, CLI, toasts, dialogs.
 
+use crate::domain::command::{Job, display, shell_name, shell_program};
 use crate::domain::naming::{subtitles, title};
 use crate::domain::output::{Run, SectionState};
 use crate::domain::status::{Head, RepoState, Upstream};
-use crate::ui::app::{App, Card};
+use crate::ui::app::{App, Card, CopyFlash};
 use crate::ui::cli::{CliAction, CliContext};
 use crate::ui::settings;
 use egui::{Color32, RichText, Ui};
@@ -23,6 +24,55 @@ enum BoardAction {
     Remove(PathBuf),
     Button(usize, PathBuf),
     Toggle(PathBuf),
+    /// A card text was clicked at this pointer position.
+    Copy(String, egui::Pos2),
+}
+
+/// How long the "Copied" animation lasts, and how far it floats up.
+const COPY_FLASH_SECS: f64 = 0.6;
+const COPY_FLASH_RISE: f32 = 20.0;
+
+/// Progress of the "Copied" animation from 0 to 1; `None` once it is over.
+fn flash_progress(started: f64, now: f64) -> Option<f32> {
+    let t = (now - started) / COPY_FLASH_SECS;
+    (0.0..1.0).contains(&t).then_some(t as f32)
+}
+
+/// Name of the shell `!` lines run in, for labels.
+pub fn login_shell_name() -> String {
+    shell_name(&shell_program(std::env::var_os("SHELL")))
+}
+
+/// Takes every Enter out of this frame's input while the dialog is open and
+/// reports whether one was a fresh press. Key repeats do not count, so holding
+/// the Enter that ran a line cannot confirm its dialog; taking them all also
+/// keeps them from clicking a focused button.
+fn take_fresh_enter(ui: &Ui) -> bool {
+    ui.input_mut(|i| {
+        let mut fresh = false;
+        i.events.retain(|e| match e {
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                pressed,
+                repeat,
+                ..
+            } => {
+                fresh |= *pressed && !*repeat;
+                false
+            }
+            _ => true,
+        });
+        fresh
+    })
+}
+
+/// `1 repository`, `3 repositories`.
+fn repositories(count: usize) -> String {
+    if count == 1 {
+        "1 repository".to_owned()
+    } else {
+        format!("{count} repositories")
+    }
 }
 
 fn ok_color(ui: &Ui) -> Color32 {
@@ -44,6 +94,8 @@ impl App {
     /// Draw the whole app into `ui` (the eframe root ui, or a test harness).
     pub fn show(&mut self, ui: &mut Ui) {
         self.handle_events();
+        // Taken before the command line sees the key, which keeps focus under the dialog.
+        let enter_confirms = self.confirm.is_some() && take_fresh_enter(ui);
         if let Some(folder) = self.take_picked_folder() {
             self.add_folder(&folder);
         }
@@ -69,7 +121,8 @@ impl App {
         egui::CentralPanel::default().show(ui, |ui| self.board(ui));
 
         self.toasts_overlay(ui);
-        self.confirm_dialog(ui);
+        self.copy_flash_overlay(ui);
+        self.confirm_dialog(ui, enter_confirms);
         settings::show(self, ui.ctx());
     }
 
@@ -185,6 +238,13 @@ impl App {
                         self.marked.insert(p);
                     }
                 }
+                BoardAction::Copy(text, at) => {
+                    ui.ctx().copy_text(text);
+                    self.copy_flash = Some(CopyFlash {
+                        at,
+                        started: ui.input(|i| i.time),
+                    });
+                }
             }
         }
     }
@@ -197,6 +257,7 @@ impl App {
             vocab: &self.vocab,
             values: &values,
             auto_insert_single: self.config.auto_insert_single_match,
+            shell: login_shell_name(),
         };
         let mut cli = std::mem::take(&mut self.cli);
         let actions = cli.show(ui, &cx);
@@ -229,6 +290,31 @@ impl App {
             });
     }
 
+    /// "Copied" floating up from the pointer and fading out; repaints only
+    /// while it runs.
+    fn copy_flash_overlay(&mut self, ui: &Ui) {
+        let Some(flash) = self.copy_flash else {
+            return;
+        };
+        let Some(t) = flash_progress(flash.started, ui.input(|i| i.time)) else {
+            self.copy_flash = None;
+            return;
+        };
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(
+            egui::Order::Tooltip,
+            egui::Id::new("copy-flash"),
+        ));
+        let color = ui.visuals().strong_text_color().gamma_multiply(1.0 - t);
+        painter.text(
+            flash.at - egui::vec2(0.0, 8.0 + COPY_FLASH_RISE * t),
+            egui::Align2::CENTER_BOTTOM,
+            "Copied",
+            egui::TextStyle::Small.resolve(ui.style()),
+            color,
+        );
+        ui.ctx().request_repaint();
+    }
+
     fn toasts_overlay(&self, ui: &Ui) {
         if self.toasts.is_empty() {
             return;
@@ -245,22 +331,37 @@ impl App {
             });
     }
 
-    fn confirm_dialog(&mut self, ui: &Ui) {
+    /// `enter` confirms, like a click on Run.
+    fn confirm_dialog(&mut self, ui: &Ui, enter: bool) {
         let Some(pending) = &self.confirm else {
             return;
         };
         let names: Vec<String> = pending.repos.iter().map(|p| title(p)).collect();
-        let command = pending.command.clone();
+        let (heading, question) = match &pending.job {
+            Job::Shell(line) => (
+                "Shell command",
+                format!(
+                    "Run `{line}` with {} in {}?",
+                    login_shell_name(),
+                    repositories(names.len())
+                ),
+            ),
+            Job::Git(_) => (
+                "Destructive command",
+                format!(
+                    "Run `{}` in {}? This can discard work.",
+                    display(&pending.command),
+                    repositories(names.len())
+                ),
+            ),
+        };
         let mut decision = None;
         egui::Modal::new(egui::Id::new("confirm-destructive")).show(ui.ctx(), |ui| {
-            ui.heading("Destructive command");
-            ui.label(format!(
-                "Run `git {command}` in {} repositories? This can discard work.",
-                names.len()
-            ));
+            ui.heading(heading);
+            ui.label(question);
             ui.label(names.join(", "));
             ui.horizontal(|ui| {
-                if ui.button("Run").clicked() {
+                if ui.button("Run").clicked() || enter {
                     decision = Some(true);
                 }
                 if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -285,7 +386,6 @@ fn card_ui(
     buttons: &[crate::domain::config::ButtonDef],
     actions: &mut Vec<BoardAction>,
 ) {
-    let path_text = card.path.display().to_string();
     let mut frame = egui::Frame::group(ui.style()).inner_margin(CARD_MARGIN);
     if marked {
         // Marked cards get a thick selection-colored border and a tinted background.
@@ -294,20 +394,35 @@ fn card_ui(
             .stroke(egui::Stroke::new(MARKED_STROKE, selection))
             .fill(selection.gamma_multiply(0.18));
     }
+    // The card's empty space toggles its mark; its buttons and texts (which
+    // copy themselves) sit above this sense and keep their clicks. Texts are
+    // not selectable: a drag to select would fight the click that copies.
+    let card_sense = egui::UiBuilder::new().sense(egui::Sense::click());
+    let response = ui.scope_builder(card_sense, |ui| {
+        ui.style_mut().interaction.selectable_labels = false;
+        card_frame(ui, frame, card, subtitle, busy, buttons, actions);
+    });
+    if response.response.clicked() {
+        actions.push(BoardAction::Toggle(card.path.clone()));
+    }
+}
+
+fn card_frame(
+    ui: &mut Ui,
+    frame: egui::Frame,
+    card: &Card,
+    subtitle: Option<&str>,
+    busy: bool,
+    buttons: &[crate::domain::config::ButtonDef],
+    actions: &mut Vec<BoardAction>,
+) {
+    let path_text = card.path.display().to_string();
     frame.show(ui, |ui| {
         ui.set_width(CARD_WIDTH);
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                let mut checked = marked;
-                if ui
-                    .checkbox(&mut checked, "")
-                    .on_hover_text("Mark")
-                    .changed()
-                {
-                    actions.push(BoardAction::Toggle(card.path.clone()));
-                }
-                ui.label(RichText::new(title(&card.path)).strong().size(15.0))
-                    .on_hover_text(&path_text);
+                let name = RichText::new(title(&card.path)).strong().size(15.0);
+                copyable(ui, name, actions).on_hover_text(&path_text);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .small_button("×")
@@ -319,25 +434,31 @@ fn card_ui(
                 });
             });
             if let Some(sub) = subtitle {
-                ui.weak(sub).on_hover_text(&path_text);
+                copyable(ui, RichText::new(sub).weak(), actions).on_hover_text(&path_text);
             }
             let greyed = card.snapshot().is_none();
             if greyed {
                 ui.multiply_opacity(0.55);
             }
-            status_lines(ui, card);
+            status_lines(ui, card, actions);
             if let Some(error) = &card.fetch_error {
-                ui.colored_label(ui.visuals().error_fg_color, format!("fetch: {error}"));
+                let error =
+                    RichText::new(format!("fetch: {error}")).color(ui.visuals().error_fg_color);
+                copyable(ui, error, actions);
             }
             if busy {
-                ui.colored_label(ui.visuals().warn_fg_color, "running");
+                let running = RichText::new("running").color(ui.visuals().warn_fg_color);
+                copyable(ui, running, actions);
             } else {
                 match card.last_command {
                     Some(true) => {
-                        ui.colored_label(ok_color(ui), "last command: ok");
+                        let ok = RichText::new("last command: ok").color(ok_color(ui));
+                        copyable(ui, ok, actions);
                     }
                     Some(false) => {
-                        ui.colored_label(ui.visuals().error_fg_color, "last command: failed");
+                        let failed = RichText::new("last command: failed")
+                            .color(ui.visuals().error_fg_color);
+                        copyable(ui, failed, actions);
                     }
                     None => {}
                 }
@@ -346,7 +467,7 @@ fn card_ui(
                 for (i, b) in buttons.iter().enumerate() {
                     if ui
                         .add_enabled(!greyed, egui::Button::new(&b.label))
-                        .on_hover_text(format!("git {}", b.args))
+                        .on_hover_text(display(&b.args))
                         .clicked()
                     {
                         actions.push(BoardAction::Button(i, card.path.clone()));
@@ -357,14 +478,35 @@ fn card_ui(
     });
 }
 
-fn status_lines(ui: &mut Ui, card: &Card) {
+/// A card text: a click copies it to the clipboard (and does not toggle the
+/// card); the pointer turns into a hand over it.
+fn copyable(ui: &mut Ui, text: RichText, actions: &mut Vec<BoardAction>) -> egui::Response {
+    let copy = text.text().to_owned();
+    let response = ui
+        .add(egui::Label::new(text).sense(egui::Sense::click()))
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.clicked() {
+        let at = response
+            .interact_pointer_pos()
+            .unwrap_or_else(|| response.rect.center());
+        actions.push(BoardAction::Copy(copy, at));
+    }
+    response
+}
+
+fn weak(text: impl Into<String>) -> RichText {
+    RichText::new(text).weak()
+}
+
+fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
     let snap = match &card.probe {
         None => {
-            ui.weak("loading");
+            copyable(ui, weak("loading"), actions);
             return;
         }
         Some(Err(e)) => {
-            ui.colored_label(ui.visuals().error_fg_color, e.to_string());
+            let error = RichText::new(e.to_string()).color(ui.visuals().error_fg_color);
+            copyable(ui, error, actions);
             return;
         }
         Some(Ok(snap)) => snap,
@@ -374,58 +516,62 @@ fn status_lines(ui: &mut Ui, card: &Card) {
         Head::Unborn(b) => format!("{b} (no commits)"),
         Head::Detached(sha) => format!("detached @ {sha}"),
     };
+    let warn = ui.visuals().warn_fg_color;
     ui.horizontal(|ui| {
-        ui.weak("branch");
-        ui.label(RichText::new(branch).monospace());
+        copyable(ui, weak("branch"), actions);
+        copyable(ui, RichText::new(branch).monospace(), actions);
         match snap.state {
             RepoState::Rebasing => {
-                ui.colored_label(ui.visuals().warn_fg_color, "rebasing");
+                copyable(ui, RichText::new("rebasing").color(warn), actions);
             }
             RepoState::Merging => {
-                ui.colored_label(ui.visuals().warn_fg_color, "merging");
+                copyable(ui, RichText::new("merging").color(warn), actions);
             }
             RepoState::Normal => {}
         }
     });
+    ui.horizontal(|ui| match &snap.tag {
+        Some(tag) => {
+            copyable(ui, weak("tag"), actions);
+            copyable(ui, RichText::new(tag).monospace(), actions);
+        }
+        None => {
+            copyable(ui, weak("no tag"), actions);
+        }
+    });
     let c = snap.status.counts;
     ui.horizontal(|ui| {
-        ui.weak("status");
+        copyable(ui, weak("status"), actions);
         if c.is_clean() {
-            ui.colored_label(ok_color(ui), "clean");
+            copyable(ui, RichText::new("clean").color(ok_color(ui)), actions);
         } else {
-            ui.label(
-                RichText::new(format!(
-                    "+{} ~{} ?{} !{}",
-                    c.staged, c.modified, c.untracked, c.conflicts
-                ))
-                .monospace(),
-            )
-            .on_hover_text("+staged ~modified ?untracked !conflicts");
+            let counts = format!(
+                "+{} ~{} ?{} !{}",
+                c.staged, c.modified, c.untracked, c.conflicts
+            );
+            copyable(ui, RichText::new(counts).monospace(), actions)
+                .on_hover_text("+staged ~modified ?untracked !conflicts");
         }
     });
     ui.horizontal(|ui| match snap.status.upstream {
         Upstream::None => {
-            ui.weak("no upstream");
+            copyable(ui, weak("no upstream"), actions);
         }
         Upstream::Gone => {
-            ui.colored_label(ui.visuals().warn_fg_color, "upstream gone");
+            copyable(ui, RichText::new("upstream gone").color(warn), actions);
         }
         Upstream::Tracking { ahead, behind } => {
-            ui.weak("unpushed");
-            ui.label(RichText::new(ahead.to_string()).strong());
-            ui.weak("unpulled");
-            ui.label(RichText::new(behind.to_string()).strong());
+            copyable(ui, weak("unpushed"), actions);
+            copyable(ui, RichText::new(ahead.to_string()).strong(), actions);
+            copyable(ui, weak("unpulled"), actions);
+            copyable(ui, RichText::new(behind.to_string()).strong(), actions);
         }
     });
 }
 
 fn run_ui(ui: &mut Ui, run: &Run) {
     ui.separator();
-    ui.label(
-        RichText::new(format!("git {}", run.command))
-            .monospace()
-            .strong(),
-    );
+    ui.label(RichText::new(display(&run.command)).monospace().strong());
     for section in &run.sections {
         let (status, color) = match &section.state {
             SectionState::Queued => ("queued".to_owned(), ui.visuals().weak_text_color()),
@@ -458,5 +604,19 @@ fn run_ui(ui: &mut Ui, run: &Run) {
                 }
                 _ => {}
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_flash_runs_for_its_duration_then_ends() {
+        assert_eq!(flash_progress(10.0, 10.0), Some(0.0));
+        let half = flash_progress(10.0, 10.3).unwrap();
+        assert!((half - 0.5).abs() < 1e-3, "{half}");
+        assert_eq!(flash_progress(10.0, 10.7), None);
+        assert_eq!(flash_progress(10.0, 9.0), None);
     }
 }

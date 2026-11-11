@@ -131,6 +131,15 @@ fn split_words(before_cursor: &str) -> (Vec<&str>, usize, &str) {
 
 /// Compute completion candidates for the word ending at `cursor` (byte offset).
 pub fn complete(line: &str, cursor: usize, vocab: &Vocabulary, values: &RepoValues) -> Completion {
+    // Shell syntax cannot be completed reliably: no candidates after `!`.
+    if crate::domain::command::shell_line(line).is_some() {
+        return Completion {
+            word_start: cursor.min(line.len()),
+            partial: String::new(),
+            candidates: Vec::new(),
+            missing_options_for: None,
+        };
+    }
     // A typed leading `git` is ignored (the label already says git).
     let skip = git_prefix_len(line);
     if skip > 0 && cursor >= skip {
@@ -352,6 +361,16 @@ mod tests {
         assert_eq!(c.partial, "pu");
         assert!(c.candidates[0].description.is_some());
         assert!(texts(&at_end("", &RepoValues::default())).contains(&"st"));
+    }
+
+    #[test]
+    fn shell_lines_get_no_completion() {
+        for line in ["!pu", "! git pull --r", "  !"] {
+            let c = at_end(line, &RepoValues::default());
+            assert!(c.candidates.is_empty(), "{line}");
+            assert!(c.missing_options_for.is_none());
+            assert_eq!(tab_action(&c, true), TabAction::Nothing);
+        }
     }
 
     #[test]

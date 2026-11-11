@@ -26,6 +26,8 @@ Each card shows:
 - the folder name (with the shortest distinguishing parent path when two
   repositories share a name; the full path is in the tooltip)
 - the branch, or `detached @ <sha>`
+- the nearest tag reachable from the checked-out commit (lightweight tags
+  included), or `no tag`
 - the working tree: `clean`, or `+staged ~modified ?untracked !conflicts`
 - `rebasing` or `merging` while one is in progress
 - unpushed and unpulled commits, `no upstream`, or `upstream gone`
@@ -53,13 +55,20 @@ greyed out, and comes back by itself when the folder returns.
 
 - **Card buttons** run in that one repository. The defaults are
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
-- **Marking**: the checkbox on a card marks it; marked cards get a coloured
-  border. The toolbar marks all, none, dirty (changes or an operation in
+- **Marking**: a click on a card's empty space marks it, a second click
+  unmarks it; marked cards get a coloured border. A click on any text of a
+  card copies that text to the clipboard instead. The toolbar marks all, none, dirty (changes or an operation in
   progress) or behind (unpulled commits). The toolbar repeats the card buttons
   for all marked repositories.
 - **Command line** at the bottom: type git arguments after the fixed `git`
   label (typing `git` first anyway is fine; it is ignored); Enter runs them in
   all marked repositories. It is disabled while nothing is marked.
+- **Shell lines**: a line starting with `!` runs through your login shell
+  (`$SHELL -c`, or `sh -c` when `$SHELL` is empty) in each marked repository's
+  folder, for example `!ls | wc -l`. The label in front of the line then shows
+  the shell's name. A button whose arguments start with `!` does the same.
+  Shell lines always ask for confirmation first, even for one repository
+  (Enter or Run confirms, Esc cancels), and get no Tab completion.
 
 Commands run in parallel, four at a time by default. Destructive commands
 (`reset --hard`, `push --force`, `clean -f`, `branch -D`, `checkout -- <paths>`,
@@ -90,7 +99,7 @@ popup.
 
 ### No terminal
 
-git runs without a terminal: no password or passphrase prompts (use
+git and shell lines run without a terminal and without input: no password or passphrase prompts (use
 ssh-agent or a credential helper), no pager, and no editor. A command that
 needs an editor, such as `commit` without `-m` or `rebase -i`, fails with a
 message saying so.

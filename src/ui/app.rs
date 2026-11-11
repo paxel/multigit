@@ -2,6 +2,7 @@
 
 use crate::application::engine::{Backend, Engine, Event, Notify};
 use crate::application::schedule::{Due, Schedule};
+use crate::domain::command::{Job, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::Config;
 use crate::domain::destructive::is_destructive;
@@ -62,12 +63,23 @@ impl Card {
     }
 }
 
-/// A destructive bulk command waiting for confirmation.
+/// A command waiting for confirmation: a destructive git command on several
+/// repositories, or any shell line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingRun {
+    /// As typed (without a leading `git`); a shell line keeps its `!`.
     pub command: String,
-    pub args: Vec<String>,
+    pub job: Job,
     pub repos: Vec<PathBuf>,
+}
+
+/// The "Copied" animation after a click on a card text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CopyFlash {
+    /// Pointer position of the click.
+    pub at: egui::Pos2,
+    /// `egui` input time when the copy happened, in seconds.
+    pub started: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +110,7 @@ pub struct App {
     options_requested: HashSet<String>,
     commands_requested: bool,
     pub toasts: Vec<Toast>,
+    pub copy_flash: Option<CopyFlash>,
     pub confirm: Option<PendingRun>,
     pub settings_open: bool,
     notify: Notify,
@@ -140,6 +153,7 @@ impl App {
             options_requested: HashSet::new(),
             commands_requested: false,
             toasts: Vec::new(),
+            copy_flash: None,
             confirm: None,
             settings_open: false,
             notify,
@@ -263,11 +277,22 @@ impl App {
         self.engine.is_busy(repo)
     }
 
-    /// Run `git <command>` in `repos`; destructive commands on more than one repo
-    /// wait for confirmation.
+    /// Run `git <command>` in `repos`, or the shell line after a leading `!`.
+    /// Shell lines always wait for confirmation, destructive git commands when
+    /// they run in more than one repo.
     pub fn start_run(&mut self, command: &str, repos: Vec<PathBuf>) {
-        let command = strip_git_prefix(command.trim());
+        let command = strip_git_prefix(command.trim()).trim();
         if repos.is_empty() || command.is_empty() {
+            return;
+        }
+        if let Some(line) = shell_line(command) {
+            if !line.is_empty() {
+                self.confirm = Some(PendingRun {
+                    command: command.to_owned(),
+                    job: Job::Shell(line.to_owned()),
+                    repos,
+                });
+            }
             return;
         }
         let args = match shell_words::split(command) {
@@ -277,12 +302,13 @@ impl App {
                 return;
             }
         };
+        let destructive = repos.len() > 1 && is_destructive(&args);
         let pending = PendingRun {
-            command: command.trim().to_owned(),
-            args,
+            command: command.to_owned(),
+            job: Job::Git(args),
             repos,
         };
-        if pending.repos.len() > 1 && is_destructive(&pending.args) {
+        if destructive {
             self.confirm = Some(pending);
         } else {
             self.execute(pending);
@@ -292,7 +318,7 @@ impl App {
     fn execute(&mut self, run: PendingRun) {
         let id = self.log.start(&run.command, &run.repos);
         for repo in &run.repos {
-            self.engine.run_command(id, repo, run.args.clone());
+            self.engine.run_command(id, repo, run.job.clone());
         }
     }
 
@@ -310,7 +336,7 @@ impl App {
     pub fn run_cli_line(&mut self, line: &str) {
         let repos = self.marked_repos();
         let line = strip_git_prefix(line.trim());
-        if line.is_empty() || repos.is_empty() {
+        if line.is_empty() || shell_line(line) == Some("") || repos.is_empty() {
             return;
         }
         self.history.push(line);
@@ -481,6 +507,7 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub struct FakeBackend {
         pub runs: Mutex<Vec<(PathBuf, Vec<String>)>>,
+        pub shell_runs: Mutex<Vec<(PathBuf, String)>>,
         pub snapshot: Mutex<Option<Snapshot>>,
     }
 
@@ -497,6 +524,7 @@ pub(crate) mod tests {
                 branches: branches.iter().map(|s| s.to_string()).collect(),
                 ..RepoRefs::default()
             },
+            tag: None,
         }
     }
 
@@ -516,6 +544,17 @@ pub(crate) mod tests {
             Ok(ProcessOutput {
                 exit_code: Some(0),
                 stdout: format!("ran {}", args.join(" ")),
+                stderr: String::new(),
+            })
+        }
+        fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput> {
+            self.shell_runs
+                .lock()
+                .unwrap()
+                .push((dir.to_path_buf(), line.to_owned()));
+            Ok(ProcessOutput {
+                exit_code: Some(0),
+                stdout: format!("shell {line}"),
                 stderr: String::new(),
             })
         }
@@ -729,6 +768,48 @@ pub(crate) mod tests {
         );
         assert_eq!(app.history.entries(), &["pull --rebase"]);
         assert_eq!(app.log.runs().next().unwrap().command, "pull --rebase");
+    }
+
+    #[test]
+    fn shell_lines_always_need_confirmation_and_keep_their_bang() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut app = app_with(backend.clone(), None);
+        app.cards = vec![Card::new("/a".into())];
+        app.marked.insert("/a".into());
+        app.run_cli_line("! ls | wc -l");
+        // One repo is enough: a shell line can do anything.
+        let pending = app.confirm.clone().unwrap();
+        assert_eq!(pending.command, "! ls | wc -l");
+        assert_eq!(pending.job, Job::Shell("ls | wc -l".into()));
+        assert!(app.log.is_empty());
+        assert_eq!(app.history.entries(), &["! ls | wc -l"]);
+        app.confirm_run();
+        settle(&mut app, |a| a.cards[0].last_command == Some(true));
+        assert_eq!(
+            backend.shell_runs.lock().unwrap().clone(),
+            vec![(PathBuf::from("/a"), "ls | wc -l".to_owned())]
+        );
+        assert!(backend.runs.lock().unwrap().is_empty());
+        assert_eq!(app.log.runs().next().unwrap().command, "! ls | wc -l");
+
+        app.run_cli_line("!   ");
+        assert!(app.confirm.is_none(), "an empty shell line runs nothing");
+        assert_eq!(app.history.entries().len(), 1);
+    }
+
+    #[test]
+    fn shell_button_asks_too() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut app = app_with(backend.clone(), None);
+        app.cards = vec![Card::new("/a".into())];
+        app.config.buttons = vec![crate::domain::config::ButtonDef::new("make", "!make test")];
+        app.run_button(0, Path::new("/a"));
+        assert_eq!(
+            app.confirm.as_ref().map(|p| &p.job),
+            Some(&Job::Shell("make test".into()))
+        );
+        app.cancel_run();
+        assert!(backend.shell_runs.lock().unwrap().is_empty());
     }
 
     #[test]

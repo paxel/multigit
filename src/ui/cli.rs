@@ -1,6 +1,7 @@
 //! The bottom command line: `git` label, input, Tab completion popup,
 //! fish-like history suggestion, filtered Up/Down and Ctrl+R fuzzy search.
 
+use crate::domain::command::shell_line;
 use crate::domain::completion::{
     Completion, RepoValues, TabAction, Vocabulary, complete, replace_word, tab_action,
 };
@@ -60,6 +61,8 @@ pub struct CliContext<'a> {
     pub vocab: &'a Vocabulary,
     pub values: &'a RepoValues,
     pub auto_insert_single: bool,
+    /// Name of the shell `!` lines run in, shown instead of `git` for them.
+    pub shell: String,
 }
 
 /// What the app has to do after the CLI frame.
@@ -262,13 +265,18 @@ impl CliState {
         }
 
         let hint = if cx.enabled {
-            "git arguments, a leading git is ignored (Tab completes, Ctrl+R searches history)"
+            "git arguments, a leading git is ignored; ! runs a shell line (Tab completes, Ctrl+R searches history)"
         } else {
             "mark repositories to run commands"
         };
+        let label = if shell_line(&self.text).is_some() {
+            cx.shell.as_str()
+        } else {
+            "git"
+        };
         let output = ui
             .horizontal(|ui| {
-                ui.label(RichText::new("git").monospace().strong());
+                ui.label(RichText::new(label).monospace().strong());
                 ui.add_enabled_ui(cx.enabled, |ui| {
                     TextEdit::singleline(&mut self.text)
                         .id(id)

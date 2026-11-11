@@ -5,15 +5,15 @@ const GLOBAL_OPTIONS_WITH_VALUE: &[&str] = &["-C", "-c", "--git-dir", "--work-tr
 
 /// Split args into the subcommand and its own arguments, skipping global options.
 pub fn split_subcommand(args: &[String]) -> Option<(&str, &[String])> {
-    let mut i = 0;
-    while i < args.len() {
-        let arg = args[i].as_str();
+    let mut rest = args;
+    while let Some((first, tail)) = rest.split_first() {
+        let arg = first.as_str();
         if GLOBAL_OPTIONS_WITH_VALUE.contains(&arg) {
-            i += 2;
+            rest = tail.get(1..).unwrap_or_default();
         } else if arg.starts_with('-') {
-            i += 1;
+            rest = tail;
         } else {
-            return Some((arg, &args[i + 1..]));
+            return Some((arg, tail));
         }
     }
     None
@@ -72,6 +72,22 @@ mod tests {
     fn d(line: &str) -> bool {
         let args: Vec<String> = line.split_whitespace().map(String::from).collect();
         is_destructive(&args)
+    }
+
+    #[test]
+    fn subcommand_skips_global_options() {
+        let args =
+            |line: &str| -> Vec<String> { line.split_whitespace().map(String::from).collect() };
+        let a = args("-C /p -c a=b --no-pager status -s");
+        assert_eq!(
+            split_subcommand(&a),
+            Some(("status", &["-s".to_owned()][..]))
+        );
+        assert_eq!(split_subcommand(&args("log")), Some(("log", &[][..])));
+        // A value option at the end has no value and no subcommand after it.
+        assert_eq!(split_subcommand(&args("-C")), None);
+        assert_eq!(split_subcommand(&args("--no-pager")), None);
+        assert_eq!(split_subcommand(&[]), None);
     }
 
     #[test]

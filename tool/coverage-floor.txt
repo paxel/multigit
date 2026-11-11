@@ -1,0 +1,5 @@
+# Line coverage floor of src/, checked by tool/coverage.sh: below it fails
+# the release. A run that measures more raises it here to one point below
+# the measured value, rounded down (89.03 % gives 88), and the raised file
+# is committed. It is never lowered.
+0

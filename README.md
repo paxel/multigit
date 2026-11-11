@@ -1,5 +1,18 @@
 # multigit
 
+<p>
+  <a href="https://github.com/paxel/multigit/actions/workflows/ci.yml"><img src="https://github.com/paxel/multigit/actions/workflows/ci.yml/badge.svg?branch=summer" alt="CI"/></a>
+  <a href="https://github.com/paxel/multigit/actions/workflows/security.yml"><img src="https://github.com/paxel/multigit/actions/workflows/security.yml/badge.svg?branch=summer" alt="Security"/></a>
+  <a href="https://github.com/paxel/multigit/actions/workflows/codeql.yml"><img src="https://github.com/paxel/multigit/actions/workflows/codeql.yml/badge.svg?branch=summer" alt="CodeQL"/></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=paxel_multigit"><img src="https://sonarcloud.io/api/project_badges/measure?project=paxel_multigit&metric=alert_status" alt="Quality gate"/></a>
+  <a href="https://sonarcloud.io/component_measures?id=paxel_multigit&metric=coverage"><img src="https://sonarcloud.io/api/project_badges/measure?project=paxel_multigit&metric=coverage" alt="Coverage"/></a>
+  <a href="https://sonarcloud.io/summary/overall?id=paxel_multigit"><img src="https://sonarcloud.io/api/project_badges/measure?project=paxel_multigit&metric=ncloc" alt="Lines of code"/></a>
+  <a href="https://github.com/paxel/multigit/releases/latest"><img src="https://img.shields.io/github/v/release/paxel/multigit" alt="Release"/></a>
+  <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-informational" alt="Platforms"/>
+  <img src="https://img.shields.io/github/languages/top/paxel/multigit" alt="Top language"/>
+  <img src="https://img.shields.io/github/last-commit/paxel/multigit/summer" alt="Last commit"/>
+</p>
+
 <img src="assets/multigit.svg" alt="multigit icon" width="96" align="right">
 
 A desktop dashboard for many git repositories, for Linux and macOS. Every
@@ -13,6 +26,8 @@ Each card shows:
 - the folder name (with the shortest distinguishing parent path when two
   repositories share a name; the full path is in the tooltip)
 - the branch, or `detached @ <sha>`
+- the nearest tag reachable from the checked-out commit (lightweight tags
+  included), or `no tag`
 - the working tree: `clean`, or `+staged ~modified ?untracked !conflicts`
 - `rebasing` or `merging` while one is in progress
 - unpushed and unpulled commits, `no upstream`, or `upstream gone`
@@ -40,13 +55,20 @@ greyed out, and comes back by itself when the folder returns.
 
 - **Card buttons** run in that one repository. The defaults are
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
-- **Marking**: the checkbox on a card marks it; marked cards get a coloured
-  border. The toolbar marks all, none, dirty (changes or an operation in
+- **Marking**: a click on a card's empty space marks it, a second click
+  unmarks it; marked cards get a coloured border. A click on any text of a
+  card copies that text to the clipboard instead. The toolbar marks all, none, dirty (changes or an operation in
   progress) or behind (unpulled commits). The toolbar repeats the card buttons
   for all marked repositories.
 - **Command line** at the bottom: type git arguments after the fixed `git`
   label (typing `git` first anyway is fine; it is ignored); Enter runs them in
   all marked repositories. It is disabled while nothing is marked.
+- **Shell lines**: a line starting with `!` runs through your login shell
+  (`$SHELL -c`, or `sh -c` when `$SHELL` is empty) in each marked repository's
+  folder, for example `!ls | wc -l`. The label in front of the line then shows
+  the shell's name. A button whose arguments start with `!` does the same.
+  Shell lines always ask for confirmation first, even for one repository
+  (Enter or Run confirms, Esc cancels), and get no Tab completion.
 
 Commands run in parallel, four at a time by default. Destructive commands
 (`reset --hard`, `push --force`, `clean -f`, `branch -D`, `checkout -- <paths>`,
@@ -77,7 +99,7 @@ popup.
 
 ### No terminal
 
-git runs without a terminal: no password or passphrase prompts (use
+git and shell lines run without a terminal and without input: no password or passphrase prompts (use
 ssh-agent or a credential helper), no pager, and no editor. A command that
 needs an editor, such as `commit` without `-m` or `rebase -i`, fails with a
 message saying so.
@@ -101,6 +123,19 @@ config file cannot be read, the app starts with defaults and does not save
 over it.
 
 ## Install
+
+### Homebrew (Linux x86_64 and macOS)
+
+```sh
+brew install paxel/tap/multigit           # Linux
+brew install --cask paxel/tap/multigit    # macOS
+```
+
+On Linux the formula also puts the menu entry and icon into
+`~/.local/share`; `multigit-install-icon` writes them again, and
+`multigit-install-icon --uninstall` removes them before `brew uninstall`. On
+macOS the app is not signed: on first start, choose **Open Anyway** in System
+Settings, Privacy & Security.
 
 ### Release tarball (Linux x86_64)
 
@@ -153,8 +188,19 @@ started from.
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+tool/coverage.sh    # needs cargo-llvm-cov; COVERAGE_JOBS=1 for a small machine
 ```
 
-CI runs these on Linux and macOS on every push and pull request. Pushing a
+Clippy denies `unsafe`, and `unwrap`, `expect`, `panic` and indexing outside
+tests (`Cargo.toml`, `clippy.toml`).
+
+CI runs these on Linux and macOS on every push and pull request, together with
+CodeQL (Rust and the workflows) and OSV-Scanner on `Cargo.lock`. A notice that a
+crate is unmaintained only fails the weekly Security run; accepted ones are in
+`osv-scanner.toml`, each with a reason and a review date. SonarQube Cloud
+analyses `summer` after every push. Pushing a
 tag `vX.Y.Z` that matches the version in `Cargo.toml` builds the Linux tarball
 and the macOS zip and publishes a GitHub release with that version's `CHANGELOG.md` section as release notes.
+The release stops first on a failing check, a known vulnerability, an open high
+or critical CodeQL alert, or line coverage below the floor in
+`tool/coverage-floor.txt`.

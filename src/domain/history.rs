@@ -82,14 +82,17 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i64> {
     let mut qi = 0;
     let mut last_match: Option<usize> = None;
     for (ci, &c) in cand.iter().enumerate() {
-        if qi == query.len() {
+        let Some(&wanted) = query.get(qi) else {
             break;
-        }
-        if c != query[qi] {
+        };
+        if c != wanted {
             continue;
         }
         score += 1;
-        let word_start = ci == 0 || matches!(cand[ci - 1], ' ' | '-' | '/' | '_' | '.' | '=');
+        let word_start = ci
+            .checked_sub(1)
+            .and_then(|prev| cand.get(prev))
+            .is_none_or(|prev| matches!(prev, ' ' | '-' | '/' | '_' | '.' | '='));
         if word_start {
             score += 3;
         }
@@ -253,5 +256,16 @@ mod tests {
         assert!(fuzzy_score("abc", "a_b_c").is_some());
         assert!(fuzzy_score("acb", "abc").is_none());
         assert!(fuzzy_score("pull", "pull").unwrap() > fuzzy_score("pull", "p u l l").unwrap());
+    }
+
+    #[test]
+    fn fuzzy_score_counts_word_starts_including_the_first_character() {
+        // p: 1 + 3 (start), u: 1 + 5 (consecutive).
+        assert_eq!(fuzzy_score("pu", "pull"), Some(10));
+        // l after '-' is a word start: 1 + 3, no gap.
+        assert_eq!(fuzzy_score("l", "x-l"), Some(4));
+        // Mid-word with a gap of one: 1 + 3, then 1 - 1.
+        assert_eq!(fuzzy_score("pl", "pul"), Some(4));
+        assert_eq!(fuzzy_score("", "anything"), Some(0));
     }
 }

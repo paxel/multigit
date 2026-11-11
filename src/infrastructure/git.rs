@@ -1,5 +1,6 @@
 //! Runs the system `git` without a terminal: no prompts, no pager, no editor.
 
+use crate::domain::command::shell_program;
 use crate::domain::output::ProcessOutput;
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -47,7 +48,11 @@ impl GitRunner {
     }
 
     fn command(&self, dir: &Path) -> Command {
-        let mut cmd = Command::new(&self.program);
+        self.command_for(&self.program, dir)
+    }
+
+    fn command_for(&self, program: &OsStr, dir: &Path) -> Command {
+        let mut cmd = Command::new(program);
         cmd.current_dir(dir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -91,6 +96,23 @@ impl GitRunner {
             cmd.env("GIT_SSH_COMMAND", ssh);
         }
         cmd.args(args);
+        Self::output(cmd)
+    }
+
+    /// The shell `!` lines run in: `$SHELL`, or `sh` when it is unset or empty.
+    pub fn shell(&self) -> OsString {
+        shell_program(self.env_value("SHELL"))
+    }
+
+    /// A `!` line: `<shell> -c <line>` in `dir`, with the same non-interactive
+    /// environment as git commands, so git inside the line never prompts either.
+    #[tracing::instrument(skip_all, fields(dir = %dir.display()))]
+    pub fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput> {
+        let mut cmd = self.command_for(&self.shell(), dir);
+        if let Some(ssh) = self.batch_ssh_command(dir) {
+            cmd.env("GIT_SSH_COMMAND", ssh);
+        }
+        cmd.arg("-c").arg(line);
         Self::output(cmd)
     }
 
@@ -189,6 +211,39 @@ mod tests {
             .unwrap();
         assert!(out.success(), "{out:?}");
         assert_eq!(out.stdout, "ssh -o BatchMode=yes");
+    }
+
+    #[test]
+    fn shell_line_runs_in_repo_without_prompts() {
+        let repo = TestRepo::new();
+        let runner = isolated_runner().with_env("SHELL", "/bin/sh");
+        let out = runner
+            .run_shell(
+                repo.path(),
+                "printf '%s|%s' \"$(pwd -P)\" \"$GIT_TERMINAL_PROMPT\"; echo oops >&2; exit 3",
+            )
+            .unwrap();
+        let dir = repo.path().canonicalize().unwrap();
+        assert_eq!(out.stdout, format!("{}|0", dir.display()));
+        assert_eq!(out.stderr, "oops\n");
+        assert_eq!(out.exit_code, Some(3));
+    }
+
+    #[test]
+    fn shell_is_login_shell_or_sh() {
+        let runner = isolated_runner();
+        assert_eq!(
+            runner.clone().with_env("SHELL", "/usr/bin/fish").shell(),
+            OsString::from("/usr/bin/fish")
+        );
+        assert_eq!(runner.with_env("SHELL", "").shell(), OsString::from("sh"));
+    }
+
+    #[test]
+    fn missing_shell_is_io_error() {
+        let repo = TestRepo::new();
+        let runner = isolated_runner().with_env("SHELL", "/does/not/exist/sh");
+        assert!(runner.run_shell(repo.path(), "true").is_err());
     }
 
     #[test]

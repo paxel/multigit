@@ -1,14 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <rect x="45" y="45" width="166" height="166" rx="24" transform="rotate(45 128 128)" fill="#F05033"/>
   <g stroke="#FFFFFF" stroke-width="13" stroke-linecap="round" fill="none">
-    <path d="M114 70 L84 164"/>
-    <path d="M114 70 L144 164"/>
-    <path d="M114 70 Q186 84 186 152"/>
+    <path d="M110 58 L76 144"/>
+    <path d="M110 58 L132 144"/>
+    <path d="M110 58 Q178 70 172 173"/>
   </g>
   <g fill="#FFFFFF">
-    <circle cx="114" cy="70" r="17"/>
-    <circle cx="84" cy="164" r="17"/>
-    <circle cx="144" cy="164" r="17"/>
-    <circle cx="186" cy="152" r="17"/>
+    <circle cx="110" cy="58" r="17"/>
+    <circle cx="76" cy="144" r="21"/>
+    <circle cx="132" cy="144" r="21"/>
+    <circle cx="172" cy="173" r="17"/>
   </g>
 </svg>

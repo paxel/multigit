@@ -92,10 +92,25 @@ pub fn register(data_home: &Path, exec: &Path) -> io::Result<(Outcome, Outcome)>
     Ok((entry, icon))
 }
 
+/// The `<prefix>/bin/<name>` symlink for a binary in a Homebrew Cellar,
+/// verified to point back at it; `None` for everything else. The running
+/// binary resolves into the versioned Cellar directory, which the next
+/// `brew upgrade` deletes; the prefix's `bin` is repointed on every upgrade.
+pub fn stable_brew_path(exe: &Path) -> Option<PathBuf> {
+    let prefix = exe
+        .ancestors()
+        .find(|a| a.file_name() == Some("Cellar".as_ref()))?
+        .parent()?;
+    let candidate = prefix.join("bin").join(exe.file_name()?);
+    (candidate.canonicalize().ok()? == exe.canonicalize().ok()?).then_some(candidate)
+}
+
 /// Register the running binary in a background thread; failures are only logged.
 pub fn register_in_background() {
     std::thread::spawn(|| {
-        let exec = std::env::current_exe().and_then(|p| p.canonicalize());
+        let exec = std::env::current_exe()
+            .and_then(|p| p.canonicalize())
+            .map(|exe| stable_brew_path(&exe).unwrap_or(exe));
         match (data_home(), exec) {
             (Some(data_home), Ok(exec)) => match register(&data_home, &exec) {
                 Ok(outcome) => tracing::debug!(?outcome, "menu entry registered"),
@@ -161,6 +176,43 @@ mod tests {
             .path()
             .join(format!("icons/hicolor/256x256/apps/{ICON_NAME}.png"));
         assert_eq!(std::fs::read(icon).unwrap(), ICON_PNG);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cellar_binary_registers_the_stable_bin_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = dir.path().canonicalize().unwrap();
+        let libexec = prefix.join("Cellar/multigit/0.1.0/libexec");
+        std::fs::create_dir_all(&libexec).unwrap();
+        let exe = libexec.join("multigit");
+        std::fs::write(&exe, "").unwrap();
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::os::unix::fs::symlink(
+            "../Cellar/multigit/0.1.0/libexec/multigit",
+            prefix.join("bin/multigit"),
+        )
+        .unwrap();
+        assert_eq!(stable_brew_path(&exe), Some(prefix.join("bin/multigit")));
+
+        // A bin symlink naming another binary is not ours.
+        std::fs::remove_file(prefix.join("bin/multigit")).unwrap();
+        std::fs::write(prefix.join("other"), "").unwrap();
+        std::os::unix::fs::symlink(prefix.join("other"), prefix.join("bin/multigit")).unwrap();
+        assert_eq!(stable_brew_path(&exe), None);
+    }
+
+    #[test]
+    fn a_binary_outside_a_cellar_has_no_brew_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("multigit");
+        std::fs::write(&exe, "").unwrap();
+        assert_eq!(stable_brew_path(&exe), None);
+        // A Cellar without the bin symlink.
+        let cellar = dir.path().join("Cellar/multigit/0.1.0/libexec");
+        std::fs::create_dir_all(&cellar).unwrap();
+        std::fs::write(cellar.join("multigit"), "").unwrap();
+        assert_eq!(stable_brew_path(&cellar.join("multigit")), None);
     }
 
     #[test]

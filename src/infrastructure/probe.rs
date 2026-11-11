@@ -56,10 +56,17 @@ pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
     refs.remotes = remotes_out.stdout.lines().map(str::to_owned).collect();
     refs.files = status.changed_paths.clone();
 
+    // Fails without a reachable tag (and on an unborn branch): no tag, not an error.
+    let tag = query(runner, dir, &["describe", "--tags", "--abbrev=0"])
+        .ok()
+        .map(|out| out.stdout.trim().to_owned())
+        .filter(|t| !t.is_empty());
+
     Ok(Snapshot {
         status,
         state: repo_state(&git_dir),
         refs,
+        tag,
     })
 }
 
@@ -118,6 +125,39 @@ mod tests {
         assert_eq!(snap.status.counts.untracked, 1);
         assert_eq!(snap.refs.files, vec!["new.txt".to_owned()]);
         assert_eq!(snap.state, RepoState::Normal);
+        assert_eq!(snap.tag, None);
+    }
+
+    #[test]
+    fn tag_is_the_nearest_one_reachable_from_head() {
+        let repo = TestRepo::new();
+        let runner = isolated_runner();
+        repo.commit("a.txt", "1");
+        assert_eq!(probe(&runner, repo.path()).unwrap().tag, None);
+
+        // Lightweight tags count; commits after the tag still show it.
+        repo.git(&["tag", "v1"]);
+        repo.commit("a.txt", "2");
+        assert_eq!(
+            probe(&runner, repo.path()).unwrap().tag.as_deref(),
+            Some("v1")
+        );
+
+        // A tag on another branch is not reachable from HEAD.
+        repo.git(&["switch", "-q", "-c", "side"]);
+        repo.commit("b.txt", "s");
+        repo.git(&["tag", "side-tag"]);
+        repo.git(&["switch", "-q", "main"]);
+        assert_eq!(
+            probe(&runner, repo.path()).unwrap().tag.as_deref(),
+            Some("v1")
+        );
+
+        repo.git(&["tag", "-a", "v2", "-m", "release"]);
+        assert_eq!(
+            probe(&runner, repo.path()).unwrap().tag.as_deref(),
+            Some("v2")
+        );
     }
 
     #[test]

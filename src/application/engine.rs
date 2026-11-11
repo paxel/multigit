@@ -9,6 +9,7 @@
 //! - After a command, the repository is probed again right away.
 
 use crate::application::semaphore::Semaphore;
+use crate::domain::command::Job;
 use crate::domain::output::{ProcessOutput, SectionState};
 use crate::domain::repo::{ProbeError, Snapshot, summarize_fetch_error};
 use std::collections::HashMap;
@@ -26,6 +27,8 @@ pub const FETCH_ARGS: &[&str] = &["fetch", "--all", "--prune"];
 pub trait Backend: Send + Sync + 'static {
     fn probe(&self, dir: &Path) -> Result<Snapshot, ProbeError>;
     fn run(&self, dir: &Path, args: &[String]) -> io::Result<ProcessOutput>;
+    /// A `!` line through the user's shell, in `dir`.
+    fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput>;
     /// All subcommand names (incl. aliases) and the names of builtins.
     fn list_commands(&self, dir: &Path) -> (Vec<String>, Vec<String>);
     /// Options git reports for a builtin via `--git-completion-helper`.
@@ -195,8 +198,8 @@ impl Engine {
         true
     }
 
-    /// Run `git <args>` in `repo` as part of output run `run`.
-    pub fn run_command(&mut self, run: u64, repo: &Path, args: Vec<String>) {
+    /// Run `job` (git arguments or a shell line) in `repo` as part of output run `run`.
+    pub fn run_command(&mut self, run: u64, repo: &Path, job: Job) {
         let slot = self.slot(repo);
         slot.pending_commands.fetch_add(1, Ordering::SeqCst);
         let shared = self.shared.clone();
@@ -212,7 +215,11 @@ impl Engine {
                     repo: repo.clone(),
                     state: SectionState::Running,
                 });
-                let state = match shared.backend.run(&repo, &args) {
+                let result = match &job {
+                    Job::Git(args) => shared.backend.run(&repo, args),
+                    Job::Shell(line) => shared.backend.run_shell(&repo, line),
+                };
+                let state = match result {
                     Ok(out) => SectionState::Done(out),
                     Err(e) => SectionState::SpawnFailed(e.to_string()),
                 };
@@ -288,6 +295,7 @@ mod tests {
             },
             state: RepoState::Normal,
             refs: RepoRefs::default(),
+            tag: None,
         }
     }
 
@@ -317,6 +325,17 @@ mod tests {
                 } else {
                     String::new()
                 },
+            })
+        }
+        fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("shell {} {line}", dir.display()));
+            Ok(ProcessOutput {
+                exit_code: Some(0),
+                stdout: "ok".into(),
+                stderr: String::new(),
             })
         }
         fn list_commands(&self, _dir: &Path) -> (Vec<String>, Vec<String>) {
@@ -354,7 +373,7 @@ mod tests {
         let fake = Arc::new(Fake::default());
         let (mut engine, rx) = engine(fake.clone());
         let repo = Path::new("/r");
-        engine.run_command(7, repo, vec!["push".into()]);
+        engine.run_command(7, repo, Job::Git(vec!["push".into()]));
         assert!(engine.is_busy(repo));
         assert_eq!(
             recv(&rx),
@@ -380,6 +399,31 @@ mod tests {
     }
 
     #[test]
+    fn shell_job_runs_through_the_shell_then_reprobes() {
+        let fake = Arc::new(Fake::default());
+        let (mut engine, rx) = engine(fake.clone());
+        let repo = Path::new("/r");
+        engine.run_command(3, repo, Job::Shell("ls | wc -l".into()));
+        assert!(matches!(
+            recv(&rx),
+            Event::Section {
+                state: SectionState::Running,
+                ..
+            }
+        ));
+        assert!(matches!(
+            recv(&rx),
+            Event::Section {
+                run: 3,
+                state: SectionState::Done(_),
+                ..
+            }
+        ));
+        assert!(matches!(recv(&rx), Event::Probed { .. }));
+        assert_eq!(fake.calls(), vec!["shell /r ls | wc -l", "probe /r"]);
+    }
+
+    #[test]
     fn command_waits_for_running_fetch() {
         let fake = Arc::new(Fake::default());
         let (mut engine, rx) = engine(fake.clone());
@@ -389,7 +433,7 @@ mod tests {
         while fake.calls().is_empty() {
             thread::sleep(Duration::from_millis(5));
         }
-        engine.run_command(1, repo, vec!["pull".into()]);
+        engine.run_command(1, repo, Job::Git(vec!["pull".into()]));
         thread::sleep(Duration::from_millis(50));
         assert_eq!(fake.calls(), vec!["run /r fetch --all --prune"]);
         fake.open();

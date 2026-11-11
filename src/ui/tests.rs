@@ -509,6 +509,34 @@ fn output_button_folds_the_panel_away_and_marks_unseen_results() {
 }
 
 #[test]
+fn open_in_editor_buttons_hand_the_output_to_the_desktop() {
+    let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
+    let backend = Arc::new(FakeBackend::default());
+    *backend.snapshot.lock().unwrap() =
+        Some(snapshot(Counts::default(), Upstream::None, &["main"]));
+    let mut app = crate::ui::app::tests::app_on(backend, desktop.clone(), None);
+    app.cards = vec![card("/r/one"), card("/r/two")];
+    let mut h = harness(app);
+    h.run();
+    h.state_mut()
+        .start_run("status", vec!["/r/one".into(), "/r/two".into()]);
+    settle(&mut h, |a| a.log.last().unwrap().outcome().is_some());
+    h.run();
+    // One button for the command, one per repository.
+    let buttons: Vec<_> = h.get_all_by_label("Open in editor").collect();
+    assert_eq!(buttons.len(), 3);
+    for button in buttons {
+        button.click();
+    }
+    h.run();
+    let scratch = h.state().scratch.clone();
+    assert_eq!(
+        desktop.files.lock().unwrap().clone(),
+        ["output-0.txt", "output-0-one.txt", "output-0-two.txt"].map(|f| scratch.join(f))
+    );
+}
+
+#[test]
 fn card_shows_the_tag() {
     let backend = Arc::new(FakeBackend::default());
     let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);

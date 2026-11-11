@@ -1,17 +1,19 @@
 //! Board state and the actions the UI triggers on it (no drawing here).
 
+use crate::application::desktop::Desktop;
 use crate::application::engine::{Backend, Engine, Event, Notify};
 use crate::application::schedule::{Due, Schedule};
 use crate::domain::board::{SortKey, Sorted, compare, matches_filter};
-use crate::domain::command::{Job, shell_line};
+use crate::domain::command::{Job, display, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::Config;
 use crate::domain::destructive::is_destructive;
 use crate::domain::history::History;
-use crate::domain::naming::board_order;
+use crate::domain::naming::{board_order, title};
 use crate::domain::output::OutputLog;
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use crate::domain::status::{RepoState, Upstream};
+use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
 use crate::infrastructure::scan::scan;
 use crate::infrastructure::store::{self, Paths};
 use crate::ui::cli::CliState;
@@ -114,6 +116,9 @@ pub struct App {
     /// What the board is sorted by; not saved.
     pub sort: SortKey,
     engine: Engine,
+    desktop: Arc<dyn Desktop>,
+    /// Where files for other programs are written; removed on exit.
+    pub scratch: PathBuf,
     events: Receiver<Event>,
     schedule: Schedule,
     applied_concurrency: usize,
@@ -144,6 +149,7 @@ impl App {
         paths: Option<Paths>,
         history: History,
         backend: Arc<dyn Backend>,
+        desktop: Arc<dyn Desktop>,
         notify: Notify,
     ) -> Self {
         let (config, config_error) = match config {
@@ -164,6 +170,8 @@ impl App {
             filter: String::new(),
             sort: SortKey::default(),
             engine,
+            desktop,
+            scratch: scratch_dir(),
             events,
             schedule: Schedule::default(),
             log: OutputLog::default(),
@@ -377,6 +385,25 @@ impl App {
         }
     }
 
+    /// Write the output of run `id` (of all its repositories, or of `repo`
+    /// alone) to a text file and open it with the system's default program.
+    /// Nothing happens while that output is not complete.
+    pub fn open_output(&mut self, id: u64, repo: Option<&Path>) {
+        let Some(run) = self.log.run(id).filter(|r| r.is_done(repo)) else {
+            return;
+        };
+        let text = run.text(&display(&run.command), repo);
+        let name = match repo {
+            Some(repo) => format!("output-{id}-{}.txt", title(repo)),
+            None => format!("output-{id}.txt"),
+        };
+        let opened = write_scratch_file(&self.scratch, &name, &text)
+            .and_then(|file| self.desktop.open_file(&file));
+        if let Err(e) = opened {
+            self.toast(format!("Cannot open the output: {e}"));
+        }
+    }
+
     /// The open output panel shows every run: none is news any more.
     pub fn output_shown(&mut self) {
         self.output_seen = self.log.last().map(|r| r.id);
@@ -561,6 +588,13 @@ impl App {
     }
 }
 
+impl Drop for App {
+    /// Take the files written for other programs away again.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.scratch);
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -634,14 +668,45 @@ pub(crate) mod tests {
         }
     }
 
+    /// Desktop that opens nothing and records what it was asked to open.
+    #[derive(Default)]
+    pub struct FakeDesktop {
+        pub files: Mutex<Vec<PathBuf>>,
+        pub fail: bool,
+    }
+
+    impl Desktop for FakeDesktop {
+        fn open_file(&self, file: &Path) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::other("no opener"));
+            }
+            self.files.lock().unwrap().push(file.to_path_buf());
+            Ok(())
+        }
+    }
+
     pub fn app_with(backend: Arc<FakeBackend>, paths: Option<Paths>) -> App {
-        App::new(
+        app_on(backend, Arc::default(), paths)
+    }
+
+    /// An app on fakes. Its scratch folder is one no other test or app uses.
+    pub fn app_on(
+        backend: Arc<FakeBackend>,
+        desktop: Arc<FakeDesktop>,
+        paths: Option<Paths>,
+    ) -> App {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut app = App::new(
             Ok(Config::default()),
             paths,
             History::default(),
             backend,
+            desktop,
             Arc::new(|| {}),
-        )
+        );
+        app.scratch = scratch_dir().join(format!("test-{n}"));
+        app
     }
 
     /// Wait until `done` holds, applying events meanwhile.
@@ -808,6 +873,56 @@ pub(crate) mod tests {
         assert_eq!(app.config.repos, vec![PathBuf::from("/x/web")]);
         app.filter.clear();
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/x/web")]);
+    }
+
+    #[test]
+    fn output_opens_as_a_text_file_that_goes_away_with_the_app() {
+        let backend = Arc::new(FakeBackend::default());
+        let desktop = Arc::new(FakeDesktop::default());
+        let mut app = app_on(backend.clone(), desktop.clone(), None);
+        app.cards = vec![Card::new("/x/a".into()), Card::new("/x/b".into())];
+        app.start_run("status", vec!["/x/a".into(), "/x/b".into()]);
+        // Not while it runs: the gate of the fake is open, so wait for it.
+        settle(&mut app, |a| a.log.last().unwrap().outcome().is_some());
+        app.open_output(0, None);
+        app.open_output(0, Some(Path::new("/x/b")));
+        app.open_output(7, None);
+        let files = desktop.files.lock().unwrap().clone();
+        assert_eq!(
+            files,
+            vec![
+                app.scratch.join("output-0.txt"),
+                app.scratch.join("output-0-b.txt")
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(&files[0]).unwrap(),
+            "git status\n\n== /x/a (exit 0) ==\nran status\n\n== /x/b (exit 0) ==\nran status\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&files[1]).unwrap(),
+            "git status\n\n== /x/b (exit 0) ==\nran status\n"
+        );
+        assert!(app.toasts.is_empty());
+        let scratch = app.scratch.clone();
+        drop(app);
+        assert!(!scratch.exists());
+    }
+
+    #[test]
+    fn a_failing_opener_is_reported() {
+        let desktop = Arc::new(FakeDesktop {
+            fail: true,
+            ..FakeDesktop::default()
+        });
+        let mut app = app_on(Arc::default(), desktop, None);
+        app.start_run("status", vec!["/x/a".into()]);
+        settle(&mut app, |a| a.log.last().unwrap().outcome().is_some());
+        app.open_output(0, None);
+        assert_eq!(
+            app.toasts.last().unwrap().text,
+            "Cannot open the output: no opener"
+        );
     }
 
     #[test]
@@ -991,6 +1106,7 @@ pub(crate) mod tests {
             Some(paths.clone()),
             History::default(),
             Arc::new(FakeBackend::default()),
+            Arc::new(FakeDesktop::default()),
             Arc::new(|| {}),
         );
         app.config.concurrency = 9;

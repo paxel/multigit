@@ -346,14 +346,18 @@ impl App {
                 self.log.clear();
             }
         });
+        let mut opened = Vec::new();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 for run in self.log.runs() {
-                    run_ui(ui, run);
+                    run_ui(ui, run, &mut opened);
                 }
             });
+        for (run, repo) in opened {
+            self.open_output(run, repo.as_deref());
+        }
     }
 
     /// "Copied" floating up from the pointer and fading out; repaints only
@@ -758,41 +762,62 @@ fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
     });
 }
 
-fn run_ui(ui: &mut Ui, run: &Run) {
+/// A run or one of its sections the user wants in an editor.
+type OpenOutput = (u64, Option<PathBuf>);
+
+/// The button that opens output in the system's editor; disabled until the
+/// output is complete.
+fn open_in_editor(ui: &mut Ui, done: bool, what: &str) -> bool {
+    ui.add_enabled(done, egui::Button::new("Open in editor").small())
+        .on_hover_text(format!("Open {what} as a text file"))
+        .on_disabled_hover_text("Not done yet")
+        .clicked()
+}
+
+fn run_ui(ui: &mut Ui, run: &Run, opened: &mut Vec<OpenOutput>) {
     ui.separator();
-    ui.label(RichText::new(display(&run.command)).monospace().strong());
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(display(&run.command)).monospace().strong());
+        if open_in_editor(ui, run.is_done(None), "the output of all repositories") {
+            opened.push((run.id, None));
+        }
+    });
     for section in &run.sections {
-        let (status, color) = match &section.state {
-            SectionState::Queued => ("queued".to_owned(), ui.visuals().weak_text_color()),
-            SectionState::Running => ("running".to_owned(), ui.visuals().warn_fg_color),
-            SectionState::Done(out) if out.success() => ("exit 0".to_owned(), ok_color(ui)),
-            SectionState::Done(out) => (
-                out.exit_code
-                    .map_or("killed".to_owned(), |c| format!("exit {c}")),
-                ui.visuals().error_fg_color,
-            ),
-            SectionState::SpawnFailed(_) => {
-                ("failed to start".to_owned(), ui.visuals().error_fg_color)
-            }
+        let color = match &section.state {
+            SectionState::Queued => ui.visuals().weak_text_color(),
+            SectionState::Running => ui.visuals().warn_fg_color,
+            SectionState::Done(out) if out.success() => ok_color(ui),
+            SectionState::Done(_) | SectionState::SpawnFailed(_) => ui.visuals().error_fg_color,
         };
+        let status = section.status();
         let header = RichText::new(format!("{}  {status}", title(&section.repo))).color(color);
         egui::CollapsingHeader::new(header)
             .id_salt((run.id, &section.repo))
             .default_open(true)
-            .show(ui, |ui| match &section.state {
-                SectionState::Done(out) => {
-                    if !out.stdout.is_empty() {
-                        ui.label(RichText::new(out.stdout.trim_end()).monospace());
-                    }
-                    if !out.stderr.is_empty() {
-                        ui.label(RichText::new(out.stderr.trim_end()).monospace().weak());
-                    }
+            .show(ui, |ui| {
+                let done = section.state.outcome().is_some();
+                if open_in_editor(ui, done, "this repository's output") {
+                    opened.push((run.id, Some(section.repo.clone())));
                 }
-                SectionState::SpawnFailed(e) => {
-                    ui.label(RichText::new(e).monospace());
-                }
-                _ => {}
+                section_output(ui, &section.state);
             });
+    }
+}
+
+fn section_output(ui: &mut Ui, state: &SectionState) {
+    match state {
+        SectionState::Done(out) => {
+            if !out.stdout.is_empty() {
+                ui.label(RichText::new(out.stdout.trim_end()).monospace());
+            }
+            if !out.stderr.is_empty() {
+                ui.label(RichText::new(out.stderr.trim_end()).monospace().weak());
+            }
+        }
+        SectionState::SpawnFailed(e) => {
+            ui.label(RichText::new(e).monospace());
+        }
+        SectionState::Queued | SectionState::Running => {}
     }
 }
 

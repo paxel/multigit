@@ -1,6 +1,7 @@
 //! multigit binary: loads config and history, starts the window.
 
 use multigit::infrastructure::backend::GitBackend;
+use multigit::infrastructure::desktop::SystemDesktop;
 use multigit::infrastructure::launcher::{APP_ID, ICON_PNG};
 use multigit::infrastructure::store::{self, Paths};
 use multigit::ui::{MultigitApp, app::App, style};
@@ -46,7 +47,14 @@ fn main() -> eframe::Result {
             let notify = Arc::new(move || ctx.request_repaint());
             let backend = Arc::new(GitBackend::default());
             Ok(Box::new(MultigitApp {
-                app: App::new(config, paths, history, backend, notify),
+                app: App::new(
+                    config,
+                    paths,
+                    history,
+                    backend,
+                    Arc::new(SystemDesktop),
+                    notify,
+                ),
             }))
         }),
     )

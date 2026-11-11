@@ -67,6 +67,62 @@ impl Run {
     }
 }
 
+impl Section {
+    /// `exit 0`, `exit 128`, `killed`, `failed to start`; `queued` or
+    /// `running` before it is done.
+    pub fn status(&self) -> String {
+        match &self.state {
+            SectionState::Queued => "queued".to_owned(),
+            SectionState::Running => "running".to_owned(),
+            SectionState::Done(out) => out
+                .exit_code
+                .map_or("killed".to_owned(), |c| format!("exit {c}")),
+            SectionState::SpawnFailed(_) => "failed to start".to_owned(),
+        }
+    }
+
+    /// The section as text: a header line with path and status, then what
+    /// the command printed.
+    fn text(&self) -> String {
+        let mut text = format!("== {} ({}) ==\n", self.repo.display(), self.status());
+        let printed: Vec<&str> = match &self.state {
+            SectionState::Done(out) => vec![out.stdout.trim_end(), out.stderr.trim_end()],
+            SectionState::SpawnFailed(error) => vec![error.trim_end()],
+            SectionState::Queued | SectionState::Running => Vec::new(),
+        };
+        for part in printed.into_iter().filter(|p| !p.is_empty()) {
+            text.push_str(part);
+            text.push('\n');
+        }
+        text
+    }
+}
+
+impl Run {
+    /// The run as a text file: the command line `first_line`, then every
+    /// repository's section, or only the one of `repo`.
+    pub fn text(&self, first_line: &str, repo: Option<&Path>) -> String {
+        let mut text = format!("{first_line}\n");
+        for section in &self.sections {
+            if repo.is_none_or(|r| r == section.repo) {
+                text.push('\n');
+                text.push_str(&section.text());
+            }
+        }
+        text
+    }
+
+    /// Whether the run, or with `repo` its section of that repository, is
+    /// done.
+    pub fn is_done(&self, repo: Option<&Path>) -> bool {
+        let mut sections = self
+            .sections
+            .iter()
+            .filter(|s| repo.is_none_or(|r| r == s.repo));
+        sections.all(|s| s.state.outcome().is_some())
+    }
+}
+
 /// Bounded log of runs, oldest first.
 #[derive(Debug, Clone, Default)]
 pub struct OutputLog {
@@ -116,6 +172,10 @@ impl OutputLog {
         self.runs.iter()
     }
 
+    pub fn run(&self, id: u64) -> Option<&Run> {
+        self.runs.iter().find(|r| r.id == id)
+    }
+
     /// The run started last.
     pub fn last(&self) -> Option<&Run> {
         self.runs.back()
@@ -157,6 +217,56 @@ mod tests {
         assert_eq!(run.sections[1].state.outcome(), Some(false));
         assert_eq!(SectionState::Running.outcome(), None);
         assert_eq!(log.last().unwrap().outcome(), Some(false));
+    }
+
+    #[test]
+    fn run_as_text_has_the_command_then_a_header_and_the_output_per_repository() {
+        let mut log = OutputLog::default();
+        let repos = vec![
+            PathBuf::from("/x/a"),
+            PathBuf::from("/x/b"),
+            PathBuf::from("/x/c"),
+        ];
+        let id = log.start("status", &repos);
+        let done = |code, stdout: &str, stderr: &str| {
+            SectionState::Done(ProcessOutput {
+                exit_code: code,
+                stdout: stdout.into(),
+                stderr: stderr.into(),
+            })
+        };
+        log.update(id, Path::new("/x/a"), done(Some(0), "clean\n\n", ""));
+        assert!(log.run(id).unwrap().is_done(Some(Path::new("/x/a"))));
+        assert!(!log.run(id).unwrap().is_done(None));
+        assert!(!log.run(id).unwrap().is_done(Some(Path::new("/x/b"))));
+        log.update(id, Path::new("/x/b"), done(None, "out", "err\n"));
+        log.update(
+            id,
+            Path::new("/x/c"),
+            SectionState::SpawnFailed("no git".into()),
+        );
+        let run = log.run(id).unwrap();
+        assert!(run.is_done(None));
+        assert_eq!(
+            run.text("git status", None),
+            "git status\n\n== /x/a (exit 0) ==\nclean\n\n== /x/b (killed) ==\nout\nerr\n\n\
+             == /x/c (failed to start) ==\nno git\n"
+        );
+        assert_eq!(
+            run.text("git status", Some(Path::new("/x/b"))),
+            "git status\n\n== /x/b (killed) ==\nout\nerr\n"
+        );
+        assert!(log.run(99).is_none());
+        let id = log.start("push", &repos);
+        assert_eq!(log.run(id).unwrap().sections[0].status(), "queued");
+        log.update(id, Path::new("/x/a"), SectionState::Running);
+        assert_eq!(log.run(id).unwrap().sections[0].status(), "running");
+        assert_eq!(
+            log.run(id)
+                .unwrap()
+                .text("git push", Some(Path::new("/x/a"))),
+            "git push\n\n== /x/a (running) ==\n"
+        );
     }
 
     #[test]

@@ -91,7 +91,11 @@ Commands run in parallel, four at a time by default. Destructive commands
 more than one repository.
 
 The output panel above the command line keeps the last 50 commands, one
-collapsible section per repository with its exit code. Drag its upper edge to
+collapsible section per repository with its exit code. **Open in editor**, on
+a command or on one repository's section, writes that output to a text file
+and opens it with the system's default program for text files (`xdg-open` on
+Linux, `open` on macOS); the files are in the temp folder and are removed when
+multigit exits. Drag its upper edge to
 make it bigger. The **Output** button left of the command line hides the panel
 completely and brings it back; while it is hidden, a mark on the button tells
 about the last command: running, then green or red by its result.

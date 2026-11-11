@@ -333,6 +333,32 @@ fn detached_head_copies_the_sha_only() {
 }
 
 #[test]
+fn fetch_error_is_one_line_and_a_click_copies_all_of_it_and_removes_it() {
+    let mut h = harness(marked_app(Arc::default(), &[]));
+    h.run();
+    // Set after the start, whose first (successful) fetch would clear it.
+    settle(&mut h, |a| a.cards[0].snapshot().is_some());
+    let long =
+        "cannot lock ref 'refs/remotes/origin/some/very/long/branch/name/that/goes/on': exists";
+    let output = format!("From x\nerror: {long}\n ! [new branch] a");
+    h.state_mut().cards[0].fetch_error = Some(crate::domain::repo::FetchError {
+        summary: format!("error: {long}"),
+        output: output.clone(),
+    });
+    h.run();
+    let line = h.get_by_label_contains("Error: cannot lock ref");
+    let card_right = h.get_by_label("status").rect().left() + 290.0;
+    assert!(line.rect().right() <= card_right + 1.0, "{:?}", line.rect());
+    assert!(line.rect().height() < 30.0, "{:?}", line.rect());
+    line.click();
+    h.step();
+    assert_eq!(copied(&h), vec![output]);
+    h.run();
+    assert!(h.state().cards[0].fetch_error.is_none());
+    assert!(h.state().marked.contains(&PathBuf::from("/repo")));
+}
+
+#[test]
 fn card_shows_the_tag() {
     let backend = Arc::new(FakeBackend::default());
     let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);

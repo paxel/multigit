@@ -26,6 +26,8 @@ enum BoardAction {
     Toggle(PathBuf),
     /// A card text was clicked at this pointer position.
     Copy(String, egui::Pos2),
+    /// The fetch error of this card was clicked at this pointer position.
+    CopyFetchError(PathBuf, egui::Pos2),
 }
 
 /// How long the "Copied" animation lasts, and how far it floats up.
@@ -227,15 +229,23 @@ impl App {
                         self.marked.insert(p);
                     }
                 }
-                BoardAction::Copy(text, at) => {
-                    ui.ctx().copy_text(text);
-                    self.copy_flash = Some(CopyFlash {
-                        at,
-                        started: ui.input(|i| i.time),
-                    });
+                BoardAction::Copy(text, at) => self.copy(ui, text, at),
+                BoardAction::CopyFetchError(path, at) => {
+                    if let Some(output) = self.take_fetch_error(&path) {
+                        self.copy(ui, output, at);
+                    }
                 }
             }
         }
+    }
+
+    /// Put `text` on the clipboard and start the "Copied" animation at `at`.
+    fn copy(&mut self, ui: &Ui, text: String, at: egui::Pos2) {
+        ui.ctx().copy_text(text);
+        self.copy_flash = Some(CopyFlash {
+            at,
+            started: ui.input(|i| i.time),
+        });
     }
 
     fn cli_line(&mut self, ui: &mut Ui) {
@@ -429,9 +439,20 @@ fn card_frame(
             }
             status_lines(ui, card, actions);
             if let Some(error) = &card.fetch_error {
-                let text = format!("fetch: {error}");
-                let red = RichText::new(&text).color(ui.visuals().error_fg_color);
-                copyable(ui, red, text, actions);
+                // One line however long git's message is; a click copies
+                // all of the output and takes the error off the card.
+                let red = RichText::new(error.card_text()).color(ui.visuals().error_fg_color);
+                let line = egui::Label::new(red).truncate().sense(egui::Sense::click());
+                let response = ui
+                    .add(line)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("Click to copy the whole error and remove it");
+                if response.clicked() {
+                    let at = response
+                        .interact_pointer_pos()
+                        .unwrap_or_else(|| response.rect.center());
+                    actions.push(BoardAction::CopyFetchError(card.path.clone(), at));
+                }
             }
             if busy {
                 ui.label(RichText::new("running").color(ui.visuals().warn_fg_color));

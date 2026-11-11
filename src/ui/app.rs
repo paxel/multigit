@@ -9,7 +9,7 @@ use crate::domain::destructive::is_destructive;
 use crate::domain::history::History;
 use crate::domain::naming::board_order;
 use crate::domain::output::OutputLog;
-use crate::domain::repo::{ProbeError, Snapshot};
+use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use crate::domain::status::{RepoState, Upstream};
 use crate::infrastructure::scan::scan;
 use crate::infrastructure::store::{self, Paths};
@@ -29,8 +29,9 @@ pub struct Card {
     pub path: PathBuf,
     /// `None` until the first probe returns.
     pub probe: Option<Result<Snapshot, ProbeError>>,
-    /// Text of the last failed background fetch; cleared by a successful one.
-    pub fetch_error: Option<String>,
+    /// The last failed background fetch; replaced by every fetch result and
+    /// taken off by a click on it.
+    pub fetch_error: Option<FetchError>,
     /// Outcome of the last command run on this card.
     pub last_command: Option<bool>,
 }
@@ -240,6 +241,13 @@ impl App {
         let marked = std::mem::take(&mut self.marked);
         self.cards.retain(|c| !marked.contains(&c.path));
         self.sync_repos_to_config();
+    }
+
+    /// A click on a card's fetch error: its whole output for the clipboard;
+    /// the error leaves the card until a fetch fails again.
+    pub fn take_fetch_error(&mut self, path: &Path) -> Option<String> {
+        let error = self.card_mut(path)?.fetch_error.take()?;
+        Some(error.output)
     }
 
     fn mark_where(&mut self, keep: impl Fn(&Card) -> bool) {

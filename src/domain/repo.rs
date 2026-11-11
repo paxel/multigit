@@ -25,6 +25,50 @@ pub enum ProbeError {
     Git(String),
 }
 
+/// A failed background fetch, as the card keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchError {
+    /// The one line the card shows; see [`summarize_fetch_error`].
+    pub summary: String,
+    /// Everything git printed, for the clipboard.
+    pub output: String,
+}
+
+impl FetchError {
+    /// From what the failed `git fetch` printed.
+    pub fn from_output(stdout: &str, stderr: &str) -> Self {
+        let output = [stdout.trim_end(), stderr.trim_end()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        Self {
+            summary: summarize_fetch_error(stderr),
+            output,
+        }
+    }
+
+    /// From a fetch that could not be started.
+    pub fn from_message(message: String) -> Self {
+        Self {
+            summary: message.clone(),
+            output: message,
+        }
+    }
+
+    /// The card's line: `Error: ` and the summary without git's own
+    /// `error:` or `fatal:` in front.
+    pub fn card_text(&self) -> String {
+        let summary = self
+            .summary
+            .strip_prefix("error:")
+            .or_else(|| self.summary.strip_prefix("fatal:"))
+            .unwrap_or(&self.summary)
+            .trim_start();
+        format!("Error: {summary}")
+    }
+}
+
 /// Short card text for a failed fetch: "auth failed" for credential problems,
 /// otherwise git's first `error:` or `fatal:` line. A fetch that fails in part
 /// prints its normal `From <url>` lines first, so the first line it printed is
@@ -53,6 +97,21 @@ pub fn summarize_fetch_error(stderr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetch_error_keeps_all_output_and_shortens_the_card_line() {
+        let error = FetchError::from_output("out\n", "From x\nfatal: no such remote\n");
+        assert_eq!(error.summary, "fatal: no such remote");
+        assert_eq!(error.output, "out\nFrom x\nfatal: no such remote");
+        assert_eq!(error.card_text(), "Error: no such remote");
+        let auth = FetchError::from_output("", "Permission denied (publickey).");
+        assert_eq!(auth.card_text(), "Error: auth failed");
+        let spawn = FetchError::from_message("No such file".into());
+        assert_eq!(
+            (spawn.card_text().as_str(), spawn.output.as_str()),
+            ("Error: No such file", "No such file")
+        );
+    }
 
     #[test]
     fn auth_errors_are_summarized() {

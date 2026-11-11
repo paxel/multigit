@@ -31,8 +31,10 @@ Each card shows:
 - the working tree: `clean`, or `+staged ~modified ?untracked !conflicts`
 - `rebasing` or `merging` while one is in progress
 - unpushed and unpulled commits, `no upstream`, or `upstream gone`
-- the result of the last command run on it, and a failed background fetch
-  (`fetch: auth failed`, for example)
+- the result of the last command run on it
+- a failed background fetch as one red line (`Error: auth failed`, for
+  example); a click on it copies everything git printed and takes the line
+  off the card until a fetch fails again
 
 Cards are sorted by folder name. The status of every card refreshes every
 10 seconds; a background `git fetch --all --prune` runs every minute so the

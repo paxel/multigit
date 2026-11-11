@@ -11,7 +11,7 @@
 use crate::application::semaphore::Semaphore;
 use crate::domain::command::Job;
 use crate::domain::output::{ProcessOutput, SectionState};
-use crate::domain::repo::{ProbeError, Snapshot, summarize_fetch_error};
+use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -45,10 +45,10 @@ pub enum Event {
         repo: PathBuf,
         result: Result<Snapshot, ProbeError>,
     },
-    /// A background fetch finished; `error` is the card text on failure.
+    /// A background fetch finished; `error` is set when it failed.
     Fetched {
         repo: PathBuf,
-        error: Option<String>,
+        error: Option<FetchError>,
     },
     Section {
         run: u64,
@@ -180,8 +180,8 @@ impl Engine {
                     if fetch {
                         let error = match shared.backend.fetch(&repo) {
                             Ok(out) if out.success() => None,
-                            Ok(out) => Some(summarize_fetch_error(&out.stderr)),
-                            Err(e) => Some(e.to_string()),
+                            Ok(out) => Some(FetchError::from_output(&out.stdout, &out.stderr)),
+                            Err(e) => Some(FetchError::from_message(e.to_string())),
                         };
                         shared.send(Event::Fetched {
                             repo: repo.clone(),
@@ -489,7 +489,10 @@ mod tests {
             recv(&rx),
             Event::Fetched {
                 repo: "/r".into(),
-                error: Some("auth failed".into())
+                error: Some(FetchError {
+                    summary: "auth failed".into(),
+                    output: "ok\nPermission denied (publickey).".into(),
+                })
             }
         );
     }

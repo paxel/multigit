@@ -51,6 +51,11 @@ folder name contains the typed text (case ignored), and how many those are. A
 hidden card keeps its mark, but nothing touches it: commands, the toolbar's
 mark buttons and **Remove marked** act on the shown cards only.
 
+A refresh of a repository whose checked-out commit did not move is one
+`git status`. Branches, tags and the commit line are read again after a fetch,
+after a command in that repository, when the commit moved, and at least once a
+minute; so a branch or tag made in a terminal can take up to a minute to show.
+
 A card whose folder is gone or is no longer a repository stays on the board,
 greyed out, and comes back by itself when the folder returns.
 

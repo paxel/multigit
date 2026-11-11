@@ -25,7 +25,10 @@ pub const FETCH_ARGS: &[&str] = &["fetch", "--all", "--prune"];
 
 /// The git operations the engine needs (port; implemented over the system git).
 pub trait Backend: Send + Sync + 'static {
-    fn probe(&self, dir: &Path) -> Result<Snapshot, ProbeError>;
+    /// The state of the repository for its card. `fresh` says its branches
+    /// or tags may have changed (a fetch or a command just ran), so nothing
+    /// remembered from an earlier probe may be used.
+    fn probe(&self, dir: &Path, fresh: bool) -> Result<Snapshot, ProbeError>;
     fn run(&self, dir: &Path, args: &[String]) -> io::Result<ProcessOutput>;
     /// The automatic background fetch ([`FETCH_ARGS`]). Nobody started it, so
     /// it must not run programs the repository's own config names.
@@ -189,7 +192,7 @@ impl Engine {
                             error,
                         });
                     }
-                    let result = shared.backend.probe(&repo);
+                    let result = shared.backend.probe(&repo, fetch);
                     shared.send(Event::Probed {
                         repo: repo.clone(),
                         result: Box::new(result),
@@ -231,7 +234,7 @@ impl Engine {
                     repo: repo.clone(),
                     state,
                 });
-                let result = shared.backend.probe(&repo);
+                let result = shared.backend.probe(&repo, true);
                 shared.send(Event::Probed {
                     repo: repo.clone(),
                     result: Box::new(result),
@@ -272,6 +275,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         calls: Mutex<Vec<String>>,
+        /// The `fresh` flag of every probe.
+        fresh: Mutex<Vec<bool>>,
         gate: Mutex<bool>,
         cv: Condvar,
         fail_fetch: bool,
@@ -297,7 +302,8 @@ mod tests {
     }
 
     impl Backend for Fake {
-        fn probe(&self, dir: &Path) -> Result<Snapshot, ProbeError> {
+        fn probe(&self, dir: &Path, fresh: bool) -> Result<Snapshot, ProbeError> {
+            self.fresh.lock().unwrap().push(fresh);
             self.calls
                 .lock()
                 .unwrap()
@@ -469,6 +475,25 @@ mod tests {
             repo: "/r".into(),
             error: None
         }));
+    }
+
+    #[test]
+    fn only_a_plain_poll_may_build_on_an_earlier_probe() {
+        let fake = Arc::new(Fake::default());
+        fake.open();
+        let (mut engine, rx) = engine(fake.clone());
+        let probed = |rx: &Receiver<Event>| loop {
+            if matches!(recv(rx), Event::Probed { .. }) {
+                break;
+            }
+        };
+        engine.poll(Path::new("/r"));
+        probed(&rx);
+        engine.fetch(Path::new("/r"));
+        probed(&rx);
+        engine.run_command(1, Path::new("/r"), Job::Git(vec!["push".into()]));
+        probed(&rx);
+        assert_eq!(fake.fresh.lock().unwrap().clone(), [false, true, true]);
     }
 
     #[test]

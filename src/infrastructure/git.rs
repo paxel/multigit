@@ -42,6 +42,12 @@ impl Default for GitRunner {
 impl GitRunner {
     /// Add an environment variable to every spawned process (used by tests to
     /// isolate from the user's git config).
+    /// Run this program instead of `git`.
+    pub fn with_program(mut self, program: impl Into<OsString>) -> Self {
+        self.program = program.into();
+        self
+    }
+
     pub fn with_env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
         self.extra_env.push((key.into(), value.into()));
         self

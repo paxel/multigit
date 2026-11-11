@@ -814,7 +814,7 @@ pub(crate) mod tests {
     }
 
     impl Backend for FakeBackend {
-        fn probe(&self, _dir: &Path) -> Result<Snapshot, ProbeError> {
+        fn probe(&self, _dir: &Path, _fresh: bool) -> Result<Snapshot, ProbeError> {
             self.snapshot
                 .lock()
                 .unwrap()

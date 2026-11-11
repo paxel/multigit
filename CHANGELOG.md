@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Every card shows the folders above the repository under its name; a click on that line copies the repository's full path.
 - A failed background fetch takes one line on the card, `Error: …`; a click on it copies everything git printed and removes the line until a fetch fails again.
 - The tag line lists every tag of the tagged commit, not only one.
+- The status refresh of a repository that did not change runs one git process instead of several; a branch or tag made outside multigit shows within a minute.
 
 ### Fixed
 

@@ -26,9 +26,62 @@ fn query(runner: &GitRunner, dir: &Path, args: &[&str]) -> Result<ProcessOutput,
     }
 }
 
+/// A snapshot with what the next probe needs to tell whether the slow parts
+/// are still right.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probed {
+    pub snapshot: Snapshot,
+    git_dir: PathBuf,
+    /// `branch.oid` of the status: the hash of HEAD.
+    head: String,
+}
+
+/// The hash of HEAD from the output of `status --porcelain=v2 --branch`.
+fn head_of(status_output: &str) -> String {
+    status_output
+        .lines()
+        .find_map(|l| l.strip_prefix("# branch.oid "))
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn status(
+    runner: &GitRunner,
+    dir: &Path,
+) -> Result<(crate::domain::status::Status, String), ProbeError> {
+    let out = query(runner, dir, &["status", "--porcelain=v2", "--branch"])?;
+    let status = parse_porcelain_v2(&out.stdout).map_err(|e| ProbeError::Git(e.to_string()))?;
+    Ok((status, head_of(&out.stdout)))
+}
+
 /// Status, in-progress operation and refs of the repository at `dir`.
-#[tracing::instrument(skip_all, fields(dir = %dir.display()))]
 pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
+    probe_full(runner, dir).map(|p| p.snapshot)
+}
+
+/// The cheap probe: one `git status`. While HEAD is where `previous` saw
+/// it, the branches, tags and commit line of `previous` are taken as they
+/// are. `None` when HEAD moved or the status failed: then only
+/// [`probe_full`] knows.
+pub fn probe_light(runner: &GitRunner, dir: &Path, previous: &Probed) -> Option<Probed> {
+    let (status, head) = status(runner, dir).ok()?;
+    if head != previous.head {
+        return None;
+    }
+    let mut snapshot = previous.snapshot.clone();
+    snapshot.refs.files = status.changed_paths.clone();
+    snapshot.status = status;
+    snapshot.state = repo_state(&previous.git_dir);
+    Some(Probed {
+        snapshot,
+        git_dir: previous.git_dir.clone(),
+        head,
+    })
+}
+
+/// The whole probe: six git processes.
+#[tracing::instrument(skip_all, fields(dir = %dir.display()))]
+pub fn probe_full(runner: &GitRunner, dir: &Path) -> Result<Probed, ProbeError> {
     if !dir.is_dir() {
         return Err(ProbeError::PathMissing);
     }
@@ -36,9 +89,7 @@ pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
         .map_err(|_| ProbeError::NotARepo)?;
     let git_dir = PathBuf::from(git_dir.stdout.trim());
 
-    let status_out = query(runner, dir, &["status", "--porcelain=v2", "--branch"])?;
-    let status =
-        parse_porcelain_v2(&status_out.stdout).map_err(|e| ProbeError::Git(e.to_string()))?;
+    let (status, head) = status(runner, dir)?;
 
     let refs_out = query(
         runner,
@@ -81,13 +132,18 @@ pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
         .ok()
         .and_then(|out| Commit::parse(&out.stdout));
 
-    Ok(Snapshot {
+    let snapshot = Snapshot {
         status,
         state: repo_state(&git_dir),
         refs,
         dated,
         tags,
         commit,
+    };
+    Ok(Probed {
+        snapshot,
+        git_dir,
+        head,
     })
 }
 
@@ -254,6 +310,36 @@ mod tests {
             "the probe ran the repository's gpg.program"
         );
         assert_eq!(snap.commit.unwrap().hash, hash.trim());
+    }
+
+    #[test]
+    fn light_probe_reads_the_status_and_keeps_the_rest_while_head_stays() {
+        let repo = TestRepo::new();
+        let runner = isolated_runner();
+        repo.commit("a.txt", "1");
+        repo.git(&["tag", "v1"]);
+        let full = probe_full(&runner, repo.path()).unwrap();
+        assert_eq!(head_of("# branch.oid abc\n# branch.head main\n"), "abc");
+        assert_eq!(head_of("1 .M N... a.txt\n"), "");
+
+        // A changed file shows; refs made meanwhile do not, by design.
+        repo.write("a.txt", "2");
+        repo.git(&["tag", "v2"]);
+        std::fs::write(repo.path().join(".git/MERGE_HEAD"), "x").unwrap();
+        let light = probe_light(&runner, repo.path(), &full).unwrap();
+        assert_eq!(light.snapshot.status.counts.modified, 1);
+        assert_eq!(light.snapshot.refs.files, vec!["a.txt".to_owned()]);
+        assert_eq!(light.snapshot.state, RepoState::Merging);
+        assert_eq!(light.snapshot.tags, ["v1"]);
+        assert_eq!(light.snapshot.commit, full.snapshot.commit);
+        std::fs::remove_file(repo.path().join(".git/MERGE_HEAD")).unwrap();
+
+        // HEAD moved: the light probe gives up.
+        repo.git(&["commit", "-q", "-am", "two"]);
+        assert_eq!(probe_light(&runner, repo.path(), &light), None);
+        // The repository is gone: it gives up as well.
+        std::fs::remove_dir_all(repo.path().join(".git")).unwrap();
+        assert_eq!(probe_light(&runner, repo.path(), &light), None);
     }
 
     #[test]

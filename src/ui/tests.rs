@@ -642,6 +642,86 @@ fn branch_menu_creates_a_new_branch() {
     );
 }
 
+/// Tags `old`, `v2`, `v1` made in that order on a card that shows `shown`.
+fn tagged_card(backend: &Arc<FakeBackend>, shown: &[&str]) -> Harness<'static, App> {
+    let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);
+    snap.tags = shown.iter().map(|t| t.to_string()).collect();
+    snap.dated.tags = ["old", "v2", "v1"]
+        .iter()
+        .zip(0..)
+        .map(|(name, date)| crate::domain::repo::DatedRef {
+            name: name.to_string(),
+            commit: String::new(),
+            date,
+        })
+        .collect();
+    *backend.snapshot.lock().unwrap() = Some(snap.clone());
+    let mut app = app_with(backend.clone(), None);
+    app.cards = vec![card("/r/repo")];
+    app.cards[0].probe = Some(Ok(snap));
+    let mut h = harness(app);
+    h.run();
+    h
+}
+
+#[test]
+fn right_click_on_the_tag_line_switches_to_a_tag() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut h = tagged_card(&backend, &["v2"]);
+    h.get_by_label("v2").click_secondary();
+    h.run();
+    h.get_by_label("Switch to");
+    assert!(h.query_by_label("Create new branch").is_none());
+    // The tag made last is on top; the card's own v2 is the upper of the two.
+    let top = |h: &Harness<'static, App>, label: &str| {
+        h.get_all_by_label(label)
+            .map(|n| n.rect().top())
+            .fold(f32::MIN, f32::max)
+    };
+    assert!(top(&h, "v1") < top(&h, "v2"));
+    assert!(top(&h, "v2") < top(&h, "old"));
+    h.get_by_label("old").click();
+    h.run();
+    settle(&mut h, |a| a.cards[0].last_command == Some(true));
+    let args = ["switch", "--detach", "old"].map(str::to_owned).to_vec();
+    assert_eq!(
+        backend.runs.lock().unwrap().last(),
+        Some(&(PathBuf::from("/r/repo"), args))
+    );
+}
+
+#[test]
+fn no_tag_has_the_menu_too_and_a_click_on_it_still_marks_the_card() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut h = tagged_card(&backend, &[]);
+    h.get_by_label("no tag").click();
+    h.run();
+    assert!(h.state().marked.contains(&PathBuf::from("/r/repo")));
+    h.get_by_label("no tag").click_secondary();
+    h.run();
+    h.get_by_label("Switch to");
+    h.get_by_label("v1");
+
+    // A repository without any tag has nothing to pick.
+    let backend = Arc::new(FakeBackend::default());
+    let mut h = tagged_card(&backend, &[]);
+    h.state_mut().cards[0].probe = Some(Ok(snapshot(Counts::default(), Upstream::None, &["main"])));
+    *backend.snapshot.lock().unwrap() =
+        Some(snapshot(Counts::default(), Upstream::None, &["main"]));
+    h.run();
+    h.get_by_label("no tag").click_secondary();
+    h.run();
+    h.get_by_label("no tags");
+    assert!(
+        backend
+            .runs
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r.1[0] != "switch")
+    );
+}
+
 #[test]
 fn card_shows_the_tag() {
     let backend = Arc::new(FakeBackend::default());

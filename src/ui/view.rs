@@ -3,13 +3,14 @@
 use crate::domain::command::{Job, display, shell_name, shell_program};
 use crate::domain::naming::{parent_line, title};
 use crate::domain::output::{Run, SectionState};
+use crate::domain::repo::Snapshot;
 use crate::domain::status::{Head, RepoState, Upstream};
-use crate::domain::switch::{Choice, branch_choices, matching, new_branch_command};
+use crate::domain::switch::{Choice, branch_choices, matching, new_branch_command, tag_choices};
 use crate::ui::app::{App, Card, CopyFlash};
 use crate::ui::cli::{CliAction, CliContext};
 use crate::ui::settings;
 use egui::{Color32, RichText, Ui};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Content width of one card.
 const CARD_WIDTH: f32 = 290.0;
@@ -744,14 +745,54 @@ fn fitting(widths: &[f32], separator: f32, ellipsis: f32, room: f32) -> usize {
     count
 }
 
+/// A card text that is no value but carries a right-click menu: a click on
+/// it still marks the card.
+fn menu_anchor(
+    ui: &mut Ui,
+    text: RichText,
+    path: &Path,
+    actions: &mut Vec<BoardAction>,
+) -> egui::Response {
+    let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+    if response.clicked() {
+        actions.push(BoardAction::Toggle(path.to_path_buf()));
+    }
+    response
+}
+
 /// The card's tag line: every tag of the tagged commit, each copying itself
-/// on a click, on one line; the tooltip has them all.
-fn tag_line(ui: &mut Ui, tags: &[String], actions: &mut Vec<BoardAction>) {
+/// on a click, on one line; the tooltip has them all. A right click anywhere
+/// on the line switches this one repository to a tag.
+fn tag_line(ui: &mut Ui, path: &Path, snap: &Snapshot, actions: &mut Vec<BoardAction>) {
+    let choices = tag_choices(&snap.dated);
+    let menu = SwitchMenu {
+        id: egui::Id::new(("tag-menu", path)),
+        choices: &choices,
+        none: "no tags",
+        new_branch: false,
+    };
+    let mut anchors = Vec::new();
+    tag_texts(ui, path, &snap.tags, actions, &mut anchors);
+    for anchor in &anchors {
+        if let Some(command) = menu.show(anchor) {
+            actions.push(BoardAction::Run(path.to_path_buf(), command));
+        }
+    }
+}
+
+/// The texts of the tag line; every one of them goes to `anchors`.
+fn tag_texts(
+    ui: &mut Ui,
+    path: &Path,
+    tags: &[String],
+    actions: &mut Vec<BoardAction>,
+    anchors: &mut Vec<egui::Response>,
+) {
     if tags.is_empty() {
-        ui.label(weak("no tag"));
+        anchors.push(menu_anchor(ui, weak("no tag"), path, actions));
         return;
     }
-    ui.label(weak("tag"));
+    anchors.push(menu_anchor(ui, weak("tag"), path, actions));
     let mono = egui::TextStyle::Monospace;
     let widths: Vec<f32> = tags
         .iter()
@@ -767,11 +808,12 @@ fn tag_line(ui: &mut Ui, tags: &[String], actions: &mut Vec<BoardAction>) {
         if i > 0 {
             ui.label(RichText::new(", ").monospace());
         }
-        copyable(ui, RichText::new(tag).monospace(), tag.clone(), actions).on_hover_text(&all);
+        let text = RichText::new(tag).monospace();
+        anchors.push(copyable(ui, text, tag.clone(), actions).on_hover_text(&all));
     }
     if shown < tags.len() {
-        ui.label(RichText::new(", \u{2026}").monospace())
-            .on_hover_text(&all);
+        let more = RichText::new(", \u{2026}").monospace();
+        anchors.push(menu_anchor(ui, more, path, actions).on_hover_text(&all));
     }
 }
 
@@ -824,7 +866,7 @@ fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
             RepoState::Normal => {}
         }
     });
-    ui.horizontal(|ui| tag_line(ui, &snap.tags, actions));
+    ui.horizontal(|ui| tag_line(ui, &card.path, snap, actions));
     if let Some(commit) = &snap.commit {
         ui.horizontal(|ui| {
             ui.label(weak("commit"));

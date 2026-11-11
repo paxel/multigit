@@ -78,6 +78,9 @@ greyed out, and comes back by itself when the folder returns.
   tracking branch. **Create new branch** makes a branch from the checked-out
   commit and switches to it. Both run `git switch`, so git decides what
   happens to uncommitted changes, and the result is in the output panel.
+- **Switching to a tag**: a right click on a card's tag line (also on
+  `no tag`) lists all tags of that repository, the one made last first, with
+  a filter field. A click checks the tag out with `git switch --detach`.
 - **Card buttons** run in that one repository. The defaults are
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
 - **Marking**: a click on a card marks it, a second click unmarks it; marked

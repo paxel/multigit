@@ -1,6 +1,7 @@
 //! Starts other programs of the desktop: the default program for a file.
 
 use crate::application::desktop::Desktop;
+use crate::domain::command::terminal_commands;
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -53,6 +54,24 @@ pub fn spawn_detached(program: &OsStr, args: &[&OsStr], dir: Option<&Path>) -> i
     Ok(())
 }
 
+/// Start the first of `commands` whose program exists, in `dir`.
+pub fn spawn_first(commands: &[Vec<String>], dir: &Path) -> io::Result<()> {
+    for command in commands {
+        let Some((program, args)) = command.split_first() else {
+            continue;
+        };
+        let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+        match spawn_detached(OsStr::new(program), &args, Some(dir)) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            result => return result,
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "no terminal found; set the terminal command in Settings",
+    ))
+}
+
 /// The real desktop.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemDesktop;
@@ -60,6 +79,18 @@ pub struct SystemDesktop;
 impl Desktop for SystemDesktop {
     fn open_file(&self, file: &Path) -> io::Result<()> {
         spawn_detached(OsStr::new(opener()), &[file.as_os_str()], None)
+    }
+
+    fn open_terminal(&self, dir: &Path, configured: &str) -> io::Result<()> {
+        let env_terminal = std::env::var("TERMINAL").ok();
+        let commands = terminal_commands(
+            configured,
+            env_terminal.as_deref(),
+            cfg!(target_os = "macos"),
+            &dir.to_string_lossy(),
+        )
+        .map_err(io::Error::other)?;
+        spawn_first(&commands, dir)
     }
 }
 
@@ -106,6 +137,30 @@ mod tests {
         // A second file goes into the same folder.
         write_scratch_file(&dir, "b.txt", "more").unwrap();
         assert!(scratch_dir().starts_with(std::env::temp_dir()));
+    }
+
+    #[test]
+    fn the_first_existing_program_of_a_list_is_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let commands = vec![
+            vec![],
+            vec!["/nonexistent/multigit-test-terminal".to_owned()],
+            vec!["sh".to_owned(), "-c".to_owned(), "touch started".to_owned()],
+            vec!["sh".to_owned(), "-c".to_owned(), "touch second".to_owned()],
+        ];
+        spawn_first(&commands, dir.path()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !dir.path().join("started").exists() {
+            assert!(Instant::now() < deadline, "the program never ran");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!dir.path().join("second").exists());
+
+        let none = spawn_first(&commands[..2], dir.path()).unwrap_err();
+        assert_eq!(none.kind(), io::ErrorKind::NotFound);
+        assert!(none.to_string().contains("Settings"), "{none}");
+        // A configured command that cannot be parsed never starts anything.
+        assert!(SystemDesktop.open_terminal(dir.path(), "term 'x").is_err());
     }
 
     #[test]

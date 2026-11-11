@@ -37,6 +37,15 @@ pub fn show(app: &mut App, ctx: &Context) {
                     ui.label("Folder scan depth");
                     ui.add(DragValue::new(&mut config.scan_depth).range(1..=10));
                     ui.end_row();
+                    ui.label("Terminal command");
+                    ui.add(
+                        TextEdit::singleline(&mut config.terminal)
+                            .font(egui::TextStyle::Monospace)
+                            .hint_text("found automatically")
+                            .desired_width(240.0),
+                    )
+                    .on_hover_text("Opens a terminal in a repository; {dir} stands for its folder");
+                    ui.end_row();
                     ui.label("Theme");
                     ui.horizontal(|ui| {
                         for theme in Theme::ALL {

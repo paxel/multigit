@@ -385,6 +385,13 @@ impl App {
         }
     }
 
+    /// The card's terminal button: a terminal window in the repository.
+    pub fn open_terminal(&mut self, repo: &Path) {
+        if let Err(e) = self.desktop.open_terminal(repo, &self.config.terminal) {
+            self.toast(format!("Cannot open a terminal: {e}"));
+        }
+    }
+
     /// Write the output of run `id` (of all its repositories, or of `repo`
     /// alone) to a text file and open it with the system's default program.
     /// Nothing happens while that output is not complete.
@@ -672,6 +679,8 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub struct FakeDesktop {
         pub files: Mutex<Vec<PathBuf>>,
+        /// Folder and configured command of every terminal asked for.
+        pub terminals: Mutex<Vec<(PathBuf, String)>>,
         pub fail: bool,
     }
 
@@ -681,6 +690,14 @@ pub(crate) mod tests {
                 return Err(io::Error::other("no opener"));
             }
             self.files.lock().unwrap().push(file.to_path_buf());
+            Ok(())
+        }
+        fn open_terminal(&self, dir: &Path, configured: &str) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::other("no terminal"));
+            }
+            let asked = (dir.to_path_buf(), configured.to_owned());
+            self.terminals.lock().unwrap().push(asked);
             Ok(())
         }
     }
@@ -922,6 +939,11 @@ pub(crate) mod tests {
         assert_eq!(
             app.toasts.last().unwrap().text,
             "Cannot open the output: no opener"
+        );
+        app.open_terminal(Path::new("/x/a"));
+        assert_eq!(
+            app.toasts.last().unwrap().text,
+            "Cannot open a terminal: no terminal"
         );
     }
 

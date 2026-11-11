@@ -35,6 +35,7 @@ enum BoardAction {
     Remove(PathBuf),
     Button(usize, PathBuf),
     Toggle(PathBuf),
+    Terminal(PathBuf),
     /// A card text was clicked at this pointer position.
     Copy(String, egui::Pos2),
     /// The fetch error of this card was clicked at this pointer position.
@@ -283,6 +284,7 @@ impl App {
             match action {
                 BoardAction::Remove(p) => self.remove(&p),
                 BoardAction::Button(i, p) => self.run_button(i, &p),
+                BoardAction::Terminal(p) => self.open_terminal(&p),
                 BoardAction::Toggle(p) => {
                     if !self.marked.remove(&p) {
                         self.marked.insert(p);
@@ -447,6 +449,9 @@ impl App {
     }
 }
 
+/// Label of a card's terminal button.
+pub const TERMINAL_LABEL: &str = ">_";
+
 /// Mark behind "Output" while the hidden panel has an unseen run.
 pub const OUTPUT_MARK: char = '\u{2022}';
 
@@ -530,6 +535,15 @@ fn card_frame(
                         .clicked()
                     {
                         actions.push(BoardAction::Remove(card.path.clone()));
+                    }
+                    // No terminal in a folder that is gone.
+                    let terminal = egui::Button::new(TERMINAL_LABEL).small();
+                    if ui
+                        .add_enabled(card.snapshot().is_some(), terminal)
+                        .on_hover_text("Open a terminal in this repository")
+                        .clicked()
+                    {
+                        actions.push(BoardAction::Terminal(card.path.clone()));
                     }
                 });
             });

@@ -537,6 +537,33 @@ fn open_in_editor_buttons_hand_the_output_to_the_desktop() {
 }
 
 #[test]
+fn terminal_button_opens_a_terminal_in_the_repository() {
+    let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
+    let backend = Arc::new(FakeBackend::default());
+    *backend.snapshot.lock().unwrap() =
+        Some(snapshot(Counts::default(), Upstream::None, &["main"]));
+    let mut app = crate::ui::app::tests::app_on(backend.clone(), desktop.clone(), None);
+    app.cards = vec![card("/r/one")];
+    app.config.terminal = "foot".into();
+    let mut h = harness(app);
+    h.run();
+    h.get_by_label(crate::ui::view::TERMINAL_LABEL).click();
+    h.run();
+    assert_eq!(
+        desktop.terminals.lock().unwrap().clone(),
+        vec![(PathBuf::from("/r/one"), "foot".to_owned())]
+    );
+    assert!(h.state().marked.is_empty(), "the button does not mark");
+
+    // A folder that is gone gets no terminal.
+    h.state_mut().cards[0].probe = Some(Err(crate::domain::repo::ProbeError::PathMissing));
+    h.run();
+    h.get_by_label(crate::ui::view::TERMINAL_LABEL).click();
+    h.run();
+    assert_eq!(desktop.terminals.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn card_shows_the_tag() {
     let backend = Arc::new(FakeBackend::default());
     let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);

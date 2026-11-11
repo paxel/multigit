@@ -65,6 +65,12 @@ greyed out, and comes back by itself when the folder returns.
 
 ## Running git
 
+- **Terminal**: the `>_` button in a card's top row opens a terminal window
+  with a shell in that repository. Without a terminal command in Settings,
+  multigit takes `$TERMINAL`, then `xdg-terminal-exec`, then the first of
+  konsole, gnome-terminal, xfce4-terminal, kitty, alacritty, foot, wezterm and
+  xterm that is installed; on macOS it opens Terminal.app. In a terminal
+  command of your own, `{dir}` stands for the repository's folder.
 - **Card buttons** run in that one repository. The defaults are
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
 - **Marking**: a click on a card marks it, a second click unmarks it; marked
@@ -152,7 +158,8 @@ Buttons and the command line run git as you would in a terminal, hooks and all.
 ## Settings and files
 
 **Settings** in the toolbar changes the fetch interval, the number of parallel
-git processes, the folder scan depth, the theme (System, Light or Dark), Tab's
+git processes, the folder scan depth, the terminal command, the theme (System,
+Light or Dark), Tab's
 single-match behaviour, and the card buttons (add, remove, reorder, or pick a
 preset).
 

@@ -98,6 +98,10 @@ pub struct Config {
     pub auto_insert_single_match: bool,
     #[serde(default)]
     pub theme: Theme,
+    /// Command that opens a terminal in a repository; `{dir}` stands for the
+    /// folder. Empty: the app finds a terminal.
+    #[serde(default)]
+    pub terminal: String,
     #[serde(default)]
     pub repos: Vec<PathBuf>,
     #[serde(default = "default_buttons")]
@@ -112,6 +116,7 @@ impl Default for Config {
             scan_depth: default_scan_depth(),
             auto_insert_single_match: true,
             theme: Theme::default(),
+            terminal: String::new(),
             repos: Vec::new(),
             buttons: default_buttons(),
         }
@@ -165,6 +170,7 @@ mod tests {
         assert_eq!(config.scan_depth, 2);
         assert!(config.auto_insert_single_match);
         assert_eq!(config.theme, Theme::System);
+        assert_eq!(config.terminal, "");
         assert_eq!(
             config
                 .buttons

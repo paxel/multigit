@@ -1,6 +1,7 @@
 //! Drawing of the board: toolbar, cards, output panel, CLI, toasts, dialogs.
 
 use crate::domain::command::{Job, display, shell_name, shell_program};
+use crate::domain::favorites::{EMOJIS, Favorite, PALETTE, color_rgb, dark_text_on, favorites_of};
 use crate::domain::naming::{parent_line, title};
 use crate::domain::output::{Run, SectionState};
 use crate::domain::repo::Snapshot;
@@ -27,6 +28,45 @@ const FILTER_WIDTH: f32 = 160.0;
 /// its count.
 const VIEW_CONTROLS_WIDTH: f32 = 380.0;
 
+/// Id of the name field in the favorite dialog.
+pub fn favorite_name_id() -> egui::Id {
+    egui::Id::new("favorite-name")
+}
+
+/// Width of the stripe a favorite paints at a card's left edge.
+const STRIPE_WIDTH: f32 = 5.0;
+
+fn favorite_color(name: &str) -> Color32 {
+    let [r, g, b] = color_rgb(name);
+    Color32::from_rgb(r, g, b)
+}
+
+/// Black or white, whichever reads on the palette color `rgb`. The text
+/// carries its own color, so the theme's hover color cannot hide it.
+fn text_on(rgb: [u8; 3]) -> Color32 {
+    if dark_text_on(rgb) {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    }
+}
+
+/// A button filled with a palette color; the picked or active one has a
+/// thick border.
+fn swatch(ui: &mut Ui, text: &str, rgb: [u8; 3], picked: bool) -> egui::Response {
+    let [r, g, b] = rgb;
+    let mut button =
+        egui::Button::new(RichText::new(text).color(text_on(rgb))).fill(Color32::from_rgb(r, g, b));
+    if picked {
+        button = button.stroke(egui::Stroke::new(3.0, ui.visuals().strong_text_color()));
+    }
+    ui.add(button)
+}
+
+fn favorite_button(ui: &mut Ui, favorite: &Favorite, active: bool) -> egui::Response {
+    swatch(ui, &favorite.label(), color_rgb(&favorite.color), active)
+}
+
 /// Id of the filter field.
 pub fn filter_id() -> egui::Id {
     egui::Id::new("board-filter")
@@ -40,6 +80,11 @@ enum BoardAction {
     Terminal(PathBuf),
     /// Run these git arguments in this repository.
     Run(PathBuf, String),
+    /// From the right-click menu of this card: put its targets into the
+    /// favorite at this position, take them out, or make a new favorite.
+    AddToFavorite(usize, PathBuf),
+    RemoveFromFavorite(usize, PathBuf),
+    NewFavorite(PathBuf),
     /// A card text was clicked at this pointer position.
     Copy(String, egui::Pos2),
     /// The fetch error of this card was clicked at this pointer position.
@@ -145,6 +190,7 @@ impl App {
         self.toasts_overlay(ui);
         self.copy_flash_overlay(ui);
         self.confirm_dialog(ui, enter_confirms);
+        self.favorite_dialog(ui);
         settings::show(self, ui.ctx());
     }
 
@@ -160,6 +206,7 @@ impl App {
                 self.filter_field(ui);
             });
         });
+        self.favorites_line(ui);
         if let Some(error) = &self.config_error {
             ui.colored_label(
                 ui.visuals().error_fg_color,
@@ -190,6 +237,128 @@ impl App {
             .clicked()
         {
             self.sort = self.sort.next();
+        }
+    }
+
+    /// One button per favorite; no line without favorites. A click shows only
+    /// that favorite's cards, a second click all again; a right click changes
+    /// the favorite.
+    fn favorites_line(&mut self, ui: &mut Ui) {
+        if self.config.favorites.is_empty() {
+            return;
+        }
+        enum Change {
+            Toggle(usize),
+            Edit(usize),
+            Add(usize),
+            Remove(usize),
+            Delete(usize),
+        }
+        let marked = self.marked_repos();
+        let mut change = None;
+        ui.horizontal_wrapped(|ui| {
+            for (i, favorite) in self.config.favorites.iter().enumerate() {
+                let active = self.active_favorite == Some(i);
+                let button = favorite_button(ui, favorite, active).on_hover_text(if active {
+                    "Show all repositories again"
+                } else {
+                    "Show only this favorite's repositories"
+                });
+                if button.clicked() {
+                    change = Some(Change::Toggle(i));
+                }
+                button.context_menu(|ui| {
+                    ui.strong(favorite.label());
+                    if ui.button("Edit\u{2026}").clicked() {
+                        change = Some(Change::Edit(i));
+                    }
+                    let any = !marked.is_empty();
+                    let add = format!("Add marked ({})", marked.len());
+                    if ui.add_enabled(any, egui::Button::new(add)).clicked() {
+                        change = Some(Change::Add(i));
+                    }
+                    let remove = format!("Remove marked ({})", marked.len());
+                    if ui.add_enabled(any, egui::Button::new(remove)).clicked() {
+                        change = Some(Change::Remove(i));
+                    }
+                    ui.separator();
+                    if ui.button("Delete").clicked() {
+                        change = Some(Change::Delete(i));
+                    }
+                });
+            }
+        });
+        match change {
+            Some(Change::Toggle(i)) => self.toggle_favorite(i),
+            Some(Change::Edit(i)) => self.edit_favorite(i),
+            Some(Change::Add(i)) => self.add_to_favorite(i, &marked),
+            Some(Change::Remove(i)) => self.remove_from_favorite(i, &marked),
+            Some(Change::Delete(i)) => self.delete_favorite(i),
+            None => {}
+        }
+    }
+
+    /// The dialog that makes a favorite or changes one: name, color, emoji.
+    fn favorite_dialog(&mut self, ui: &Ui) {
+        let Some(dialog) = &mut self.favorite_dialog else {
+            return;
+        };
+        let mut decision = None;
+        egui::Modal::new(egui::Id::new("favorite-dialog")).show(ui.ctx(), |ui| {
+            ui.set_width(380.0);
+            ui.heading(if dialog.editing.is_some() {
+                "Edit favorite"
+            } else {
+                "New favorite"
+            });
+            if !dialog.repos.is_empty() {
+                ui.weak(format!("with {}", repositories(dialog.repos.len())));
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut dialog.draft.name)
+                    .id(favorite_name_id())
+                    .hint_text("Name")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.label("Color");
+            ui.horizontal_wrapped(|ui| {
+                for (name, rgb) in PALETTE {
+                    let picked = dialog.draft.color == name;
+                    if swatch(ui, name, rgb, picked).clicked() {
+                        dialog.draft.color = name.to_owned();
+                    }
+                }
+            });
+            ui.label("Emoji");
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .selectable_label(dialog.draft.emoji.is_none(), "none")
+                    .clicked()
+                {
+                    dialog.draft.emoji = None;
+                }
+                for emoji in EMOJIS {
+                    let picked = dialog.draft.emoji.as_deref() == Some(emoji);
+                    if ui.selectable_label(picked, emoji).clicked() {
+                        dialog.draft.emoji = Some(emoji.to_owned());
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let save = egui::Button::new("Save");
+                if ui.add_enabled(dialog.draft.is_valid(), save).clicked() {
+                    decision = Some(true);
+                }
+                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    decision = Some(false);
+                }
+            });
+        });
+        match decision {
+            Some(true) => self.save_favorite(),
+            Some(false) => self.favorite_dialog = None,
+            None => {}
         }
     }
 
@@ -262,6 +431,7 @@ impl App {
         }
         let mut actions = Vec::new();
         let gap = 10.0;
+        let marked_shown = self.marked_repos();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -276,9 +446,15 @@ impl App {
                             if i > 0 {
                                 ui.add_space(gap);
                             }
-                            let marked = self.marked.contains(&card.path);
-                            let busy = self.is_busy(&card.path);
-                            card_ui(ui, card, marked, busy, &self.config.buttons, &mut actions);
+                            let view = CardView {
+                                card,
+                                marked: self.marked.contains(&card.path),
+                                busy: self.is_busy(&card.path),
+                                buttons: &self.config.buttons,
+                                favorites: &self.config.favorites,
+                                marked_shown: &marked_shown,
+                            };
+                            view.show(ui, &mut actions);
                         }
                     });
                     ui.add_space(gap);
@@ -290,6 +466,18 @@ impl App {
                 BoardAction::Button(i, p) => self.run_button(i, &p),
                 BoardAction::Terminal(p) => self.open_terminal(&p),
                 BoardAction::Run(p, command) => self.start_run(&command, vec![p]),
+                BoardAction::AddToFavorite(i, p) => {
+                    let targets = self.menu_targets(&p);
+                    self.add_to_favorite(i, &targets);
+                }
+                BoardAction::RemoveFromFavorite(i, p) => {
+                    let targets = self.menu_targets(&p);
+                    self.remove_from_favorite(i, &targets);
+                }
+                BoardAction::NewFavorite(p) => {
+                    let targets = self.menu_targets(&p);
+                    self.new_favorite(targets);
+                }
                 BoardAction::Toggle(p) => {
                     if !self.marked.remove(&p) {
                         self.marked.insert(p);
@@ -488,14 +676,115 @@ fn output_toggle(ui: &mut Ui, hidden: &mut bool, unseen: Option<Option<bool>>) {
     }
 }
 
-fn card_ui(
-    ui: &mut Ui,
-    card: &Card,
+/// One card and what drawing it needs from the board.
+struct CardView<'a> {
+    card: &'a Card,
     marked: bool,
     busy: bool,
-    buttons: &[crate::domain::config::ButtonDef],
+    buttons: &'a [crate::domain::config::ButtonDef],
+    favorites: &'a [Favorite],
+    /// The marked cards the board shows: what a right click on a marked
+    /// card acts on.
+    marked_shown: &'a [PathBuf],
+}
+
+impl CardView<'_> {
+    fn show(&self, ui: &mut Ui, actions: &mut Vec<BoardAction>) {
+        let Self {
+            card,
+            marked,
+            busy,
+            buttons,
+            ..
+        } = *self;
+        let member_of = favorites_of(self.favorites, &card.path);
+        let emojis: String = member_of
+            .iter()
+            .filter_map(|&i| self.favorites.get(i)?.emoji.as_deref())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let content = CardContent {
+            card,
+            busy,
+            buttons,
+            emojis: &emojis,
+        };
+        let mut anchors = card_ui(ui, &content, marked, actions);
+        // One stripe per favorite at the left edge, inside the card's margin.
+        if let Some(whole) = anchors.first().map(|r| r.rect) {
+            let width = STRIPE_WIDTH.min(CARD_MARGIN / member_of.len().max(1) as f32);
+            let colors = member_of.iter().filter_map(|&i| self.favorites.get(i));
+            for (n, favorite) in colors.enumerate() {
+                let left = whole.left() + MARKED_STROKE + n as f32 * width;
+                let stripe = egui::Rect::from_min_max(
+                    egui::pos2(left, whole.top() + MARKED_STROKE),
+                    egui::pos2(left + width, whole.bottom() - MARKED_STROKE),
+                );
+                ui.painter()
+                    .rect_filled(stripe, 0.0, favorite_color(&favorite.color));
+            }
+        }
+        for anchor in anchors.drain(..) {
+            anchor.context_menu(|ui| self.menu(ui, actions));
+        }
+    }
+
+    /// The right-click menu of the card. It acts on this card, or on all
+    /// marked cards when this one is marked.
+    fn menu(&self, ui: &mut Ui, actions: &mut Vec<BoardAction>) {
+        let path = &self.card.path;
+        let own = [path.clone()];
+        let targets: &[PathBuf] = if self.marked { self.marked_shown } else { &own };
+        ui.strong(if targets.len() == 1 {
+            title(path)
+        } else {
+            repositories(targets.len())
+        });
+        for (i, favorite) in self.favorites.iter().enumerate() {
+            if ui.button(format!("Add to {}", favorite.label())).clicked() {
+                actions.push(BoardAction::AddToFavorite(i, path.clone()));
+            }
+        }
+        if ui.button("New favorite\u{2026}").clicked() {
+            actions.push(BoardAction::NewFavorite(path.clone()));
+        }
+        let holds_a_target = |f: &Favorite| targets.iter().any(|t| f.contains(t));
+        let mut separated = false;
+        for (i, favorite) in self.favorites.iter().enumerate() {
+            if !holds_a_target(favorite) {
+                continue;
+            }
+            if !std::mem::replace(&mut separated, true) {
+                ui.separator();
+            }
+            if ui
+                .button(format!("Remove from {}", favorite.label()))
+                .clicked()
+            {
+                actions.push(BoardAction::RemoveFromFavorite(i, path.clone()));
+            }
+        }
+    }
+}
+
+/// What a card's frame holds.
+struct CardContent<'a> {
+    card: &'a Card,
+    busy: bool,
+    buttons: &'a [crate::domain::config::ButtonDef],
+    /// The emojis of the card's favorites.
+    emojis: &'a str,
+}
+
+/// Draws the card; the responses that carry the card's right-click menu, the
+/// whole card first.
+fn card_ui(
+    ui: &mut Ui,
+    content: &CardContent,
+    marked: bool,
     actions: &mut Vec<BoardAction>,
-) {
+) -> Vec<egui::Response> {
+    let card = content.card;
     let mut frame = egui::Frame::group(ui.style()).inner_margin(CARD_MARGIN);
     if marked {
         // Marked cards get a thick selection-colored border and a tinted background.
@@ -508,31 +797,42 @@ fn card_ui(
     // copy themselves sit above this sense and keep their clicks. Texts are
     // not selectable: a drag to select would fight those clicks.
     let card_sense = egui::UiBuilder::new().sense(egui::Sense::click());
+    let mut anchors = Vec::new();
     let response = ui.scope_builder(card_sense, |ui| {
         ui.style_mut().interaction.selectable_labels = false;
-        card_frame(ui, frame, card, busy, buttons, actions);
+        card_frame(ui, frame, content, actions, &mut anchors);
     });
     if response.response.clicked() {
         actions.push(BoardAction::Toggle(card.path.clone()));
     }
+    anchors.insert(0, response.response);
+    anchors
 }
 
 fn card_frame(
     ui: &mut Ui,
     frame: egui::Frame,
-    card: &Card,
-    busy: bool,
-    buttons: &[crate::domain::config::ButtonDef],
+    content: &CardContent,
     actions: &mut Vec<BoardAction>,
+    anchors: &mut Vec<egui::Response>,
 ) {
+    let CardContent {
+        card,
+        busy,
+        buttons,
+        emojis,
+    } = *content;
     let path_text = card.path.display().to_string();
     frame.show(ui, |ui| {
         ui.set_width(CARD_WIDTH);
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
+                if !emojis.is_empty() {
+                    ui.label(RichText::new(emojis).size(15.0));
+                }
                 let name = title(&card.path);
                 let text = RichText::new(&name).strong().size(15.0);
-                copyable(ui, text, name, actions).on_hover_text(&path_text);
+                anchors.push(copyable(ui, text, name, actions).on_hover_text(&path_text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .small_button("×")
@@ -553,7 +853,8 @@ fn card_frame(
                 });
             });
             let parents = parent_line(&card.path, |text| fits(ui, text, CARD_WIDTH));
-            copyable(ui, weak(parents), path_text.clone(), actions).on_hover_text(&path_text);
+            let line = copyable(ui, weak(parents), path_text.clone(), actions);
+            anchors.push(line.on_hover_text(&path_text));
             let greyed = card.snapshot().is_none();
             if greyed {
                 ui.multiply_opacity(0.55);

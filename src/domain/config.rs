@@ -1,5 +1,6 @@
 //! User configuration stored in `~/.config/multigit/config.toml`.
 
+use crate::domain::favorites::Favorite;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -106,6 +107,9 @@ pub struct Config {
     pub repos: Vec<PathBuf>,
     #[serde(default = "default_buttons")]
     pub buttons: Vec<ButtonDef>,
+    /// In the order they were made, which is the order of their buttons.
+    #[serde(default)]
+    pub favorites: Vec<Favorite>,
 }
 
 impl Default for Config {
@@ -119,6 +123,7 @@ impl Default for Config {
             terminal: String::new(),
             repos: Vec::new(),
             buttons: default_buttons(),
+            favorites: Vec::new(),
         }
     }
 }
@@ -148,6 +153,30 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn favorites_survive_the_config_file() {
+        let mut config = Config::default();
+        config.favorites.push(Favorite {
+            name: "ETL".into(),
+            color: "teal".into(),
+            emoji: Some("\u{1f680}".into()),
+            repos: vec!["/x/etl-load".into()],
+        });
+        config.favorites.push(Favorite {
+            name: "empty".into(),
+            color: "red".into(),
+            emoji: None,
+            repos: vec![],
+        });
+        let text = config.to_toml().unwrap();
+        assert!(text.contains("[[favorites]]"), "{text}");
+        assert_eq!(Config::from_toml(&text).unwrap(), config);
+        // Written by hand with the least there is.
+        let by_hand = Config::from_toml("[[favorites]]\nname = \"a\"\ncolor = \"blue\"").unwrap();
+        assert_eq!(by_hand.favorites[0].repos, Vec::<PathBuf>::new());
+        assert_eq!(by_hand.favorites[0].emoji, None);
+    }
 
     #[test]
     fn theme_is_stored_as_a_lowercase_word() {

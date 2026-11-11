@@ -722,6 +722,156 @@ fn no_tag_has_the_menu_too_and_a_click_on_it_still_marks_the_card() {
     );
 }
 
+/// Whether one of egui's bundled fonts draws `c`. `Fonts::has_glyph` cannot
+/// tell: it calls every glyph of the font that holds the replacement glyph
+/// missing, and that font holds most emojis.
+fn bundled_fonts_draw(c: char) -> bool {
+    use epaint_default_fonts::{EMOJI_ICON, HACK_REGULAR, NOTO_EMOJI_REGULAR, UBUNTU_LIGHT};
+    [UBUNTU_LIGHT, NOTO_EMOJI_REGULAR, EMOJI_ICON, HACK_REGULAR]
+        .into_iter()
+        .any(|font| {
+            ttf_parser::Face::parse(font, 0)
+                .unwrap()
+                .glyph_index(c)
+                .is_some()
+        })
+}
+
+#[test]
+fn every_favorite_emoji_has_a_glyph() {
+    let missing: Vec<&str> = crate::domain::favorites::EMOJIS
+        .into_iter()
+        .filter(|e| !e.chars().all(bundled_fonts_draw))
+        .collect();
+    assert!(missing.is_empty(), "no glyph for {missing:?}");
+    assert!(!bundled_fonts_draw('\u{10ffff}'));
+}
+
+/// Three cards, the two `etl` ones marked.
+fn favorites_app() -> Harness<'static, App> {
+    let backend = Arc::new(FakeBackend::default());
+    *backend.snapshot.lock().unwrap() =
+        Some(snapshot(Counts::default(), Upstream::None, &["main"]));
+    let mut app = app_with(backend, None);
+    app.cards = vec![card("/r/etl-load"), card("/r/etl-store"), card("/r/web")];
+    app.marked.insert("/r/etl-load".into());
+    app.marked.insert("/r/etl-store".into());
+    let mut h = harness(app);
+    h.run();
+    h
+}
+
+#[test]
+fn favorite_is_made_from_the_marked_cards_and_its_button_filters_the_board() {
+    let mut h = favorites_app();
+    // A right click on a marked card is about all marked cards.
+    h.get_by_label("etl-load").click_secondary();
+    h.run();
+    h.get_by_label("2 repositories");
+    h.get_by_label("New favorite\u{2026}").click();
+    h.run();
+    h.get_by_label("New favorite");
+    h.get_by_label("with 2 repositories");
+    h.ctx
+        .memory_mut(|m| m.request_focus(crate::ui::view::favorite_name_id()));
+    h.run();
+    type_text(&mut h, "ETL");
+    h.get_by_label("teal").click();
+    h.run();
+    let rocket = crate::domain::favorites::EMOJIS[3];
+    h.get_by_label(rocket).click();
+    h.run();
+    h.get_by_label("Save").click();
+    h.run();
+    assert!(h.state().favorite_dialog.is_none());
+    let favorite = h.state().config.favorites[0].clone();
+    assert_eq!(favorite.name, "ETL");
+    assert_eq!(favorite.color, "teal");
+    assert_eq!(favorite.emoji.as_deref(), Some(rocket));
+    assert_eq!(
+        favorite.repos,
+        vec![PathBuf::from("/r/etl-load"), PathBuf::from("/r/etl-store")]
+    );
+    // Both cards carry the emoji; the favorite has its button.
+    assert_eq!(h.get_all_by_label(rocket).count(), 2);
+    let button = format!("{rocket} ETL");
+    h.get_by_label(&button).click();
+    h.run();
+    assert_eq!(h.state().active_favorite, Some(0));
+    assert!(h.query_by_label("web").is_none());
+    h.get_by_label("etl-load");
+    h.get_by_label(&button).click();
+    h.run();
+    h.get_by_label("web");
+}
+
+#[test]
+fn right_click_menus_change_and_delete_a_favorite() {
+    let mut h = favorites_app();
+    h.state_mut().new_favorite(vec![]);
+    h.state_mut().favorite_dialog.as_mut().unwrap().draft.name = "Front".into();
+    h.state_mut().save_favorite();
+    h.run();
+
+    // An unmarked card: the menu is about that card alone.
+    h.get_by_label("web").click_secondary();
+    h.run();
+    assert!(h.query_by_label("Remove from Front").is_none());
+    h.get_by_label("Add to Front").click();
+    h.run();
+    assert_eq!(
+        h.state().config.favorites[0].repos,
+        vec![PathBuf::from("/r/web")]
+    );
+    h.get_by_label("web").click_secondary();
+    h.run();
+    h.get_by_label("Remove from Front").click();
+    h.run();
+    assert!(h.state().config.favorites[0].repos.is_empty());
+
+    // The favorite's own menu takes the marked cards and edits it.
+    h.get_by_label("Front").click_secondary();
+    h.run();
+    h.get_by_label("Add marked (2)").click();
+    h.run();
+    assert_eq!(h.state().config.favorites[0].repos.len(), 2);
+    h.get_by_label("Front").click_secondary();
+    h.run();
+    h.get_by_label("Remove marked (2)").click();
+    h.run();
+    assert!(h.state().config.favorites[0].repos.is_empty());
+    h.get_by_label("Front").click_secondary();
+    h.run();
+    h.get_by_label("Edit\u{2026}").click();
+    h.run();
+    h.get_by_label("Edit favorite");
+    h.get_by_label("pink").click();
+    h.run();
+    h.get_by_label("Save").click();
+    h.run();
+    assert_eq!(h.state().config.favorites[0].color, "pink");
+
+    h.get_by_label("Front").click_secondary();
+    h.run();
+    h.get_by_label("Delete").click();
+    h.run();
+    assert!(h.state().config.favorites.is_empty());
+    assert!(
+        h.query_by_label("Front").is_none(),
+        "the favorites line is gone"
+    );
+    assert_eq!(h.state().cards.len(), 3, "the repositories stay");
+}
+
+#[test]
+fn right_click_on_the_branch_opens_the_branch_menu_not_the_cards() {
+    let mut h = favorites_app();
+    h.get_all_by_label("main").next().unwrap().click_secondary();
+    h.run();
+    h.get_by_label("Switch to");
+    assert!(h.query_by_label("New favorite\u{2026}").is_none());
+}
+
 #[test]
 fn card_shows_the_tag() {
     let backend = Arc::new(FakeBackend::default());

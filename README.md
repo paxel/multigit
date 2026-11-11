@@ -54,6 +54,24 @@ mark buttons and **Remove marked** act on the shown cards only.
 A card whose folder is gone or is no longer a repository stays on the board,
 greyed out, and comes back by itself when the folder returns.
 
+## Favorites
+
+A favorite is a named group of repositories with a color and, if you like, an
+emoji. A repository can be in several.
+
+- A right click on a card adds it to a favorite, takes it out of one, or makes
+  a **New favorite** with it. On a marked card the menu is about all marked
+  cards: filter by `etl`, mark all, right click, add to a favorite.
+- Every favorite has a button in a second toolbar line (there is no such line
+  without favorites). A click shows only that favorite's cards, a second click
+  all again. One favorite is active at a time, together with the filter field;
+  hidden cards are skipped as with the filter.
+- A right click on a favorite's button edits its name, color and emoji, adds
+  or removes the marked cards, or deletes it. Deleting a favorite leaves its
+  repositories on the board.
+- A card shows a stripe in the color of each of its favorites at its left
+  edge, and their emojis in front of its name.
+
 ## Adding and removing repositories
 
 - **+** opens a folder dialog. A repository is added as one card; any other
@@ -175,7 +193,7 @@ preset).
 
 | File                                                           | Content                                           |
 |----------------------------------------------------------------|---------------------------------------------------|
-| `~/.config/multigit/config.toml`                               | Repositories, buttons, settings; editable by hand |
+| `~/.config/multigit/config.toml`                               | Repositories, favorites, buttons, settings        |
 | `~/.local/state/multigit/history`                              | Command line history, last 500 entries            |
 | `~/.local/share/applications/io.github.paxel.multigit.desktop` | Menu entry, written on every start (Linux only)   |
 | `~/.local/share/icons/hicolor/256x256/apps/multigit.png`       | Icon (Linux only)                                 |

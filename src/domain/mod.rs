@@ -5,6 +5,7 @@ pub mod command;
 pub mod completion;
 pub mod config;
 pub mod destructive;
+pub mod favorites;
 pub mod hints;
 pub mod history;
 pub mod naming;

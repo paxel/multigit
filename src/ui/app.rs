@@ -8,6 +8,7 @@ use crate::domain::command::{Job, display, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::Config;
 use crate::domain::destructive::is_destructive;
+use crate::domain::favorites::{FavoriteDraft, active_after_delete, forget};
 use crate::domain::history::History;
 use crate::domain::naming::{board_order, title};
 use crate::domain::output::OutputLog;
@@ -85,6 +86,16 @@ pub struct PendingRun {
     pub repos: Vec<PathBuf>,
 }
 
+/// The open dialog that makes a favorite or changes one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FavoriteDialog {
+    pub draft: FavoriteDraft,
+    /// The favorite that is changed; `None` makes a new one.
+    pub editing: Option<usize>,
+    /// The repositories a new favorite starts with.
+    pub repos: Vec<PathBuf>,
+}
+
 /// The "Copied" animation after a click on a card text.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CopyFlash {
@@ -115,6 +126,10 @@ pub struct App {
     pub filter: String,
     /// What the board is sorted by; not saved.
     pub sort: SortKey,
+    /// The favorite whose repositories alone are shown, by its position in
+    /// the config; not saved.
+    pub active_favorite: Option<usize>,
+    pub favorite_dialog: Option<FavoriteDialog>,
     engine: Engine,
     desktop: Arc<dyn Desktop>,
     /// Where files for other programs are written; removed on exit.
@@ -169,6 +184,8 @@ impl App {
             marked: BTreeSet::new(),
             filter: String::new(),
             sort: SortKey::default(),
+            active_favorite: None,
+            favorite_dialog: None,
             engine,
             desktop,
             scratch: scratch_dir(),
@@ -264,12 +281,91 @@ impl App {
     pub fn remove(&mut self, path: &Path) {
         self.cards.retain(|c| c.path != path);
         self.marked.remove(path);
+        forget(&mut self.config.favorites, &[path.to_path_buf()]);
         self.sync_repos_to_config();
+    }
+
+    /// What a right click on the card of `clicked` acts on: that card, or,
+    /// when it is marked, all marked cards the board shows.
+    pub fn menu_targets(&self, clicked: &Path) -> Vec<PathBuf> {
+        if self.marked.contains(clicked) {
+            self.marked_repos()
+        } else {
+            vec![clicked.to_path_buf()]
+        }
+    }
+
+    pub fn add_to_favorite(&mut self, index: usize, repos: &[PathBuf]) {
+        if let Some(favorite) = self.config.favorites.get_mut(index) {
+            favorite.add(repos);
+        }
+    }
+
+    pub fn remove_from_favorite(&mut self, index: usize, repos: &[PathBuf]) {
+        if let Some(favorite) = self.config.favorites.get_mut(index) {
+            favorite.remove(repos);
+        }
+    }
+
+    /// Open the dialog for a new favorite of `repos`.
+    pub fn new_favorite(&mut self, repos: Vec<PathBuf>) {
+        self.favorite_dialog = Some(FavoriteDialog {
+            draft: FavoriteDraft::default(),
+            editing: None,
+            repos,
+        });
+    }
+
+    /// Open the dialog that changes the favorite at `index`.
+    pub fn edit_favorite(&mut self, index: usize) {
+        if let Some(favorite) = self.config.favorites.get(index) {
+            self.favorite_dialog = Some(FavoriteDialog {
+                draft: FavoriteDraft::of(favorite),
+                editing: Some(index),
+                repos: Vec::new(),
+            });
+        }
+    }
+
+    /// Save of the favorite dialog; a draft without a name keeps it open.
+    pub fn save_favorite(&mut self) {
+        let Some(dialog) = self.favorite_dialog.take_if(|d| d.draft.is_valid()) else {
+            return;
+        };
+        match dialog.editing {
+            Some(index) => {
+                if let Some(favorite) = self.config.favorites.get_mut(index) {
+                    dialog.draft.apply(favorite);
+                }
+            }
+            None => self
+                .config
+                .favorites
+                .push(dialog.draft.create(dialog.repos)),
+        }
+    }
+
+    /// Delete the favorite at `index`; its repositories stay on the board.
+    pub fn delete_favorite(&mut self, index: usize) {
+        if index < self.config.favorites.len() {
+            self.config.favorites.remove(index);
+            self.active_favorite = active_after_delete(self.active_favorite, index);
+        }
+    }
+
+    /// A click on a favorite's button: show only its repositories, or all
+    /// again when it was the active one.
+    pub fn toggle_favorite(&mut self, index: usize) {
+        self.active_favorite = (self.active_favorite != Some(index)).then_some(index);
     }
 
     /// Whether the board shows this card.
     pub fn shows(&self, card: &Card) -> bool {
-        matches_filter(&card.path, &self.filter)
+        let in_active = self
+            .active_favorite
+            .and_then(|i| self.config.favorites.get(i))
+            .is_none_or(|f| f.contains(&card.path));
+        in_active && matches_filter(&card.path, &self.filter)
     }
 
     /// The cards the board shows, in the order of the sort key. Everything that acts on
@@ -292,6 +388,10 @@ impl App {
         let gone: BTreeSet<PathBuf> = self.marked_repos().into_iter().collect();
         self.cards.retain(|c| !gone.contains(&c.path));
         self.marked.retain(|p| !gone.contains(p));
+        forget(
+            &mut self.config.favorites,
+            &gone.iter().cloned().collect::<Vec<_>>(),
+        );
         self.sync_repos_to_config();
     }
 
@@ -955,6 +1055,102 @@ pub(crate) mod tests {
             app.toasts.last().unwrap().text,
             "Cannot open a terminal: no terminal"
         );
+    }
+
+    #[test]
+    fn favorites_group_cards_and_the_active_one_hides_the_rest() {
+        let mut app = app_with(Arc::default(), None);
+        app.cards = ["/x/etl-load", "/x/etl-store", "/x/web"]
+            .into_iter()
+            .map(|p| Card::new(p.into()))
+            .collect();
+        let etl = vec![PathBuf::from("/x/etl-load"), PathBuf::from("/x/etl-store")];
+
+        // An unmarked card is the target alone; a marked one brings the marked.
+        assert_eq!(
+            app.menu_targets(Path::new("/x/web")),
+            vec![PathBuf::from("/x/web")]
+        );
+        app.marked.extend(etl.iter().cloned());
+        assert_eq!(
+            app.menu_targets(Path::new("/x/web")),
+            vec![PathBuf::from("/x/web")]
+        );
+        assert_eq!(app.menu_targets(Path::new("/x/etl-load")), etl);
+
+        app.new_favorite(etl.clone());
+        app.save_favorite();
+        assert!(app.favorite_dialog.is_some(), "no name: the dialog stays");
+        app.favorite_dialog.as_mut().unwrap().draft.name = "ETL".into();
+        app.save_favorite();
+        assert!(app.favorite_dialog.is_none());
+        assert_eq!(app.config.favorites[0].repos, etl);
+
+        app.new_favorite(vec![]);
+        app.favorite_dialog.as_mut().unwrap().draft.name = "Front".into();
+        app.save_favorite();
+        app.add_to_favorite(1, &[PathBuf::from("/x/web"), PathBuf::from("/x/etl-load")]);
+        app.add_to_favorite(9, &etl);
+
+        app.toggle_favorite(1);
+        let shown = |app: &App| -> Vec<PathBuf> {
+            app.shown_cards().iter().map(|c| c.path.clone()).collect()
+        };
+        assert_eq!(
+            shown(&app),
+            vec![PathBuf::from("/x/etl-load"), PathBuf::from("/x/web")]
+        );
+        // The hidden marked card is not run in; the text filter narrows further.
+        assert_eq!(app.marked_repos(), vec![PathBuf::from("/x/etl-load")]);
+        app.filter = "web".into();
+        assert_eq!(shown(&app), vec![PathBuf::from("/x/web")]);
+        app.filter.clear();
+        app.toggle_favorite(1);
+        assert_eq!(shown(&app).len(), 3);
+
+        app.edit_favorite(1);
+        app.edit_favorite(9);
+        let dialog = app.favorite_dialog.as_mut().unwrap();
+        assert_eq!(
+            (dialog.editing, dialog.draft.name.as_str()),
+            (Some(1), "Front")
+        );
+        dialog.draft.color = "pink".into();
+        app.save_favorite();
+        assert_eq!(app.config.favorites[1].color, "pink");
+        assert_eq!(
+            app.config.favorites[1].repos.len(),
+            2,
+            "the repositories stay"
+        );
+
+        app.remove_from_favorite(1, &[PathBuf::from("/x/web")]);
+        app.remove_from_favorite(9, &etl);
+        assert_eq!(
+            app.config.favorites[1].repos,
+            vec![PathBuf::from("/x/etl-load")]
+        );
+
+        // A card that leaves the board leaves its favorites.
+        app.remove(Path::new("/x/etl-load"));
+        assert_eq!(
+            app.config.favorites[0].repos,
+            vec![PathBuf::from("/x/etl-store")]
+        );
+        assert!(app.config.favorites[1].repos.is_empty());
+        app.marked = BTreeSet::from([PathBuf::from("/x/etl-store")]);
+        app.remove_marked();
+        assert!(app.config.favorites[0].repos.is_empty());
+
+        // Deleting keeps the active favorite the same one.
+        app.toggle_favorite(1);
+        app.delete_favorite(0);
+        app.delete_favorite(9);
+        assert_eq!(app.active_favorite, Some(0));
+        assert_eq!(app.config.favorites[0].name, "Front");
+        app.delete_favorite(0);
+        assert_eq!(app.active_favorite, None);
+        assert_eq!(shown(&app), vec![PathBuf::from("/x/web")]);
     }
 
     #[test]

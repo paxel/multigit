@@ -1056,7 +1056,9 @@ fn weak(text: impl Into<String>) -> RichText {
 /// filter and, for branches, a field that makes a new one.
 struct SwitchMenu<'a> {
     id: egui::Id,
-    choices: &'a [Choice],
+    /// Makes the list; only called while the menu is open, not for every
+    /// card in every frame.
+    choices: &'a dyn Fn() -> Vec<Choice>,
     /// Shown instead of the list when there is nothing to switch to.
     none: &'a str,
     new_branch: bool,
@@ -1089,14 +1091,15 @@ impl SwitchMenu<'_> {
         let mut command = None;
         ui.set_min_width(240.0);
         ui.strong("Switch to");
-        if self.choices.is_empty() {
+        let choices = (self.choices)();
+        if choices.is_empty() {
             ui.add_enabled(false, egui::Button::new(self.none));
         } else {
             let filter = text_field(ui, self.id.with("filter"), "Filter");
             egui::ScrollArea::vertical()
                 .max_height(260.0)
                 .show(ui, |ui| {
-                    for choice in matching(self.choices, &filter.text) {
+                    for choice in matching(&choices, &filter.text) {
                         let entry = egui::Button::new(RichText::new(&choice.label).monospace());
                         if ui.add(entry.frame(false)).clicked() {
                             command = Some(choice.command.clone());
@@ -1188,10 +1191,9 @@ fn menu_anchor(
 /// on a click, on one line; the tooltip has them all. A right click anywhere
 /// on the line switches this one repository to a tag.
 fn tag_line(ui: &mut Ui, path: &Path, snap: &Snapshot, actions: &mut Vec<BoardAction>) {
-    let choices = tag_choices(&snap.dated);
     let menu = SwitchMenu {
         id: egui::Id::new(("tag-menu", path)),
-        choices: &choices,
+        choices: &|| tag_choices(&snap.dated),
         none: "no tags",
         new_branch: false,
     };
@@ -1273,7 +1275,7 @@ fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
         // A right click on the branch switches this one repository.
         let menu = SwitchMenu {
             id: egui::Id::new(("branch-menu", &card.path)),
-            choices: &branch_choices(&snap.dated, &snap.refs.remotes),
+            choices: &|| branch_choices(&snap.dated, &snap.refs.remotes),
             none: "no other branch",
             new_branch: true,
         };

@@ -113,13 +113,17 @@ bring those along, but a folder that arrives with its `.git` directory does (an
 unpacked archive, a USB stick, a shared folder), and **+** on a folder such as
 `~/Downloads` adds every repository below it.
 
-For what it runs by itself, multigit switches off the settings that are not
-needed for a status or a fetch: `core.fsmonitor`, hooks, `ext::` remotes and
-`remote.<name>.uploadpack`. These stay in effect, because switching them off
-breaks legitimate setups such as git-lfs or a key per repository:
+For what it runs by itself, multigit switches off `core.fsmonitor`, hooks,
+`ext::` remotes, and `remote.<name>.uploadpack` for remotes that are not
+reached over SSH (over SSH it names a program on the server). Other settings
+that make git run a program stay in effect, because switching them off breaks
+legitimate setups such as git-lfs or a key per repository. Among them:
 
 - clean filters (`filter.<driver>.clean`), which can run during the status query
-- `core.sshCommand` and `credential.helper`, which run during the fetch
+- `core.sshCommand`, `credential.helper`, `core.gitProxy` and
+  `core.alternateRefsCommand`, which can run during the fetch
+
+So the board is no sandbox: add only folders whose origin you know.
 
 Buttons and the command line run git as you would in a terminal, hooks and all.
 

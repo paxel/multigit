@@ -36,7 +36,10 @@ Each card shows:
   example); a click on it copies everything git printed and takes the line
   off the card until a fetch fails again
 
-Cards are sorted by folder name. The status of every card refreshes every
+Cards are sorted by folder name. The **Sort** button in the toolbar switches
+to the next sort key with every click: name, path, branch, tag, dirty first,
+behind first. Cards without a branch or tag come last, equal cards are in name
+order, and a card moves as soon as its status changes. The status of every card refreshes every
 10 seconds; a background `git fetch --all --prune` runs every minute so the
 unpulled count stays current. A repository with a running command is skipped by
 both until the command is done, and is refreshed right after it.

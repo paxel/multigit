@@ -2,7 +2,7 @@
 
 use crate::application::engine::{Backend, Engine, Event, Notify};
 use crate::application::schedule::{Due, Schedule};
-use crate::domain::board::matches_filter;
+use crate::domain::board::{SortKey, Sorted, compare, matches_filter};
 use crate::domain::command::{Job, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::Config;
@@ -49,6 +49,14 @@ impl Card {
 
     pub fn snapshot(&self) -> Option<&Snapshot> {
         self.probe.as_ref().and_then(|p| p.as_ref().ok())
+    }
+
+    /// As sorting sees the card.
+    fn sorted(&self) -> Sorted<'_> {
+        Sorted {
+            path: &self.path,
+            snapshot: self.snapshot(),
+        }
     }
 
     /// Has changes or an operation in progress.
@@ -103,6 +111,8 @@ pub struct App {
     pub marked: BTreeSet<PathBuf>,
     /// Text of the filter field; not saved.
     pub filter: String,
+    /// What the board is sorted by; not saved.
+    pub sort: SortKey,
     engine: Engine,
     events: Receiver<Event>,
     schedule: Schedule,
@@ -148,6 +158,7 @@ impl App {
             cards,
             marked: BTreeSet::new(),
             filter: String::new(),
+            sort: SortKey::default(),
             engine,
             events,
             schedule: Schedule::default(),
@@ -247,11 +258,16 @@ impl App {
         matches_filter(&card.path, &self.filter)
     }
 
-    /// The cards the board shows, in board order. Everything that acts on
+    /// The cards the board shows, in the order of the sort key. Everything that acts on
     /// "the marked cards" acts on the marked ones among these: a hidden card
     /// keeps its mark but is never run in, marked, unmarked or removed.
     pub fn shown_cards(&self) -> Vec<&Card> {
-        self.cards.iter().filter(|c| self.shows(c)).collect()
+        let mut shown: Vec<&Card> = self.cards.iter().filter(|c| self.shows(c)).collect();
+        // `cards` is in name order already.
+        if self.sort != SortKey::Name {
+            shown.sort_by(|a, b| compare(self.sort, a.sorted(), b.sorted()));
+        }
+        shown
     }
 
     fn shown_paths(&self) -> BTreeSet<PathBuf> {

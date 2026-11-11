@@ -376,11 +376,11 @@ fn filter_field_hides_cards_and_counts_the_shown_ones() {
         .map(|n| n.rect())
         .min_by(|a, b| a.top().total_cmp(&b.top()))
         .unwrap();
-    let settings = h.get_by_label("Settings").rect();
+    let first = h.get_by_label(" + ").rect();
     assert!(field.right() > 1150.0, "{field:?}");
     assert!(
-        (field.center().y - settings.center().y).abs() < 6.0,
-        "{field:?} {settings:?}"
+        (field.top() - first.top()).abs() < 3.0,
+        "{field:?} {first:?}"
     );
     h.ctx
         .memory_mut(|m| m.request_focus(crate::ui::view::filter_id()));
@@ -398,6 +398,31 @@ fn filter_field_hides_cards_and_counts_the_shown_ones() {
     h.get_by_label("0 of 3");
     // The command line has nothing to run in.
     assert!(h.state().marked_repos().is_empty());
+}
+
+#[test]
+fn sort_button_cycles_the_key_and_reorders_the_cards() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut app = app_with(backend, None);
+    app.cards = vec![card("/b/alpha"), card("/a/zeta")];
+    let mut h = harness(app);
+    h.step();
+    let left_of = |h: &Harness<'static, App>, a: &str, b: &str| {
+        h.get_by_label(a).rect().left() < h.get_by_label(b).rect().left()
+    };
+    assert!(left_of(&h, "alpha", "zeta"));
+    h.get_by_label("Sort: name").click();
+    h.step();
+    h.step();
+    h.get_by_label("Sort: path");
+    assert!(left_of(&h, "zeta", "alpha"));
+    for label in ["path", "branch", "tag", "dirty first", "behind first"] {
+        h.get_by_label(&format!("Sort: {label}")).click();
+        h.step();
+        h.step();
+    }
+    h.get_by_label("Sort: name");
+    assert!(left_of(&h, "alpha", "zeta"));
 }
 
 #[test]

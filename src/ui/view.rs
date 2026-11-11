@@ -21,6 +21,9 @@ const CARD_OUTER_WIDTH: f32 = CARD_WIDTH + 2.0 * CARD_MARGIN + 2.0 * MARKED_STRO
 
 /// Width of the filter field.
 const FILTER_WIDTH: f32 = 160.0;
+/// Room at the toolbar's right end for the sort button, the filter field and
+/// its count.
+const VIEW_CONTROLS_WIDTH: f32 = 380.0;
 
 /// Id of the filter field.
 pub fn filter_id() -> egui::Id {
@@ -138,10 +141,15 @@ impl App {
 
     fn toolbar(&mut self, ui: &mut Ui) {
         // The filter keeps the right end; the buttons wrap in what is left.
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            self.filter_field(ui);
+        ui.horizontal_top(|ui| {
+            let left = (ui.available_width() - VIEW_CONTROLS_WIDTH).max(200.0);
             let wrapping = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
-            ui.with_layout(wrapping, |ui| self.toolbar_buttons(ui));
+            ui.allocate_ui_with_layout(egui::vec2(left, 0.0), wrapping, |ui| {
+                self.toolbar_buttons(ui);
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                self.filter_field(ui);
+            });
         });
         if let Some(error) = &self.config_error {
             ui.colored_label(
@@ -151,8 +159,8 @@ impl App {
         }
     }
 
-    /// The filter field and, while it hides cards by its text, how many show.
-    /// Drawn right to left.
+    /// The filter field and, while it hides cards by its text, how many show;
+    /// left of it the sort button. Drawn right to left.
     fn filter_field(&mut self, ui: &mut Ui) {
         if !self.filter.trim().is_empty() {
             let shown = self.shown_cards().len();
@@ -162,8 +170,18 @@ impl App {
             egui::TextEdit::singleline(&mut self.filter)
                 .id(filter_id())
                 .hint_text("Filter by name")
-                .desired_width(FILTER_WIDTH),
+                .desired_width(FILTER_WIDTH)
+                // As tall as the buttons beside it.
+                .min_size(egui::vec2(0.0, ui.spacing().interact_size.y))
+                .vertical_align(egui::Align::Center),
         );
+        if ui
+            .button(format!("Sort: {}", self.sort.label()))
+            .on_hover_text("Sort the cards by the next key")
+            .clicked()
+        {
+            self.sort = self.sort.next();
+        }
     }
 
     fn toolbar_buttons(&mut self, ui: &mut Ui) {

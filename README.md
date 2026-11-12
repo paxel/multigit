@@ -240,6 +240,14 @@ moves while the window has focus. Without focus the picture stands still and
 the app draws no more often than in the other themes, except for five seconds
 after something changed on a card.
 
+With **Kawaii music** switched on (off at first), the Kawaii theme plays lofi
+beats that multigit makes itself: ten short sequences of slow drums and a
+four-note theme on a guitar-like or piano-like sound, in random order, joined
+by short breaks (three notes, a drum fill, a hummed "ooh" or "aah"). No sound
+files and no network are involved. It plays whenever the app is open in that
+theme, focused or not, through the same player program as the sounds, and has
+its own volume; a change of volume counts from the next passage on.
+
 **About multigit** in the Settings window shows the version and opens the
 source code, the issue tracker, a mail to the developer, the donation page and
 the list of the crates in multigit with their licences.

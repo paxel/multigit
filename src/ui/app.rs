@@ -2,6 +2,7 @@
 
 use crate::application::desktop::Desktop;
 use crate::application::engine::{Backend, Engine, Event, Notify, ProbeCause};
+use crate::application::music::Music;
 use crate::application::schedule::{Due, Schedule};
 use crate::domain::audio::{self, SAMPLE_RATE, Sound};
 use crate::domain::board::{SortKey, Sorted, compare, is_ahead, matches_filter};
@@ -207,6 +208,11 @@ pub struct App {
     sound_made: HashMap<Sound, (Option<PathBuf>, u8)>,
     /// The missing player was reported already.
     player_missing_said: bool,
+    /// The Kawaii theme's music while it plays.
+    music: Option<Music>,
+    /// The music ended with an error; it is not started again until it was
+    /// switched off once.
+    music_failed: bool,
 }
 
 impl App {
@@ -268,6 +274,8 @@ impl App {
             sound_played: HashMap::new(),
             sound_made: HashMap::new(),
             player_missing_said: false,
+            music: None,
+            music_failed: false,
         }
     }
 
@@ -339,6 +347,40 @@ impl App {
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => self.sound_picker = None,
+        }
+    }
+
+    pub fn music_plays(&self) -> bool {
+        self.music.is_some()
+    }
+
+    /// Start, stop or tune the music so it fits the settings: it plays in
+    /// the Kawaii theme with music switched on, and nowhere else.
+    pub fn sync_music(&mut self) {
+        if !(self.is_kawaii() && self.config.music) {
+            self.music = None;
+            self.music_failed = false;
+            return;
+        }
+        match &self.music {
+            Some(music) => {
+                music.set_volume(self.config.music_volume);
+                if let Some(error) = music.take_error() {
+                    self.music = None;
+                    self.music_failed = true;
+                    self.toast(format!("Cannot play music: {error}"));
+                }
+            }
+            None if !self.music_failed => {
+                let dir = self.scratch.clone();
+                let write = Arc::new(move |wav: &[u8]| write_scratch_file(&dir, "music.wav", wav));
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |d| d.as_nanos() as u64);
+                let volume = self.config.music_volume;
+                self.music = Some(Music::start(self.desktop.clone(), write, volume, seed));
+            }
+            None => {}
         }
     }
 
@@ -1024,6 +1066,7 @@ impl App {
             self.engine.set_concurrency(concurrency);
         }
         self.persist();
+        self.sync_music();
         self.toasts.retain(|t| t.until > now);
         self.schedule.until_next(now, fetch_interval)
     }
@@ -1049,8 +1092,10 @@ impl App {
 }
 
 impl Drop for App {
-    /// Take the files written for other programs away again.
+    /// End the music's player, then take the files written for other
+    /// programs away again.
     fn drop(&mut self) {
+        self.music = None;
         let _ = std::fs::remove_dir_all(&self.scratch);
     }
 }
@@ -1158,6 +1203,8 @@ pub(crate) mod tests {
     pub struct FakeDesktop {
         pub files: Mutex<Vec<PathBuf>>,
         pub urls: Mutex<Vec<String>>,
+        /// The size of every music passage handed to the player.
+        pub music: Mutex<Vec<usize>>,
         /// Every WAV handed to the player, as it was at that moment.
         pub played: Mutex<Vec<(PathBuf, Vec<u8>)>>,
         /// Folder and configured command of every terminal asked for.
@@ -1179,6 +1226,17 @@ pub(crate) mod tests {
             }
             let wav = std::fs::read(file)?;
             self.played.lock().unwrap().push((file.to_path_buf(), wav));
+            Ok(())
+        }
+        fn play_wait(&self, file: &Path, stop: &std::sync::atomic::AtomicBool) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::other("no audio player found"));
+            }
+            self.music.lock().unwrap().push(std::fs::read(file)?.len());
+            // The passage "plays" until the music is stopped.
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
             Ok(())
         }
         fn open_url(&self, url: &str) -> io::Result<()> {
@@ -1933,6 +1991,80 @@ pub(crate) mod tests {
         app.take_picked_sound();
         app.take_picked_sound();
         assert_eq!(app.config.boop_file, Some(PathBuf::from("/s/boop.ogg")));
+    }
+
+    #[test]
+    fn music_plays_in_the_kawaii_theme_with_music_on_and_nowhere_else() {
+        let desktop = Arc::new(FakeDesktop::default());
+        let mut app = app_on(Arc::default(), desktop.clone(), None);
+        let wait_for_passage = |n: usize| {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while desktop.music.lock().unwrap().len() < n {
+                assert!(Instant::now() < deadline, "no music");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        app.config.music = true;
+        app.sync_music();
+        assert!(!app.music_plays(), "not in another theme");
+        app.config.theme = Theme::Kawaii;
+        app.config.music = false;
+        app.sync_music();
+        assert!(!app.music_plays(), "not while switched off");
+
+        app.config.music = true;
+        app.sync_music();
+        app.sync_music();
+        assert!(app.music_plays());
+        wait_for_passage(1);
+        app.config.music_volume = 5;
+        app.sync_music();
+
+        // Another theme ends it; back in Kawaii it starts again.
+        app.config.theme = Theme::Dark;
+        app.sync_music();
+        assert!(!app.music_plays());
+        app.config.theme = Theme::Kawaii;
+        app.sync_music();
+        wait_for_passage(2);
+        assert_eq!(
+            desktop.music.lock().unwrap().len(),
+            2,
+            "one player at a time"
+        );
+        assert!(app.toasts.is_empty());
+        // The app going away ends the player.
+        drop(app);
+    }
+
+    #[test]
+    fn music_without_a_player_is_said_once_and_not_tried_again() {
+        let desktop = Arc::new(FakeDesktop {
+            fail: true,
+            ..FakeDesktop::default()
+        });
+        let mut app = app_on(Arc::default(), desktop, None);
+        app.config.theme = Theme::Kawaii;
+        app.config.music = true;
+        app.sync_music();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while app.toasts.is_empty() {
+            assert!(Instant::now() < deadline, "no error");
+            std::thread::sleep(Duration::from_millis(5));
+            app.sync_music();
+        }
+        for _ in 0..5 {
+            app.sync_music();
+        }
+        assert!(!app.music_plays());
+        let toasts: Vec<_> = app.toasts.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(toasts, ["Cannot play music: no audio player found"]);
+        // Switched off and on again, it is tried again.
+        app.config.music = false;
+        app.sync_music();
+        app.config.music = true;
+        app.sync_music();
+        assert!(app.music_plays());
     }
 
     #[test]

@@ -1401,6 +1401,26 @@ fn kawaii_glyphs_and_font_are_there() {
 }
 
 #[test]
+fn kawaii_music_setting_starts_and_stops_the_music() {
+    let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
+    let mut app = crate::ui::app::tests::app_on(Arc::default(), desktop.clone(), None);
+    app.settings_open = true;
+    app.config.theme = crate::domain::config::Theme::Kawaii;
+    let mut h = harness(app);
+    h.step();
+    h.step();
+    assert!(!h.state().music_plays(), "off until switched on");
+    h.get_by_label("Kawaii music").click();
+    h.step();
+    h.step();
+    assert!(h.state().config.music && h.state().music_plays());
+    h.get_by_label("Kawaii music").click();
+    h.step();
+    h.step();
+    assert!(!h.state().music_plays());
+}
+
+#[test]
 fn sound_settings_switch_play_and_reset() {
     let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
     let mut app = crate::ui::app::tests::app_on(Arc::default(), desktop.clone(), None);

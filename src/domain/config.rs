@@ -82,6 +82,9 @@ fn default_concurrency() -> usize {
 fn default_scan_depth() -> usize {
     2
 }
+fn default_music_volume() -> u8 {
+    40
+}
 fn default_volume() -> u8 {
     60
 }
@@ -110,6 +113,12 @@ pub struct Config {
     /// folder. Empty: the app finds a terminal.
     #[serde(default)]
     pub terminal: String,
+    /// Lofi music in the Kawaii theme.
+    #[serde(default)]
+    pub music: bool,
+    /// Its volume, in percent.
+    #[serde(default = "default_music_volume")]
+    pub music_volume: u8,
     /// Beep and boop when commits appear.
     #[serde(default)]
     pub sounds: bool,
@@ -143,6 +152,8 @@ impl Default for Config {
             auto_insert_single_match: true,
             theme: Theme::default(),
             terminal: String::new(),
+            music: false,
+            music_volume: default_music_volume(),
             sounds: false,
             sound_volume: default_volume(),
             beep_file: None,
@@ -241,6 +252,10 @@ mod tests {
     fn sound_settings_survive_the_config_file() {
         let mut config = Config::from_toml("").unwrap();
         assert!(!config.sounds, "silent until switched on");
+        assert!(!config.music, "no music until switched on");
+        assert_eq!(config.music_volume, 40);
+        config.music = true;
+        config.music_volume = 15;
         assert_eq!(config.sound_volume, 60);
         assert_eq!(config.sound_file(Sound::Beep), None);
         config.sounds = true;

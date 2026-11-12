@@ -7,6 +7,7 @@ use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The folder for files this process hands to other programs; removed when
 /// the app exits.
@@ -71,6 +72,38 @@ pub fn spawn_first(commands: &[Vec<String>], dir: &Path, none: &str) -> io::Resu
     Err(io::Error::new(io::ErrorKind::NotFound, none))
 }
 
+/// Run the first of `commands` whose program exists and wait for it; when
+/// `stop` gets set meanwhile, end the program and return.
+pub fn run_until(commands: &[Vec<String>], stop: &AtomicBool, none: &str) -> io::Result<()> {
+    for command in commands {
+        let Some((program, args)) = command.split_first() else {
+            continue;
+        };
+        let spawned = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        let mut child = match spawned {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            other => other?,
+        };
+        loop {
+            if child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            if stop.load(Ordering::SeqCst) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::NotFound, none))
+}
+
 const NO_TERMINAL: &str = "no terminal found; set the terminal command in Settings";
 const NO_PLAYER: &str = "no audio player found (pw-play, paplay, aplay or ffplay)";
 
@@ -81,6 +114,11 @@ pub struct SystemDesktop;
 impl Desktop for SystemDesktop {
     fn open_file(&self, file: &Path) -> io::Result<()> {
         spawn_detached(OsStr::new(opener()), &[file.as_os_str()], None)
+    }
+
+    fn play_wait(&self, file: &Path, stop: &AtomicBool) -> io::Result<()> {
+        let commands = player_commands(cfg!(target_os = "macos"), &file.to_string_lossy());
+        run_until(&commands, stop, NO_PLAYER)
     }
 
     fn open_url(&self, url: &str) -> io::Result<()> {
@@ -174,6 +212,34 @@ mod tests {
         assert!(NO_PLAYER.contains("pw-play"));
         // A configured command that cannot be parsed never starts anything.
         assert!(SystemDesktop.open_terminal(dir.path(), "term 'x").is_err());
+    }
+
+    #[test]
+    fn a_program_is_waited_for_and_ended_when_stopped() {
+        let sh = |script: &str| vec!["sh".to_owned(), "-c".to_owned(), script.to_owned()];
+        let missing = vec!["/nonexistent/multigit-test-player".to_owned()];
+        let stop = AtomicBool::new(false);
+        // It waits for the program to end by itself.
+        let started = Instant::now();
+        run_until(&[vec![], missing.clone(), sh("sleep 0.3")], &stop, "none").unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(250),
+            "did not wait"
+        );
+
+        // Stopped, it ends a program that would run for a minute.
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(100));
+                stop.store(true, Ordering::SeqCst);
+            });
+            run_until(&[sh("sleep 60")], &stop, "none").unwrap();
+        });
+        assert!(started.elapsed() < Duration::from_secs(20), "not stopped");
+
+        let none = run_until(&[missing], &stop, NO_PLAYER).unwrap_err();
+        assert_eq!(none.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]

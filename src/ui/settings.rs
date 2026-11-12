@@ -169,6 +169,15 @@ fn settings_page(app: &mut App, ui: &mut Ui) {
 
     ui.separator();
     ui.horizontal(|ui| {
+        ui.checkbox(&mut config.music, "Kawaii music")
+            .on_hover_text("Lofi beats, made by multigit itself, while the Kawaii theme is on");
+        ui.add(
+            egui::Slider::new(&mut config.music_volume, 0..=100)
+                .suffix(" %")
+                .text("volume"),
+        );
+    });
+    ui.horizontal(|ui| {
         ui.checkbox(&mut config.sounds, "Sounds")
             .on_hover_text("A beep when a remote commit appears, a boop for a local one");
         ui.add(

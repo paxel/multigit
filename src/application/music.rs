@@ -47,11 +47,12 @@ impl Music {
                     let Some(sequence) = SEQUENCES.get(index) else {
                         break;
                     };
-                    // A break leads into every sequence but the first.
+                    // A break leads into every sequence but the first. Both
+                    // are made before either plays, so no silence the length
+                    // of the making falls between them.
                     let lead_in = previous.map(|_| next_break(random >> 8).render(sequence));
-                    let played = lead_in
-                        .map_or(Ok(()), play)
-                        .and_then(|()| play(sequence.render()));
+                    let rendered = sequence.render();
+                    let played = lead_in.map_or(Ok(()), play).and_then(|()| play(rendered));
                     if let Err(e) = played {
                         *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.to_string());
                         break;

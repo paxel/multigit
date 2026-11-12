@@ -72,9 +72,12 @@ pub fn spawn_first(commands: &[Vec<String>], dir: &Path, none: &str) -> io::Resu
     Err(io::Error::new(io::ErrorKind::NotFound, none))
 }
 
-/// Run the first of `commands` whose program exists and wait for it; when
-/// `stop` gets set meanwhile, end the program and return.
+/// Run the first of `commands` that works and wait for it; when `stop` gets
+/// set meanwhile, end the program and return. A program that is missing or
+/// ends with a failure (a player without a sound server) does not work: the
+/// next one is tried, and `none` is the error when none is left.
 pub fn run_until(commands: &[Vec<String>], stop: &AtomicBool, none: &str) -> io::Result<()> {
+    let mut failed = None;
     for command in commands {
         let Some((program, args)) = command.split_first() else {
             continue;
@@ -89,9 +92,9 @@ pub fn run_until(commands: &[Vec<String>], stop: &AtomicBool, none: &str) -> io:
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
             other => other?,
         };
-        loop {
-            if child.try_wait()?.is_some() {
-                return Ok(());
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
             }
             if stop.load(Ordering::SeqCst) {
                 let _ = child.kill();
@@ -99,9 +102,16 @@ pub fn run_until(commands: &[Vec<String>], stop: &AtomicBool, none: &str) -> io:
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_millis(30));
+        };
+        if status.success() {
+            return Ok(());
         }
+        failed = Some(format!("{program} failed ({status})"));
     }
-    Err(io::Error::new(io::ErrorKind::NotFound, none))
+    match failed {
+        Some(failed) => Err(io::Error::other(failed)),
+        None => Err(io::Error::new(io::ErrorKind::NotFound, none)),
+    }
 }
 
 const NO_TERMINAL: &str = "no terminal found; set the terminal command in Settings";
@@ -238,8 +248,19 @@ mod tests {
         });
         assert!(started.elapsed() < Duration::from_secs(20), "not stopped");
 
-        let none = run_until(&[missing], &stop, NO_PLAYER).unwrap_err();
+        let none = run_until(std::slice::from_ref(&missing), &stop, NO_PLAYER).unwrap_err();
         assert_eq!(none.kind(), io::ErrorKind::NotFound);
+
+        // A player that starts but fails is passed over for one that works,
+        // and is an error when no other is left: the music must not start
+        // it again and again.
+        let stop = AtomicBool::new(false);
+        let marker = tempfile::tempdir().unwrap();
+        let touch = format!("touch '{}'", marker.path().join("played").display());
+        run_until(&[sh("exit 1"), sh(&touch)], &stop, "none").unwrap();
+        assert!(marker.path().join("played").exists());
+        let broken = run_until(&[missing, sh("exit 3")], &stop, "none").unwrap_err();
+        assert!(broken.to_string().starts_with("sh failed"), "{broken}");
     }
 
     #[test]

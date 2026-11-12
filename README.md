@@ -39,7 +39,8 @@ Each card shows:
   off the card until a fetch fails again
 
 Cards are sorted by folder name. The **Sort** button in the toolbar opens the
-list of sort keys: name, path, branch, tag, dirty first, behind first. Cards without a branch or tag come last, equal cards are in name
+list of sort keys: name, path, branch, tag, dirty first, behind first, ahead
+first. Cards without a branch or tag come last, equal cards are in name
 order, and a card moves as soon as its status changes. The status of every card refreshes every
 10 seconds; a background `git fetch --all --prune` runs every minute so the
 unpulled count stays current. A repository with a running command is skipped by
@@ -107,7 +108,8 @@ emoji. A repository can be in several.
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
 - **Marking**: a click on a card marks it, a second click unmarks it; marked
   cards get a coloured border. The toolbar marks all, none, dirty (changes or
-  an operation in progress) or behind (unpulled commits). The toolbar repeats the card buttons
+  an operation in progress), behind (unpulled commits) or ahead (unpushed
+  commits). The toolbar repeats the card buttons
   for all marked repositories.
 - **Copying**: a click on a card's folder name, branch name (or the sha of a
   detached HEAD) or tag copies it to the clipboard instead of marking the

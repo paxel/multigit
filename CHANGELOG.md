@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.3.0]
 
+### Added
+
+- "ahead" beside the toolbar's mark buttons marks the repositories with unpushed commits, and "ahead first" is a sort key.
+
 ### Changed
 
 - The Sort button opens a list of the sort keys instead of stepping to the next one with every click.

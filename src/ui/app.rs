@@ -3,7 +3,7 @@
 use crate::application::desktop::Desktop;
 use crate::application::engine::{Backend, Engine, Event, Notify};
 use crate::application::schedule::{Due, Schedule};
-use crate::domain::board::{SortKey, Sorted, compare, matches_filter};
+use crate::domain::board::{SortKey, Sorted, compare, is_ahead, matches_filter};
 use crate::domain::command::{Job, display, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::{Config, Theme};
@@ -67,6 +67,11 @@ impl Card {
     pub fn is_dirty(&self) -> bool {
         self.snapshot()
             .is_some_and(|s| !s.status.counts.is_clean() || s.state != RepoState::Normal)
+    }
+
+    /// Has unpushed commits.
+    pub fn is_ahead(&self) -> bool {
+        self.snapshot().is_some_and(is_ahead)
     }
 
     /// Has unpulled commits.
@@ -506,6 +511,9 @@ impl App {
     }
     pub fn mark_behind(&mut self) {
         self.mark_where(Card::is_behind);
+    }
+    pub fn mark_ahead(&mut self) {
+        self.mark_where(Card::is_ahead);
     }
 
     /// The marked repositories the board shows, in board order.
@@ -1051,7 +1059,12 @@ pub(crate) mod tests {
             ahead: 0,
             behind: 2,
         };
+        let ahead = Upstream::Tracking {
+            ahead: 1,
+            behind: 0,
+        };
         for (name, snap) in [
+            ("ahead", snapshot(Counts::default(), ahead, &[])),
             ("clean", snapshot(Counts::default(), Upstream::None, &[])),
             ("dirty", snapshot(dirty, Upstream::None, &[])),
             ("behind", snapshot(Counts::default(), behind, &[])),
@@ -1064,8 +1077,10 @@ pub(crate) mod tests {
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/dirty")]);
         app.mark_behind();
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/behind")]);
+        app.mark_ahead();
+        assert_eq!(app.marked_repos(), vec![PathBuf::from("/ahead")]);
         app.mark_all();
-        assert_eq!(app.marked.len(), 3);
+        assert_eq!(app.marked.len(), 4);
         app.mark_none();
         assert!(app.marked.is_empty());
     }

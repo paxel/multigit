@@ -393,8 +393,19 @@ impl App {
         if ui.button("dirty").clicked() {
             self.mark_dirty();
         }
-        if ui.button("behind").clicked() {
+        if ui
+            .button("behind")
+            .on_hover_text("Mark the repositories with unpulled commits")
+            .clicked()
+        {
             self.mark_behind();
+        }
+        if ui
+            .button("ahead")
+            .on_hover_text("Mark the repositories with unpushed commits")
+            .clicked()
+        {
+            self.mark_ahead();
         }
         ui.separator();
         let marked = self.marked_repos().len();

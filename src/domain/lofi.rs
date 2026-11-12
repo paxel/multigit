@@ -1,6 +1,9 @@
 //! The Kawaii theme's music, made from nothing but arithmetic: ten short
-//! lofi sequences (slow drums, a four-note theme on one or two instruments)
-//! and six breaks that lead from one sequence into the next.
+//! lofi sequences and six breaks that lead from one into the next. A
+//! sequence is slow drums, a soft bass, a melody made from a four-note theme
+//! (stated once, then answered, shortened, stretched and decorated), and
+//! under it a flute that plays the theme eight times slower, a pad, or
+//! nothing. The instruments stay behind the drums.
 
 use crate::domain::audio::SAMPLE_RATE;
 use std::f32::consts::TAU;
@@ -26,52 +29,108 @@ impl Noise {
     }
 }
 
-/// What plays the theme.
+/// What plays the melody.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Instrument {
-    /// A plucked string: guitar-like.
+    /// A plucked string with its edge taken off: guitar-like.
     Pluck,
-    /// Struck, with overtones that die at different speeds: piano-like.
+    /// A soft struck tone that rings and wavers a little: an electric
+    /// piano, far away.
     Keys,
 }
 
 /// A plucked string (Karplus-Strong): a burst of noise going round a delay
-/// line as long as one period, losing its edge on every round.
+/// line as long as one period, losing its edge on every round; then the
+/// brightness is taken off so it sits behind the drums.
 fn pluck(frequency: f32, seconds: f32) -> Vec<f32> {
     let period = ((RATE / frequency) as usize).max(2);
     let mut noise = Noise(frequency.to_bits());
     let mut line: Vec<f32> = (0..period).map(|_| noise.next()).collect();
     let n = samples(seconds);
     let mut out = Vec::with_capacity(n);
+    let mut soft = 0.0_f32;
     for i in 0..n {
         let at = i % period;
         let next = line.get((at + 1) % period).copied().unwrap_or(0.0);
         let here = line.get(at).copied().unwrap_or(0.0);
-        out.push(here);
+        soft += 0.25 * (here - soft);
+        out.push(soft * (i as f32 / 90.0).min(1.0));
         if let Some(slot) = line.get_mut(at) {
-            *slot = (here + next) * 0.5 * 0.996;
+            *slot = (here + next) * 0.5 * 0.997;
         }
     }
-    fade_out(&mut out, 0.05);
+    fade_out(&mut out, 0.08);
     out
 }
 
-/// A struck note: four overtones, the higher the sooner gone.
+/// A soft struck tone: nearly a pure wave with a short bright start, slow to
+/// die, with a slow waver in its loudness.
 fn keys(frequency: f32, seconds: f32) -> Vec<f32> {
     let n = samples(seconds);
     let mut out: Vec<f32> = (0..n)
         .map(|i| {
             let t = i as f32 / RATE;
-            let attack = (t / 0.006).min(1.0);
-            let mut value = 0.0;
-            for (k, gain) in [(1.0_f32, 1.0_f32), (2.0, 0.45), (3.0, 0.22), (4.0, 0.1)] {
-                let decay = (-t * (1.8 + k * 1.4)).exp();
-                value += (t * frequency * k * TAU).sin() * gain * decay;
-            }
-            value * attack * 0.5
+            let attack = (t / 0.015).min(1.0);
+            let body = (t * frequency * TAU).sin() * (-t * 1.3).exp();
+            let bell = (t * frequency * 2.0 * TAU).sin() * 0.25 * (-t * 6.0).exp();
+            let waver = 1.0 + 0.12 * (t * 4.0 * TAU).sin();
+            (body + bell) * attack * waver * 0.6
         })
         .collect();
-    fade_out(&mut out, 0.05);
+    fade_out(&mut out, 0.1);
+    out
+}
+
+/// A flute-like tone for long notes: it swells in, wavers in pitch once it
+/// stands, carries a little breath, and lets go slowly.
+fn flute(frequency: f32, seconds: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut noise = Noise(31);
+    let mut breath = 0.0_f32;
+    let mut phase = 0.0_f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let vibrato = 1.0 + 0.005 * ((t - 0.4).max(0.0) * 3.0).min(1.0) * (t * 4.6 * TAU).sin();
+            phase = (phase + frequency * vibrato / RATE).fract();
+            let p = phase * TAU;
+            let tone = p.sin() + 0.2 * (2.0 * p).sin() + 0.05 * (3.0 * p).sin();
+            breath += 0.1 * (noise.next() - breath);
+            let attack = (t / 0.25).min(1.0);
+            let release = ((seconds - t) / 0.4).clamp(0.0, 1.0);
+            (tone * 0.7 + breath * 0.25) * attack * release
+        })
+        .collect()
+}
+
+/// A pad: three voices a hair apart in pitch, swelling in and out very
+/// slowly. For chords held under everything else.
+fn pad(frequency: f32, seconds: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let voices: f32 = [0.996_f32, 1.0, 1.004]
+                .iter()
+                .map(|detune| (t * frequency * detune * TAU).sin())
+                .sum();
+            let attack = (t / 0.7).min(1.0);
+            let release = ((seconds - t) / 0.9).clamp(0.0, 1.0);
+            voices / 3.0 * attack * release
+        })
+        .collect()
+}
+
+/// A low, round bass note.
+fn bass(frequency: f32, seconds: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut out: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            (t * frequency * TAU).sin() * (t / 0.02).min(1.0) * (-t * 1.5).exp()
+        })
+        .collect();
+    fade_out(&mut out, 0.1);
     out
 }
 
@@ -226,6 +285,18 @@ fn finish(mix: &mut [f32]) {
     fade_out(mix, 0.12);
 }
 
+/// What plays under the melody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backing {
+    /// A flute plays the theme as one long tune, each note eight times as
+    /// long as in the melody; `backwards` plays it from its last note.
+    Flute { backwards: bool },
+    /// A pad holds the theme's chord.
+    Pad,
+    /// Melody, bass and drums alone.
+    None,
+}
+
 /// One of the ten sequences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sequence {
@@ -233,88 +304,153 @@ pub struct Sequence {
     pub bpm: u16,
     /// Bars of four beats.
     pub bars: u16,
-    /// The four notes of its theme, as MIDI numbers.
+    /// The four notes of its theme, as MIDI numbers. The melody is made
+    /// from the theme; it is not the theme over and over.
     pub theme: [u8; 4],
     pub lead: Instrument,
-    /// A second instrument for the low notes, or none.
-    pub second: Option<Instrument>,
+    pub backing: Backing,
 }
 
 use Instrument::{Keys, Pluck};
 
+const fn sequence(
+    bpm: u16,
+    bars: u16,
+    theme: [u8; 4],
+    lead: Instrument,
+    backing: Backing,
+) -> Sequence {
+    Sequence {
+        bpm,
+        bars,
+        theme,
+        lead,
+        backing,
+    }
+}
+
 /// The ten sequences, each 10 to 30 seconds long.
 pub const SEQUENCES: [Sequence; 10] = [
-    Sequence {
-        bpm: 72,
-        bars: 6,
-        theme: [57, 60, 64, 67],
-        lead: Keys,
-        second: Some(Pluck),
-    },
-    Sequence {
-        bpm: 76,
-        bars: 6,
-        theme: [62, 65, 69, 72],
-        lead: Pluck,
-        second: Some(Keys),
-    },
-    Sequence {
-        bpm: 70,
-        bars: 4,
-        theme: [60, 64, 67, 71],
-        lead: Keys,
-        second: None,
-    },
-    Sequence {
-        bpm: 80,
-        bars: 8,
-        theme: [55, 58, 62, 65],
-        lead: Pluck,
-        second: Some(Keys),
-    },
-    Sequence {
-        bpm: 74,
-        bars: 6,
-        theme: [53, 57, 60, 64],
-        lead: Keys,
-        second: Some(Pluck),
-    },
-    Sequence {
-        bpm: 68,
-        bars: 4,
-        theme: [64, 67, 71, 74],
-        lead: Pluck,
-        second: None,
-    },
-    Sequence {
-        bpm: 78,
-        bars: 8,
-        theme: [58, 62, 65, 69],
-        lead: Keys,
-        second: Some(Pluck),
-    },
-    Sequence {
-        bpm: 72,
-        bars: 6,
-        theme: [59, 62, 66, 69],
-        lead: Pluck,
-        second: Some(Keys),
-    },
-    Sequence {
-        bpm: 82,
-        bars: 8,
-        theme: [56, 60, 63, 67],
-        lead: Keys,
-        second: None,
-    },
-    Sequence {
-        bpm: 66,
-        bars: 4,
-        theme: [61, 64, 68, 71],
-        lead: Keys,
-        second: Some(Pluck),
-    },
+    sequence(
+        72,
+        6,
+        [57, 60, 64, 67],
+        Keys,
+        Backing::Flute { backwards: false },
+    ),
+    sequence(76, 6, [62, 65, 69, 72], Pluck, Backing::Pad),
+    sequence(70, 4, [60, 64, 67, 71], Keys, Backing::None),
+    sequence(
+        80,
+        8,
+        [55, 58, 62, 65],
+        Pluck,
+        Backing::Flute { backwards: true },
+    ),
+    sequence(74, 6, [53, 57, 60, 64], Keys, Backing::Pad),
+    sequence(
+        68,
+        4,
+        [64, 67, 71, 74],
+        Pluck,
+        Backing::Flute { backwards: false },
+    ),
+    sequence(
+        78,
+        8,
+        [58, 62, 65, 69],
+        Keys,
+        Backing::Flute { backwards: true },
+    ),
+    sequence(72, 6, [59, 62, 66, 69], Pluck, Backing::None),
+    sequence(82, 8, [56, 60, 63, 67], Keys, Backing::Pad),
+    sequence(
+        66,
+        4,
+        [61, 64, 68, 71],
+        Keys,
+        Backing::Flute { backwards: false },
+    ),
 ];
+
+/// A note of a melody: where it starts, counted in beats from the start of
+/// the sequence, how many beats it lasts, and its MIDI number.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Note {
+    pub at: f32,
+    pub beats: f32,
+    pub midi: u8,
+}
+
+/// What one bar does with the theme. The first bar of a sequence states it;
+/// the others answer, shorten, stretch or decorate it, so the theme stays
+/// recognisable without being repeated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// The four notes, one a beat.
+    Statement,
+    /// The four notes, long-short-long-short.
+    Swung,
+    /// The first two notes; the second is held.
+    Opening,
+    /// The four notes backwards.
+    Answer,
+    /// The last three notes, the last one held: an answer that rises.
+    Rise,
+    /// The four notes with a step between the second and third.
+    Stepping,
+    /// The last two notes, then again an octave up.
+    Echo,
+    /// Third note, then the first, each for half the bar: coming to rest.
+    Rest,
+}
+
+/// The shapes of the bars between the first and the last, in turn. The
+/// plain statement is not among them: the theme is said outright only once.
+const SHAPES: [Shape; 6] = [
+    Shape::Opening,
+    Shape::Stepping,
+    Shape::Answer,
+    Shape::Swung,
+    Shape::Rise,
+    Shape::Echo,
+];
+
+impl Shape {
+    /// The notes of one bar: start within the bar in beats, length in
+    /// beats, MIDI number.
+    fn notes(self, theme: [u8; 4]) -> Vec<(f32, f32, u8)> {
+        let [a, b, c, d] = theme;
+        // A note of the scale between the second and third: the fourth over
+        // a minor theme, the second over a major one.
+        let step = if b.saturating_sub(a) == 3 {
+            a + 5
+        } else {
+            a + 2
+        };
+        match self {
+            Shape::Statement => vec![(0.0, 1.0, a), (1.0, 1.0, b), (2.0, 1.0, c), (3.0, 1.0, d)],
+            Shape::Swung => vec![(0.0, 1.5, a), (1.5, 0.5, b), (2.0, 1.5, c), (3.5, 0.5, d)],
+            Shape::Opening => vec![(0.0, 1.0, a), (1.0, 3.0, b)],
+            Shape::Answer => vec![(0.0, 1.0, d), (1.0, 1.0, c), (2.0, 1.0, b), (3.0, 1.0, a)],
+            Shape::Rise => vec![(0.5, 0.5, b), (1.0, 1.0, c), (2.0, 2.0, d)],
+            Shape::Stepping => vec![
+                (0.0, 1.0, a),
+                (1.0, 0.5, b),
+                (1.5, 0.5, step),
+                (2.0, 1.0, c),
+                (3.0, 1.0, d),
+            ],
+            Shape::Echo => vec![
+                (0.0, 0.5, c),
+                (0.5, 1.0, d),
+                (2.0, 0.5, c.saturating_add(12)),
+                (2.5, 1.5, d.saturating_add(12)),
+            ],
+            Shape::Rest => vec![(0.0, 2.0, c), (2.0, 2.0, a)],
+        }
+    }
+}
 
 impl Sequence {
     fn beat(&self) -> f32 {
@@ -326,9 +462,98 @@ impl Sequence {
         f32::from(self.bars) * 4.0 * self.beat()
     }
 
-    /// The whole sequence as samples. The last half bar has no hi-hat and
-    /// the end fades, so whatever follows starts from quiet.
-    pub fn render(&self) -> Vec<f32> {
+    /// The shape of each bar: the theme first, a rest last, and between
+    /// them the other shapes in a turn that starts somewhere else for every
+    /// theme.
+    fn shapes(&self) -> Vec<Shape> {
+        let turn = usize::from(self.theme[0]);
+        (0..usize::from(self.bars))
+            .map(|bar| {
+                if bar == 0 {
+                    Shape::Statement
+                } else if bar + 1 == usize::from(self.bars) {
+                    Shape::Rest
+                } else {
+                    let at = (turn + bar - 1) % SHAPES.len();
+                    SHAPES.get(at).copied().unwrap_or(Shape::Answer)
+                }
+            })
+            .collect()
+    }
+
+    /// The melody the lead instrument plays.
+    pub fn melody(&self) -> Vec<Note> {
+        let mut notes = Vec::new();
+        for (bar, shape) in self.shapes().into_iter().enumerate() {
+            for (at, beats, midi) in shape.notes(self.theme) {
+                notes.push(Note {
+                    at: bar as f32 * 4.0 + at,
+                    beats,
+                    midi,
+                });
+            }
+        }
+        notes
+    }
+
+    /// The flute's tune: the theme with every note eight beats long, as
+    /// many notes as the sequence has room for, forwards or backwards.
+    pub fn long_tune(&self, backwards: bool) -> Vec<Note> {
+        let mut theme = self.theme;
+        if backwards {
+            theme.reverse();
+        }
+        theme
+            .into_iter()
+            .take(usize::from(self.bars / 2))
+            .enumerate()
+            .map(|(i, midi)| Note {
+                at: i as f32 * 8.0,
+                beats: 8.0,
+                // The flute sings above the melody, but not shrill.
+                midi: if midi < 64 { midi + 12 } else { midi },
+            })
+            .collect()
+    }
+
+    /// Melody, backing and bass: everything that is not drums.
+    fn instruments(&self) -> Vec<f32> {
+        let beat = self.beat();
+        let mut mix = vec![0.0; samples(self.seconds())];
+        for n in self.melody() {
+            // Notes ring a little past their length.
+            let sound = note(self.lead, n.midi, (n.beats + 0.6) * beat);
+            add(&mut mix, n.at * beat, &sound, 0.26);
+        }
+        match self.backing {
+            Backing::Flute { backwards } => {
+                for n in self.long_tune(backwards) {
+                    let sound = flute(pitch(n.midi), n.beats * beat);
+                    add(&mut mix, n.at * beat, &sound, 0.16);
+                }
+            }
+            Backing::Pad => {
+                let [root, third, fifth, _] = self.theme;
+                for pair in 0..self.bars / 2 {
+                    let at = f32::from(pair) * 8.0 * beat;
+                    for midi in [root.saturating_sub(12), fifth.saturating_sub(12), third] {
+                        add(&mut mix, at, &pad(pitch(midi), 8.0 * beat), 0.07);
+                    }
+                }
+            }
+            Backing::None => {}
+        }
+        let low = bass(pitch(self.theme[0].saturating_sub(24)), 2.5 * beat);
+        for bar in 0..self.bars {
+            add(&mut mix, f32::from(bar) * 4.0 * beat, &low, 0.3);
+        }
+        mix
+    }
+
+    /// The drums: bass drum on one and just before four, snare on two and
+    /// four, hi-hats on the eighths with the off ones late. The last half
+    /// bar has no hi-hat, so whatever follows starts from quiet.
+    fn drums(&self) -> Vec<f32> {
         let beat = self.beat();
         let eighth = beat / 2.0;
         let mut mix = vec![0.0; samples(self.seconds())];
@@ -336,31 +561,11 @@ impl Sequence {
         for bar in 0..self.bars {
             let start = f32::from(bar) * 4.0 * beat;
             let last = bar + 1 == self.bars;
-            // The theme: one note a beat; every other bar the second note
-            // comes half a beat late.
-            let places: [f32; 4] = if bar % 2 == 0 {
-                [0.0, 2.0, 4.0, 6.0]
-            } else {
-                [0.0, 3.0, 4.0, 6.0]
-            };
-            for (place, midi) in places.into_iter().zip(self.theme) {
-                let sound = note(self.lead, midi, beat * 1.6);
-                add(&mut mix, start + place * eighth, &sound, 0.5);
-            }
-            if let Some(second) = self.second {
-                let [root, _, fifth, _] = self.theme;
-                let low = note(second, root.saturating_sub(12), beat * 2.6);
-                add(&mut mix, start, &low, 0.42);
-                let mid = note(second, fifth.saturating_sub(12), beat * 1.8);
-                add(&mut mix, start + 4.0 * eighth, &mid, 0.3);
-            }
-            // Slow drums: bass drum on one and just before four, snare on
-            // two and four, hi-hats on the eighths with the off ones late.
             for place in [0.0, 5.0] {
-                add(&mut mix, start + place * eighth, &kick, 0.8);
+                add(&mut mix, start + place * eighth, &kick, 0.9);
             }
             for place in [2.0, 6.0] {
-                add(&mut mix, start + place * eighth, &snare, 0.5);
+                add(&mut mix, start + place * eighth, &snare, 0.65);
             }
             for step in 0..8u8 {
                 if last && step >= 4 {
@@ -371,9 +576,18 @@ impl Sequence {
                     &mut mix,
                     start + f32::from(step) * eighth + swing,
                     &hat,
-                    0.6,
+                    0.7,
                 );
             }
+        }
+        mix
+    }
+
+    /// The whole sequence as samples; the end fades.
+    pub fn render(&self) -> Vec<f32> {
+        let mut mix = self.instruments();
+        for (slot, drum) in mix.iter_mut().zip(self.drums()) {
+            *slot += drum;
         }
         finish(&mut mix);
         mix
@@ -410,15 +624,15 @@ impl Break {
         match *self {
             Break::ThreeNotes(instrument) => {
                 for (i, midi) in next.theme.into_iter().take(3).enumerate() {
-                    let sound = note(instrument, midi, beat * 1.4);
-                    add(&mut mix, beat * (1.0 + i as f32 * 0.75), &sound, 0.5);
+                    let sound = note(instrument, midi, beat * 1.6);
+                    add(&mut mix, beat * (1.0 + i as f32 * 0.75), &sound, 0.3);
                 }
             }
             Break::Drums(busy) => {
                 let (kick, snare) = (kick(), snare());
-                add(&mut mix, beat * 0.5, &kick, 0.8);
-                add(&mut mix, beat * 1.5, &snare, 0.5);
-                add(&mut mix, beat * 2.25, &kick, 0.8);
+                add(&mut mix, beat * 0.5, &kick, 0.9);
+                add(&mut mix, beat * 1.5, &snare, 0.65);
+                add(&mut mix, beat * 2.25, &kick, 0.9);
                 if busy {
                     // A roll that grows into the last hit.
                     for i in 0..6u8 {
@@ -426,16 +640,16 @@ impl Break {
                         add(&mut mix, at, &snare, 0.15 + f32::from(i) * 0.06);
                     }
                 } else {
-                    add(&mut mix, beat * 3.0, &snare, 0.5);
+                    add(&mut mix, beat * 3.0, &snare, 0.65);
                 }
             }
             Break::Voice(vowel) => {
                 let [root, third, ..] = next.theme;
                 let hum = voice(pitch(root), beat * 1.8, vowel);
-                add(&mut mix, beat * 0.6, &hum, 0.5);
+                add(&mut mix, beat * 0.6, &hum, 0.3);
                 if vowel == Vowel::Aah {
                     let up = voice(pitch(third), beat * 1.0, vowel);
-                    add(&mut mix, beat * 2.5, &up, 0.4);
+                    add(&mut mix, beat * 2.5, &up, 0.25);
                 }
             }
         }
@@ -488,6 +702,18 @@ mod tests {
     fn instruments_and_drums_sound_and_stay_in_range() {
         check("pluck", &pluck(220.0, 1.0));
         check("keys", &keys(220.0, 1.0));
+        check("flute", &flute(440.0, 3.0));
+        check("pad", &pad(220.0, 3.0));
+        check("bass", &bass(55.0, 1.0));
+        // The dreamy ones come in slowly: quiet at first, full later.
+        for slow in [flute(440.0, 3.0), pad(220.0, 3.0)] {
+            let early = slow[..1000].iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+            let later = slow[20_000..30_000]
+                .iter()
+                .fold(0.0_f32, |m, s| m.max(s.abs()));
+            assert!(early < later / 3.0, "{early} {later}");
+            assert!(slow.last().unwrap().abs() < 0.01, "lets go at the end");
+        }
         check("kick", &kick());
         check("snare", &snare());
         assert!(hat().iter().all(|s| s.is_finite() && s.abs() <= 1.0));
@@ -507,7 +733,12 @@ mod tests {
         themes.sort_unstable();
         themes.dedup();
         assert_eq!(themes.len(), 10);
-        assert!(SEQUENCES.iter().any(|s| s.second.is_none()));
+        let with = |backing: fn(&Backing) -> bool| {
+            SEQUENCES.iter().filter(|s| backing(&s.backing)).count()
+        };
+        assert!(with(|b| matches!(b, Backing::Flute { backwards: false })) >= 2);
+        assert!(with(|b| matches!(b, Backing::Flute { backwards: true })) >= 2);
+        assert!(with(|b| *b == Backing::Pad) >= 2 && with(|b| *b == Backing::None) >= 2);
         assert!(
             SEQUENCES.iter().any(|s| s.lead == Pluck) && SEQUENCES.iter().any(|s| s.lead == Keys)
         );
@@ -518,9 +749,108 @@ mod tests {
         }
     }
 
+    /// The notes of each bar of a melody, with their place in the bar.
+    fn bars_of(sequence: &Sequence) -> Vec<Vec<(u32, u32, u8)>> {
+        let mut bars = vec![Vec::new(); usize::from(sequence.bars)];
+        for n in sequence.melody() {
+            let bar = (n.at / 4.0) as usize;
+            let within = n.at - bar as f32 * 4.0;
+            bars[bar].push(((within * 2.0) as u32, (n.beats * 2.0) as u32, n.midi));
+        }
+        bars
+    }
+
+    #[test]
+    fn the_melody_states_the_theme_once_and_then_varies_it() {
+        for (i, sequence) in SEQUENCES.iter().enumerate() {
+            let bars = bars_of(sequence);
+            let [a, b, c, d] = sequence.theme;
+            // The first bar is the theme, one note a beat.
+            assert_eq!(bars[0], [(0, 2, a), (2, 2, b), (4, 2, c), (6, 2, d)], "{i}");
+            // It is not the same bar over and over.
+            let mut different = bars.clone();
+            different.sort();
+            different.dedup();
+            assert!(
+                different.len() >= bars.len().min(4),
+                "{i}: {} kinds of bar",
+                different.len()
+            );
+            let repeats = bars.windows(2).filter(|w| w[0] == w[1]).count();
+            assert_eq!(repeats, 0, "{i}: a bar repeats the one before");
+            // Every bar still comes from the theme: its notes, an octave up,
+            // or the one step between them.
+            let step = if b - a == 3 { a + 5 } else { a + 2 };
+            let allowed = [a, b, c, d, c + 12, d + 12, step];
+            for (n, bar) in bars.iter().enumerate() {
+                assert!(!bar.is_empty(), "{i}: bar {n} is empty");
+                assert!(
+                    bar.iter().all(|note| allowed.contains(&note.2)),
+                    "{i}: bar {n}"
+                );
+                let end = bar.iter().map(|note| note.0 + note.1).max().unwrap();
+                assert!(end <= 8, "{i}: bar {n} runs over");
+            }
+            // The last bar comes to rest on the first note of the theme.
+            assert_eq!(bars.last().unwrap().last().unwrap().2, a, "{i}");
+        }
+        // Different themes take the shapes in a different turn.
+        let shapes: Vec<_> = SEQUENCES
+            .iter()
+            .filter(|s| s.bars == 6)
+            .map(Sequence::shapes)
+            .collect();
+        assert!(shapes.windows(2).any(|w| w[0] != w[1]));
+    }
+
+    #[test]
+    fn the_flute_plays_the_theme_eight_times_slower_forwards_or_backwards() {
+        let eight_bars = SEQUENCES[3];
+        let forwards = eight_bars.long_tune(false);
+        let backwards = eight_bars.long_tune(true);
+        assert_eq!(forwards.len(), 4);
+        // A melody note is one beat, a flute note eight.
+        assert!(forwards.iter().all(|n| n.beats == 8.0));
+        let starts: Vec<f32> = forwards.iter().map(|n| n.at).collect();
+        assert_eq!(starts, [0.0, 8.0, 16.0, 24.0]);
+        let class = |notes: &[Note]| -> Vec<u8> { notes.iter().map(|n| n.midi % 12).collect() };
+        let theme: Vec<u8> = eight_bars.theme.iter().map(|m| m % 12).collect();
+        assert_eq!(class(&forwards), theme);
+        let mut reversed = theme.clone();
+        reversed.reverse();
+        assert_eq!(class(&backwards), reversed);
+        // A short sequence has room for the first notes only.
+        assert_eq!(SEQUENCES[5].long_tune(false).len(), 2);
+        assert!(
+            forwards.iter().all(|n| (64..=86).contains(&n.midi)),
+            "sings above"
+        );
+    }
+
+    #[test]
+    fn the_instruments_stay_behind_the_drums() {
+        let peak = |samples: &[f32]| samples.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+        let loudness = |samples: &[f32]| {
+            (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+        };
+        // One with a flute, one with a pad, one with neither.
+        for index in [5, 1, 2] {
+            let sequence = SEQUENCES[index];
+            let (instruments, drums) = (sequence.instruments(), sequence.drums());
+            check(&format!("instruments {index}"), &instruments);
+            assert!(
+                peak(&instruments) < peak(&drums) * 0.75,
+                "{index}: instruments peak {} against drums {}",
+                peak(&instruments),
+                peak(&drums)
+            );
+            assert!(loudness(&instruments) > 0.02, "{index}: but they are there");
+        }
+    }
+
     #[test]
     fn sequences_render_to_their_length_in_range_and_end_quiet() {
-        // Two of the ten, one with and one without a second instrument;
+        // Two of the ten, one without backing and one with the flute;
         // rendering all of them takes too long for a unit test.
         for index in [2, 9] {
             let sequence = SEQUENCES[index];

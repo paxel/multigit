@@ -59,6 +59,18 @@ minute; so a branch or tag made in a terminal can take up to a minute to show.
 A card whose folder is gone or is no longer a repository stays on the board,
 greyed out, and comes back by itself when the folder returns.
 
+## Looking into a repository
+
+A double click on a card, or **Open** in its right-click menu, opens a
+read-only view of that repository over the board: its changed files (staged,
+modified, untracked), the last 100 commits of the current branch, and its
+branches. A click on a file shows its diff, a click on a commit its message
+and diff; a diff of more than 5000 lines is cut. The view reads the repository
+again when its card notices a change and on **Refresh**; **Close** or Esc
+returns to the board. The double click also marks and unmarks the card, so its
+mark ends as it was. A double click on a text that copies (name, branch, tag,
+commit) copies and does not open.
+
 ## Favorites
 
 A favorite is a named group of repositories with a color and, if you like, an
@@ -182,6 +194,10 @@ every 10 seconds and a fetch every minute. A repository's own `.git/config` and
 bring those along, but a folder that arrives with its `.git` directory does (an
 unpacked archive, a USB stick, a shared folder), and **+** on a folder such as
 `~/Downloads` adds every repository below it.
+
+The repository view follows the same rule: its diffs are read without the
+repository's external diff program and textconv filters, and without
+signature checks.
 
 For what it runs by itself, multigit switches off `core.fsmonitor`, hooks,
 `ext::` remotes, the signature check of `log.showSignature` (it runs

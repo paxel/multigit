@@ -8,6 +8,7 @@ use crate::domain::command::{Job, display, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::{Config, Theme};
 use crate::domain::destructive::is_destructive;
+use crate::domain::details::{Details, DiffTarget};
 use crate::domain::favorites::{FavoriteDraft, active_after_delete, forget};
 use crate::domain::history::History;
 use crate::domain::kawaii;
@@ -92,6 +93,18 @@ pub struct PendingRun {
     pub repos: Vec<PathBuf>,
 }
 
+/// The open read-only view of one repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoView {
+    pub repo: PathBuf,
+    /// The lists; `None` until they were read the first time.
+    pub details: Option<Result<Details, String>>,
+    /// The file or commit whose diff is shown.
+    pub selected: Option<DiffTarget>,
+    /// The diff of `selected`; `None` while it is read.
+    pub diff: Option<Result<String, String>>,
+}
+
 /// What the settings window shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsPage {
@@ -145,6 +158,7 @@ pub struct App {
     /// the config; not saved.
     pub active_favorite: Option<usize>,
     pub favorite_dialog: Option<FavoriteDialog>,
+    pub repo_view: Option<RepoView>,
     engine: Engine,
     desktop: Arc<dyn Desktop>,
     /// Where files for other programs are written; removed on exit.
@@ -213,6 +227,7 @@ impl App {
             sort: SortKey::default(),
             active_favorite: None,
             favorite_dialog: None,
+            repo_view: None,
             engine,
             desktop,
             scratch: scratch_dir(),
@@ -366,6 +381,58 @@ impl App {
             }
         }
         self.sync_repos_to_config();
+    }
+
+    /// Open the read-only view of `repo` and read its lists.
+    pub fn open_repo_view(&mut self, repo: &Path) {
+        self.repo_view = Some(RepoView {
+            repo: repo.to_path_buf(),
+            details: None,
+            selected: None,
+            diff: None,
+        });
+        self.engine.load_details(repo.to_path_buf());
+    }
+
+    pub fn close_repo_view(&mut self) {
+        self.repo_view = None;
+    }
+
+    /// Read the lists of the open view again.
+    pub fn refresh_repo_view(&mut self) {
+        if let Some(view) = &self.repo_view {
+            self.engine.load_details(view.repo.clone());
+        }
+    }
+
+    /// A click on a file or commit in the view: show its diff.
+    pub fn select_in_repo_view(&mut self, target: DiffTarget) {
+        if let Some(view) = &mut self.repo_view {
+            view.selected = Some(target.clone());
+            view.diff = None;
+            self.engine.load_diff(view.repo.clone(), target);
+        }
+    }
+
+    /// The lists of the open view were read. A selection the lists no
+    /// longer hold goes; one they still hold gets its diff read again, and
+    /// the old diff stays on screen until the new one is there.
+    fn repo_view_loaded(&mut self, repo: &Path, result: Result<Details, String>) {
+        let Some(view) = self.repo_view.as_mut().filter(|v| v.repo == repo) else {
+            return;
+        };
+        let held = match (&result, &view.selected) {
+            (Ok(details), Some(target)) => details.holds(target),
+            _ => false,
+        };
+        if !held {
+            view.selected = None;
+            view.diff = None;
+        }
+        view.details = Some(result);
+        if let Some(target) = view.selected.clone() {
+            self.engine.load_diff(repo.to_path_buf(), target);
+        }
     }
 
     pub fn is_kawaii(&self) -> bool {
@@ -725,6 +792,10 @@ impl App {
                 }
                 if changed {
                     self.wake_kawaii();
+                    // The open view of that repository follows its card.
+                    if self.repo_view.as_ref().is_some_and(|v| v.repo == repo) {
+                        self.refresh_repo_view();
+                    }
                 }
             }
             Event::Fetched { repo, error } => {
@@ -751,6 +822,20 @@ impl App {
             }
             Event::Options { command, options } => {
                 self.vocab.options.insert(command, options);
+            }
+            Event::Details { repo, result } => self.repo_view_loaded(&repo, result),
+            Event::Diff {
+                repo,
+                target,
+                result,
+            } => {
+                // A diff that is no longer asked for is dropped.
+                if let Some(view) = &mut self.repo_view
+                    && view.repo == repo
+                    && view.selected.as_ref() == Some(&target)
+                {
+                    view.diff = Some(result);
+                }
             }
         }
     }
@@ -865,6 +950,10 @@ pub(crate) mod tests {
     pub struct FakeBackend {
         pub runs: Mutex<Vec<(PathBuf, Vec<String>)>>,
         pub shell_runs: Mutex<Vec<(PathBuf, String)>>,
+        /// What the repository view gets as lists; an error while `None`.
+        pub details: Mutex<Option<Details>>,
+        /// How often the lists were read.
+        pub details_read: Mutex<usize>,
         pub snapshot: Mutex<Option<Snapshot>>,
     }
 
@@ -931,6 +1020,17 @@ pub(crate) mod tests {
         }
         fn options(&self, _dir: &Path, _command: &str) -> Vec<String> {
             vec!["--rebase".into()]
+        }
+        fn details(&self, _dir: &Path) -> Result<Details, String> {
+            *self.details_read.lock().unwrap() += 1;
+            let details = self.details.lock().unwrap().clone();
+            details.ok_or_else(|| "not a git repository".to_owned())
+        }
+        fn diff(&self, _dir: &Path, target: &DiffTarget) -> Result<String, String> {
+            Ok(match target {
+                DiffTarget::File(file) => format!("--- a/{0}\n+++ b/{0}\n-old\n+new", file.path),
+                DiffTarget::Commit(hash) => format!("commit {hash}\n\n    subject\n"),
+            })
         }
     }
 
@@ -1481,6 +1581,102 @@ pub(crate) mod tests {
         assert!(!app.advance_kawaii(0.033, false));
         app.config.theme = Theme::Kawaii;
         assert!(!app.advance_kawaii(0.033, false));
+    }
+
+    #[test]
+    fn repository_view_loads_its_lists_follows_the_card_and_keeps_a_held_selection() {
+        use crate::domain::details::{ChangeKind, FileChange, parse_log};
+        let backend = Arc::new(FakeBackend::default());
+        let mut app = app_with(backend.clone(), None);
+        app.cards = vec![Card::new("/x/a".into()), Card::new("/x/b".into())];
+        let file = |path: &str| FileChange {
+            path: path.into(),
+            kind: ChangeKind::Modified,
+        };
+        let lists = |files: &[&str]| Details {
+            files: files.iter().map(|f| file(f)).collect(),
+            commits: parse_log("aaaa\taa\tAda\tnow\tone\n"),
+            branches: vec![],
+        };
+        let view = |app: &App| app.repo_view.clone().unwrap();
+        let read = || *backend.details_read.lock().unwrap();
+
+        // A repository that cannot be read shows the error.
+        app.open_repo_view(Path::new("/x/a"));
+        assert_eq!(view(&app).details, None);
+        settle(&mut app, |a| view(a).details.is_some());
+        assert_eq!(view(&app).details, Some(Err("not a git repository".into())));
+
+        *backend.details.lock().unwrap() = Some(lists(&["one.rs", "two.rs"]));
+        app.refresh_repo_view();
+        settle(&mut app, |a| matches!(view(a).details, Some(Ok(_))));
+
+        let target = DiffTarget::File(file("two.rs"));
+        app.select_in_repo_view(target.clone());
+        assert_eq!(view(&app).diff, None);
+        settle(&mut app, |a| view(a).diff.is_some());
+        assert!(view(&app).diff.unwrap().unwrap().contains("+++ b/two.rs"));
+        // A diff nobody asks for any more is dropped.
+        app.handle_event(Event::Diff {
+            repo: "/x/a".into(),
+            target: DiffTarget::Commit("aaaa".into()),
+            result: Ok("stale".into()),
+        });
+        app.handle_event(Event::Diff {
+            repo: "/x/b".into(),
+            target: target.clone(),
+            result: Ok("other repository".into()),
+        });
+        assert!(view(&app).diff.unwrap().unwrap().contains("two.rs"));
+
+        // The card of the open repository changes: the lists are read again
+        // and the selection, still in them, stays with its diff.
+        let probed = |repo: &str, modified| Event::Probed {
+            repo: repo.into(),
+            result: Box::new(Ok(snapshot(
+                Counts {
+                    modified,
+                    ..Counts::default()
+                },
+                Upstream::None,
+                &["main"],
+            ))),
+        };
+        for repo in ["/x/a", "/x/b"] {
+            app.handle_event(probed(repo, 0));
+        }
+        let before = read();
+        app.handle_event(probed("/x/b", 1));
+        assert_eq!(read(), before, "another card's change reads nothing");
+        app.handle_event(probed("/x/a", 1));
+        settle(&mut app, |_| read() == before + 1);
+        app.handle_events();
+        assert_eq!(view(&app).selected, Some(target));
+        assert!(
+            view(&app).diff.is_some(),
+            "the old diff stays until the new one is in"
+        );
+
+        // The selected file is gone after a reload: so is the selection.
+        *backend.details.lock().unwrap() = Some(lists(&["one.rs"]));
+        app.refresh_repo_view();
+        settle(&mut app, |a| view(a).selected.is_none());
+        assert_eq!(view(&app).diff, None);
+
+        // Lists of a repository whose view is not open are dropped.
+        app.handle_event(Event::Details {
+            repo: "/x/b".into(),
+            result: Err("other".into()),
+        });
+        assert!(matches!(view(&app).details, Some(Ok(_))));
+        app.close_repo_view();
+        app.refresh_repo_view();
+        app.select_in_repo_view(DiffTarget::Commit("aaaa".into()));
+        app.handle_event(Event::Details {
+            repo: "/x/a".into(),
+            result: Err("closed".into()),
+        });
+        assert!(app.repo_view.is_none());
     }
 
     #[test]

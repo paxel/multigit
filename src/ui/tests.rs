@@ -13,8 +13,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn harness(app: App) -> Harness<'static, App> {
+    harness_stepping(app, 0.25)
+}
+
+/// A harness whose frames are `step` seconds apart.
+fn harness_stepping(app: App, step: f32) -> Harness<'static, App> {
     let h = Harness::builder()
         .with_size(egui::vec2(1200.0, 800.0))
+        .with_step_dt(step)
         .build_ui_state(|ui, app: &mut App| app.show(ui), app);
     crate::ui::style::apply(&h.ctx);
     h
@@ -965,6 +971,124 @@ fn right_click_on_the_branch_opens_the_branch_menu_not_the_cards() {
     h.run();
     h.get_by_label("Switch to");
     assert!(h.query_by_label("New favorite\u{2026}").is_none());
+}
+
+/// One marked card whose repository view has two files, a commit and two
+/// branches.
+fn repo_view_app() -> Harness<'static, App> {
+    use crate::domain::details::{BranchEntry, ChangeKind, Details, FileChange, parse_log};
+    let backend = Arc::new(FakeBackend::default());
+    *backend.details.lock().unwrap() = Some(Details {
+        files: vec![
+            FileChange {
+                path: "src/main.rs".into(),
+                kind: ChangeKind::Staged,
+            },
+            FileChange {
+                path: "notes.txt".into(),
+                kind: ChangeKind::Untracked,
+            },
+        ],
+        commits: parse_log("aaaabbbb\taaaabbb\tAda\t3 days ago\tFix the thing\n"),
+        branches: vec![
+            BranchEntry {
+                name: "main".into(),
+                current: true,
+            },
+            BranchEntry {
+                name: "side-branch".into(),
+                current: false,
+            },
+        ],
+    });
+    // Frames close enough together for two clicks to be a double click.
+    let mut h = harness_stepping(marked_app(backend, &[]), 0.05);
+    h.run();
+    h
+}
+
+#[test]
+fn double_click_opens_the_repository_view_and_leaves_the_mark() {
+    let mut h = repo_view_app();
+    let space = card_space(&h);
+    h.event(egui::Event::PointerMoved(space));
+    // Two clicks, one frame apart: within the time of a double click.
+    for click in 0..2 {
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: space,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        h.step();
+        let marked = h.state().marked.contains(&PathBuf::from("/repo"));
+        assert_eq!(marked, click == 1, "each click flips the mark");
+    }
+    h.run();
+    assert_eq!(
+        h.state().repo_view.as_ref().unwrap().repo,
+        PathBuf::from("/repo")
+    );
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.run();
+    h.get_by_label("Changed files (2)");
+    h.get_by_label("Commits");
+    h.get_by_label("Branches");
+    h.get_by_label("side-branch");
+    h.get_by_label("Pick a file or a commit to see its diff.");
+
+    // A file, then a commit: each shows its diff.
+    h.get_by_label("staged  src/main.rs").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.run();
+    h.get_by_label("+++ b/src/main.rs");
+    h.get_by_label("+new");
+    h.get_by_label("aaaabbb  Fix the thing").click();
+    h.run();
+    settle(&mut h, |a| {
+        let view = a.repo_view.as_ref().unwrap();
+        matches!(&view.diff, Some(Ok(diff)) if diff.contains("commit aaaabbbb"))
+    });
+    h.run();
+    h.get_by_label("commit aaaabbbb");
+
+    // The board is out of reach while the view is open; Esc returns to it.
+    key(&mut h, Key::Escape);
+    assert!(h.state().repo_view.is_none());
+    assert!(h.query_by_label("Commits").is_none());
+}
+
+#[test]
+fn open_in_the_card_menu_and_the_buttons_of_the_view() {
+    let mut h = repo_view_app();
+    h.get_by_label("repo").click_secondary();
+    h.run();
+    h.get_by_label("Open").click();
+    h.run();
+    settle(&mut h, |a| {
+        a.repo_view.as_ref().is_some_and(|v| v.details.is_some())
+    });
+    h.run();
+    h.get_by_label("untracked  notes.txt");
+    h.get_by_label("Refresh").click();
+    h.run();
+    assert!(h.state().repo_view.is_some());
+    h.get_by_label("Close").click();
+    h.run();
+    assert!(h.state().repo_view.is_none());
+}
+
+#[test]
+fn repository_view_shows_why_a_repository_cannot_be_read() {
+    let mut h = harness(marked_app(Arc::default(), &[]));
+    h.run();
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.run();
+    h.get_by_label("not a git repository");
 }
 
 #[test]

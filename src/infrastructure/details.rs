@@ -69,13 +69,52 @@ pub fn details(runner: &GitRunner, dir: &Path) -> Result<Details, String> {
     })
 }
 
+/// An untracked file as a diff against nothing. `--no-index` exits with 1
+/// when the two differ, which is every time.
+fn untracked_diff(runner: &GitRunner, dir: &Path, path: &str) -> Result<String, String> {
+    let mut args = vec!["diff"];
+    args.extend(PLAIN_DIFF);
+    args.extend(["--no-index", "--", "/dev/null", path]);
+    let out = query(runner, dir, &args)?;
+    if out.success() || out.exit_code == Some(1) {
+        Ok(out.stdout)
+    } else {
+        Err(error_of(&out))
+    }
+}
+
 /// The diff of `target` in the repository at `dir`, cut to what the pane
 /// shows.
 pub fn diff(runner: &GitRunner, dir: &Path, target: &DiffTarget) -> Result<String, String> {
+    // Status names a new folder as one entry, `dir/`: show its files.
+    if let DiffTarget::File(file) = target
+        && file.kind == ChangeKind::Untracked
+    {
+        if !file.path.ends_with('/') {
+            return untracked_diff(runner, dir, &file.path).map(|d| cut_diff(&d));
+        }
+        let listed = stdout(
+            runner,
+            dir,
+            &[
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "--",
+                &file.path,
+            ],
+        )?;
+        let mut all = String::new();
+        for path in listed.lines() {
+            all.push_str(&untracked_diff(runner, dir, path)?);
+            // Enough is read once the pane is full.
+            if all.lines().count() > crate::domain::details::DIFF_LINE_LIMIT {
+                break;
+            }
+        }
+        return Ok(cut_diff(&all));
+    }
     let mut args: Vec<&str> = Vec::new();
-    // An untracked file is compared with nothing; `--no-index` exits with 1
-    // when the two differ, which is every time.
-    let mut differing_is_ok = false;
     match target {
         DiffTarget::Commit(hash) => {
             if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -91,19 +130,14 @@ pub fn diff(runner: &GitRunner, dir: &Path, target: &DiffTarget) -> Result<Strin
             match file.kind {
                 ChangeKind::Staged => args.push("--cached"),
                 ChangeKind::Modified | ChangeKind::Conflict => {}
-                ChangeKind::Untracked => {
-                    differing_is_ok = true;
-                    args.extend(["--no-index", "--", "/dev/null"]);
-                }
+                // Handled above.
+                ChangeKind::Untracked => {}
             }
-            if file.kind != ChangeKind::Untracked {
-                args.push("--");
-            }
-            args.push(&file.path);
+            args.extend(["--", &file.path]);
         }
     }
     let out = query(runner, dir, &args)?;
-    if out.success() || (differing_is_ok && out.exit_code == Some(1)) {
+    if out.success() {
         Ok(cut_diff(&out.stdout))
     } else {
         Err(error_of(&out))
@@ -209,6 +243,18 @@ mod tests {
         );
         assert!(commit.contains("Author: Test"), "{commit}");
 
+        // A new folder is one untracked entry; its files show as one diff.
+        std::fs::create_dir(repo.path().join("dir")).unwrap();
+        repo.write("dir/one.txt", "first\n");
+        repo.write("dir/two.txt", "second\n");
+        let d = details(&runner, repo.path()).unwrap();
+        let folder = d.files.iter().find(|f| f.path == "dir/").unwrap();
+        let both = diff(&runner, repo.path(), &DiffTarget::File(folder.clone())).unwrap();
+        assert!(
+            both.contains("+first") && both.contains("+second"),
+            "{both}"
+        );
+
         for bad in ["", "--output=/tmp/x", "HEAD"] {
             assert!(
                 diff(&runner, repo.path(), &DiffTarget::Commit(bad.into())).is_err(),
@@ -217,6 +263,52 @@ mod tests {
         }
         let missing = "0123456789abcdef0123456789abcdef01234567";
         assert!(diff(&runner, repo.path(), &DiffTarget::Commit(missing.into())).is_err());
+    }
+
+    /// A diff driver with a command, set for a file type by an attribute: a
+    /// user's `git diff` runs it, the view does not.
+    #[cfg(unix)]
+    #[test]
+    fn the_view_runs_no_diff_driver_command() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = TestRepo::new();
+        let runner = isolated_runner();
+        repo.commit("a.bin", "one\n");
+        let git_dir = repo.path().join(".git");
+        let marker = git_dir.join("driver-ran");
+        let driver = git_dir.join("driver.sh");
+        let text = format!("#!/bin/sh\n: > '{}'\nexit 0\n", marker.display());
+        std::fs::write(&driver, text).unwrap();
+        std::fs::set_permissions(&driver, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(git_dir.join("info/attributes"), "*.bin diff=drv\n").unwrap();
+        repo.git(&["config", "diff.drv.command", &driver.to_string_lossy()]);
+        repo.write("a.bin", "one\ntwo\n");
+
+        runner.run(repo.path(), &["diff"]).unwrap();
+        assert!(marker.exists(), "the driver did not run for a user command");
+        std::fs::remove_file(&marker).unwrap();
+
+        let head = repo.git(&["rev-parse", "HEAD"]);
+        diff(&runner, repo.path(), &file("a.bin", ChangeKind::Modified)).unwrap();
+        repo.git(&["add", "a.bin"]);
+        diff(&runner, repo.path(), &file("a.bin", ChangeKind::Staged)).unwrap();
+        repo.write("new.bin", "x\n");
+        diff(
+            &runner,
+            repo.path(),
+            &file("new.bin", ChangeKind::Untracked),
+        )
+        .unwrap();
+        diff(
+            &runner,
+            repo.path(),
+            &DiffTarget::Commit(head.trim().into()),
+        )
+        .unwrap();
+        assert!(
+            !marker.exists(),
+            "the view ran the repository's diff driver"
+        );
     }
 
     /// The repository names an external diff program, a textconv filter and

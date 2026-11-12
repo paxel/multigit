@@ -36,14 +36,6 @@ pub fn favorite_name_id() -> egui::Id {
     egui::Id::new("favorite-name")
 }
 
-/// Width of the stripe a favorite paints at a card's left edge.
-const STRIPE_WIDTH: f32 = 5.0;
-
-fn favorite_color(name: &str) -> Color32 {
-    let [r, g, b] = color_rgb(name);
-    Color32::from_rgb(r, g, b)
-}
-
 /// Black or white, whichever reads on the palette color `rgb`. The text
 /// carries its own color, so the theme's hover color cannot hide it.
 fn text_on(rgb: [u8; 3]) -> Color32 {
@@ -56,18 +48,31 @@ fn text_on(rgb: [u8; 3]) -> Color32 {
 
 /// A button filled with a palette color; the picked or active one has a
 /// thick border.
-fn swatch(ui: &mut Ui, text: &str, rgb: [u8; 3], picked: bool) -> egui::Response {
+fn swatch(ui: &mut Ui, text: &str, rgb: [u8; 3], picked: bool, small: bool) -> egui::Response {
     let [r, g, b] = rgb;
-    let mut button =
-        egui::Button::new(RichText::new(text).color(text_on(rgb))).fill(Color32::from_rgb(r, g, b));
+    let mut text = RichText::new(text).color(text_on(rgb));
+    if small {
+        text = text.small();
+    }
+    let mut button = egui::Button::new(text).fill(Color32::from_rgb(r, g, b));
+    if small {
+        button = button.small();
+    }
     if picked {
-        button = button.stroke(egui::Stroke::new(3.0, ui.visuals().strong_text_color()));
+        let width = if small { 2.0 } else { 3.0 };
+        button = button.stroke(egui::Stroke::new(width, ui.visuals().strong_text_color()));
     }
     ui.add(button)
 }
 
 fn favorite_button(ui: &mut Ui, favorite: &Favorite, active: bool) -> egui::Response {
-    swatch(ui, &favorite.label(), color_rgb(&favorite.color), active)
+    swatch(
+        ui,
+        &favorite.label(),
+        color_rgb(&favorite.color),
+        active,
+        false,
+    )
 }
 
 /// Id of the filter field.
@@ -88,6 +93,8 @@ enum BoardAction {
     AddToFavorite(usize, PathBuf),
     RemoveFromFavorite(usize, PathBuf),
     NewFavorite(PathBuf),
+    /// A chip of the favorite at this position was clicked.
+    ToggleFavorite(usize),
     /// A card text was clicked at this pointer position.
     Copy(String, egui::Pos2),
     /// The fetch error of this card was clicked at this pointer position.
@@ -336,7 +343,7 @@ impl App {
             ui.horizontal_wrapped(|ui| {
                 for (name, rgb) in PALETTE {
                     let picked = dialog.draft.color == name;
-                    if swatch(ui, name, rgb, picked).clicked() {
+                    if swatch(ui, name, rgb, picked, false).clicked() {
                         dialog.draft.color = name.to_owned();
                     }
                 }
@@ -488,6 +495,7 @@ impl App {
                                 favorites: &self.config.favorites,
                                 marked_shown: &marked_shown,
                                 kawaii,
+                                active_favorite: self.active_favorite,
                             };
                             if kawaii {
                                 let offset = self.card_offset(&card.path, index);
@@ -515,6 +523,7 @@ impl App {
                     let targets = self.menu_targets(&p);
                     self.remove_from_favorite(i, &targets);
                 }
+                BoardAction::ToggleFavorite(i) => self.toggle_favorite(i),
                 BoardAction::NewFavorite(p) => {
                     let targets = self.menu_targets(&p);
                     self.new_favorite(targets);
@@ -797,6 +806,7 @@ struct CardView<'a> {
     /// The Kawaii theme: a solid card over the rainbow, a ring under the
     /// pointer.
     kawaii: bool,
+    active_favorite: Option<usize>,
 }
 
 impl CardView<'_> {
@@ -808,17 +818,21 @@ impl CardView<'_> {
             buttons,
             ..
         } = *self;
-        let member_of = favorites_of(self.favorites, &card.path);
-        let emojis: String = member_of
-            .iter()
-            .filter_map(|&i| self.favorites.get(i)?.emoji.as_deref())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let chips: Vec<Chip> = favorites_of(self.favorites, &card.path)
+            .into_iter()
+            .filter_map(|index| {
+                Some(Chip {
+                    index,
+                    favorite: self.favorites.get(index)?,
+                    active: self.active_favorite == Some(index),
+                })
+            })
+            .collect();
         let content = CardContent {
             card,
             busy,
             buttons,
-            emojis: &emojis,
+            chips: &chips,
         };
         let mut anchors = card_ui(ui, &content, marked, self.kawaii, actions);
         if let Some(whole) = anchors.first().filter(|_| self.kawaii) {
@@ -834,20 +848,6 @@ impl CardView<'_> {
                     egui::Stroke::new(2.5 * grown, KAWAII_PINK),
                     egui::StrokeKind::Outside,
                 );
-            }
-        }
-        // One stripe per favorite at the left edge, inside the card's margin.
-        if let Some(whole) = anchors.first().map(|r| r.rect) {
-            let width = STRIPE_WIDTH.min(CARD_MARGIN / member_of.len().max(1) as f32);
-            let colors = member_of.iter().filter_map(|&i| self.favorites.get(i));
-            for (n, favorite) in colors.enumerate() {
-                let left = whole.left() + MARKED_STROKE + n as f32 * width;
-                let stripe = egui::Rect::from_min_max(
-                    egui::pos2(left, whole.top() + MARKED_STROKE),
-                    egui::pos2(left + width, whole.bottom() - MARKED_STROKE),
-                );
-                ui.painter()
-                    .rect_filled(stripe, 0.0, favorite_color(&favorite.color));
             }
         }
         for anchor in anchors.drain(..) {
@@ -898,8 +898,18 @@ struct CardContent<'a> {
     card: &'a Card,
     busy: bool,
     buttons: &'a [crate::domain::config::ButtonDef],
-    /// The emojis of the card's favorites.
-    emojis: &'a str,
+    /// The card's favorites.
+    chips: &'a [Chip<'a>],
+}
+
+/// A favorite as a card shows it: a small button in the favorite's color
+/// that does what the favorite's toolbar button does.
+struct Chip<'a> {
+    /// Position of the favorite in the config.
+    index: usize,
+    favorite: &'a Favorite,
+    /// It is the favorite whose cards alone are shown.
+    active: bool,
 }
 
 /// Draws the card; the responses that carry the card's right-click menu, the
@@ -957,16 +967,13 @@ fn card_frame(
         card,
         busy,
         buttons,
-        emojis,
+        chips,
     } = *content;
     let path_text = card.path.display().to_string();
     frame.show(ui, |ui| {
         ui.set_width(CARD_WIDTH);
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                if !emojis.is_empty() {
-                    ui.label(RichText::new(emojis).size(15.0));
-                }
                 let name = title(&card.path);
                 let text = RichText::new(&name).strong().size(15.0);
                 anchors.push(copyable(ui, text, name, actions).on_hover_text(&path_text));
@@ -989,6 +996,25 @@ fn card_frame(
                     }
                 });
             });
+            if !chips.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                    for chip in chips {
+                        let rgb = color_rgb(&chip.favorite.color);
+                        let button = swatch(ui, &chip.favorite.label(), rgb, chip.active, true)
+                            .on_hover_text(if chip.active {
+                                "Show all repositories again"
+                            } else {
+                                "Show only this favorite's repositories"
+                            });
+                        if button.clicked() {
+                            actions.push(BoardAction::ToggleFavorite(chip.index));
+                        }
+                        // A right click on a chip is a right click on the card.
+                        anchors.push(button);
+                    }
+                });
+            }
             let parents = parent_line(&card.path, |text| fits(ui, text, CARD_WIDTH));
             let line = copyable(ui, weak(parents), path_text.clone(), actions);
             anchors.push(line.on_hover_text(&path_text));

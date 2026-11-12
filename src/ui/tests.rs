@@ -772,6 +772,21 @@ fn every_favorite_emoji_has_a_glyph() {
     assert!(!bundled_fonts_draw('\u{10ffff}'));
 }
 
+/// The toolbar button of the favorite with this label: the topmost node
+/// that carries it (the cards' chips carry it too).
+fn favorite_button<'a>(h: &'a Harness<'static, App>, label: &'a str) -> egui_kittest::Node<'a> {
+    h.get_all_by_label(label)
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+}
+
+/// A chip of that favorite on a card: the lowest node with the label.
+fn favorite_chip<'a>(h: &'a Harness<'static, App>, label: &'a str) -> egui_kittest::Node<'a> {
+    h.get_all_by_label(label)
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+}
+
 /// Three cards, the two `etl` ones marked.
 fn favorites_app() -> Harness<'static, App> {
     let backend = Arc::new(FakeBackend::default());
@@ -817,17 +832,34 @@ fn favorite_is_made_from_the_marked_cards_and_its_button_filters_the_board() {
         favorite.repos,
         vec![PathBuf::from("/r/etl-load"), PathBuf::from("/r/etl-store")]
     );
-    // Both cards carry the emoji; the favorite has its button.
-    assert_eq!(h.get_all_by_label(rocket).count(), 2);
+    // The favorite has its toolbar button, and both cards carry its chip;
+    // the emoji stands nowhere on its own.
     let button = format!("{rocket} ETL");
-    h.get_by_label(&button).click();
+    assert_eq!(h.get_all_by_label(&button).count(), 3);
+    assert!(h.query_by_label(rocket).is_none());
+    let chip_top = favorite_chip(&h, &button).rect().top();
+    let name_bottom = h.get_by_label("etl-store").rect().bottom();
+    assert!(chip_top >= name_bottom - 1.0, "the chip is under the name");
+    favorite_button(&h, &button).click();
     h.run();
     assert_eq!(h.state().active_favorite, Some(0));
     assert!(h.query_by_label("web").is_none());
     h.get_by_label("etl-load");
-    h.get_by_label(&button).click();
+    // A chip does what the toolbar button does.
+    favorite_chip(&h, &button).click();
     h.run();
+    assert_eq!(h.state().active_favorite, None);
     h.get_by_label("web");
+    assert!(
+        h.state().marked.contains(&PathBuf::from("/r/etl-store")),
+        "no mark flipped"
+    );
+
+    // A right click on a chip is a right click on its card.
+    favorite_chip(&h, &button).click_secondary();
+    h.run();
+    h.get_by_label("2 repositories");
+    h.get_by_label(&format!("Remove from {button}"));
 }
 
 #[test]
@@ -855,17 +887,17 @@ fn right_click_menus_change_and_delete_a_favorite() {
     assert!(h.state().config.favorites[0].repos.is_empty());
 
     // The favorite's own menu takes the marked cards and edits it.
-    h.get_by_label("Front").click_secondary();
+    favorite_button(&h, "Front").click_secondary();
     h.run();
     h.get_by_label("Add marked (2)").click();
     h.run();
     assert_eq!(h.state().config.favorites[0].repos.len(), 2);
-    h.get_by_label("Front").click_secondary();
+    favorite_button(&h, "Front").click_secondary();
     h.run();
     h.get_by_label("Remove marked (2)").click();
     h.run();
     assert!(h.state().config.favorites[0].repos.is_empty());
-    h.get_by_label("Front").click_secondary();
+    favorite_button(&h, "Front").click_secondary();
     h.run();
     h.get_by_label("Edit\u{2026}").click();
     h.run();
@@ -876,7 +908,7 @@ fn right_click_menus_change_and_delete_a_favorite() {
     h.run();
     assert_eq!(h.state().config.favorites[0].color, "pink");
 
-    h.get_by_label("Front").click_secondary();
+    favorite_button(&h, "Front").click_secondary();
     h.run();
     h.get_by_label("Delete").click();
     h.run();

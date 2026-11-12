@@ -74,8 +74,9 @@ emoji. A repository can be in several.
 - A right click on a favorite's button edits its name, color and emoji, adds
   or removes the marked cards, or deletes it. Deleting a favorite leaves its
   repositories on the board.
-- A card shows a stripe in the color of each of its favorites at its left
-  edge, and their emojis in front of its name.
+- A card shows a chip for each of its favorites under its name, in the
+  favorite's color with its emoji and name. A click on a chip does what the
+  favorite's toolbar button does.
 
 ## Adding and removing repositories
 

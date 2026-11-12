@@ -401,27 +401,34 @@ fn filter_field_hides_cards_and_counts_the_shown_ones() {
 }
 
 #[test]
-fn sort_button_cycles_the_key_and_reorders_the_cards() {
+fn sort_button_lists_the_keys_and_a_pick_reorders_the_cards() {
     let backend = Arc::new(FakeBackend::default());
     let mut app = app_with(backend, None);
     app.cards = vec![card("/b/alpha"), card("/a/zeta")];
     let mut h = harness(app);
-    h.step();
+    h.run();
     let left_of = |h: &Harness<'static, App>, a: &str, b: &str| {
         h.get_by_label(a).rect().left() < h.get_by_label(b).rect().left()
     };
     assert!(left_of(&h, "alpha", "zeta"));
     h.get_by_label("Sort: name").click();
-    h.step();
-    h.step();
-    h.get_by_label("Sort: path");
-    assert!(left_of(&h, "zeta", "alpha"));
-    for label in ["path", "branch", "tag", "dirty first", "behind first"] {
-        h.get_by_label(&format!("Sort: {label}")).click();
-        h.step();
-        h.step();
+    h.run();
+    // Every key is in the list; one click picks any of them.
+    for key in crate::domain::board::SortKey::ALL {
+        h.get_by_label(key.label());
     }
-    h.get_by_label("Sort: name");
+    h.get_by_label("path").click();
+    h.run();
+    h.get_by_label("Sort: path");
+    assert!(
+        h.query_by_label("behind first").is_none(),
+        "the list closed"
+    );
+    assert!(left_of(&h, "zeta", "alpha"));
+    h.get_by_label("Sort: path").click();
+    h.run();
+    h.get_by_label("name").click();
+    h.run();
     assert!(left_of(&h, "alpha", "zeta"));
 }
 

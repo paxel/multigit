@@ -20,17 +20,15 @@ pub enum SortKey {
 }
 
 impl SortKey {
-    /// The key the sort button switches to next.
-    pub fn next(self) -> Self {
-        match self {
-            Self::Name => Self::Path,
-            Self::Path => Self::Branch,
-            Self::Branch => Self::Tag,
-            Self::Tag => Self::DirtyFirst,
-            Self::DirtyFirst => Self::BehindFirst,
-            Self::BehindFirst => Self::Name,
-        }
-    }
+    /// Every key, in the order the sort button lists them.
+    pub const ALL: [Self; 6] = [
+        Self::Name,
+        Self::Path,
+        Self::Branch,
+        Self::Tag,
+        Self::DirtyFirst,
+        Self::BehindFirst,
+    ];
 
     /// As the sort button names it.
     pub fn label(self) -> &'static str {
@@ -146,15 +144,10 @@ mod tests {
     }
 
     #[test]
-    fn sort_keys_cycle_through_all_six_and_back() {
-        let mut key = SortKey::default();
-        let mut labels = Vec::new();
-        for _ in 0..6 {
-            labels.push(key.label());
-            key = key.next();
-        }
+    fn sort_keys_are_listed_with_name_first() {
+        assert_eq!(SortKey::ALL.first(), Some(&SortKey::default()));
         assert_eq!(
-            labels,
+            SortKey::ALL.map(SortKey::label),
             [
                 "name",
                 "path",
@@ -164,7 +157,6 @@ mod tests {
                 "behind first"
             ]
         );
-        assert_eq!(key, SortKey::Name);
     }
 
     #[test]

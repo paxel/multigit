@@ -1,5 +1,6 @@
 //! Drawing of the board: toolbar, cards, output panel, CLI, toasts, dialogs.
 
+use crate::domain::board::SortKey;
 use crate::domain::command::{Job, display, shell_name, shell_program};
 use crate::domain::favorites::{EMOJIS, Favorite, PALETTE, color_rgb, dark_text_on, favorites_of};
 use crate::domain::kawaii;
@@ -241,13 +242,14 @@ impl App {
                 .min_size(egui::vec2(0.0, ui.spacing().interact_size.y))
                 .vertical_align(egui::Align::Center),
         );
-        if ui
-            .button(format!("Sort: {}", self.sort.label()))
-            .on_hover_text("Sort the cards by the next key")
-            .clicked()
-        {
-            self.sort = self.sort.next();
-        }
+        let button = format!("Sort: {}", self.sort.label());
+        ui.menu_button(button, |ui| {
+            for key in SortKey::ALL {
+                if ui.selectable_label(self.sort == key, key.label()).clicked() {
+                    self.sort = key;
+                }
+            }
+        });
     }
 
     /// One button per favorite; no line without favorites. A click shows only

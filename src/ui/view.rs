@@ -82,7 +82,10 @@ pub fn filter_id() -> egui::Id {
 
 /// Something the user clicked that changes the board; applied after drawing.
 enum BoardAction {
+    /// From the right-click menu of this card: take its targets off the
+    /// board for good, or hide them.
     Remove(PathBuf),
+    Hide(PathBuf),
     Button(usize, PathBuf),
     Toggle(PathBuf),
     Terminal(PathBuf),
@@ -433,13 +436,6 @@ impl App {
                 self.run_button_on_marked(i);
             }
         }
-        if ui
-            .add_enabled(any_marked, egui::Button::new("Remove marked"))
-            .on_hover_text("Take the marked repositories off the board (files stay)")
-            .clicked()
-        {
-            self.remove_marked();
-        }
         ui.separator();
         if ui.button("Settings").clicked() {
             self.settings_open = true;
@@ -511,7 +507,14 @@ impl App {
             });
         for action in actions {
             match action {
-                BoardAction::Remove(p) => self.remove(&p),
+                BoardAction::Remove(p) => {
+                    let targets = self.menu_targets(&p);
+                    self.remove_cards(&targets);
+                }
+                BoardAction::Hide(p) => {
+                    let targets = self.menu_targets(&p);
+                    self.hide_cards(&targets);
+                }
                 BoardAction::Button(i, p) => self.run_button(i, &p),
                 BoardAction::Terminal(p) => self.open_terminal(&p),
                 BoardAction::Run(p, command) => self.start_run(&command, vec![p]),
@@ -890,6 +893,21 @@ impl CardView<'_> {
                 actions.push(BoardAction::RemoveFromFavorite(i, path.clone()));
             }
         }
+        ui.separator();
+        if ui
+            .button("Hide")
+            .on_hover_text("Off the board, but remembered: adding its folder again leaves it out")
+            .clicked()
+        {
+            actions.push(BoardAction::Hide(path.clone()));
+        }
+        if ui
+            .button("Remove from board")
+            .on_hover_text("Off the board; the files stay")
+            .clicked()
+        {
+            actions.push(BoardAction::Remove(path.clone()));
+        }
     }
 }
 
@@ -978,13 +996,6 @@ fn card_frame(
                 let text = RichText::new(&name).strong().size(15.0);
                 anchors.push(copyable(ui, text, name, actions).on_hover_text(&path_text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .small_button("×")
-                        .on_hover_text("Remove from board (files stay)")
-                        .clicked()
-                    {
-                        actions.push(BoardAction::Remove(card.path.clone()));
-                    }
                     // No terminal in a folder that is gone.
                     let terminal = egui::Button::new(TERMINAL_LABEL).small();
                     if ui

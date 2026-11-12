@@ -293,27 +293,78 @@ impl App {
             self.toast(format!("No git repository found in {}", folder.display()));
             return;
         }
-        let mut duplicates = 0;
+        // Picking a hidden repository itself, not a folder above it, asks
+        // for it by name: that unhides it.
+        let picked_itself = found.len() == 1 && folder.join(".git").exists();
+        let (mut duplicates, mut hidden) = (0, 0);
         for path in found {
             if self.cards.iter().any(|c| c.path == path) {
                 duplicates += 1;
-                continue;
+            } else if self.config.hidden.contains(&path) && !picked_itself {
+                hidden += 1;
+            } else {
+                self.config.hidden.retain(|h| *h != path);
+                self.put_on_board(path);
             }
-            self.engine.poll(&path);
-            self.cards.push(Card::new(path));
         }
-        self.cards.sort_by(|a, b| board_order(&a.path, &b.path));
         self.sync_repos_to_config();
         if duplicates > 0 {
             self.toast(format!("{duplicates} already on board"));
         }
+        if hidden > 0 {
+            self.toast(format!("{hidden} hidden, left out (Settings unhides)"));
+        }
     }
 
-    /// ×: take a card off the board (nothing on disk changes).
-    pub fn remove(&mut self, path: &Path) {
-        self.cards.retain(|c| c.path != path);
-        self.marked.remove(path);
-        forget(&mut self.config.favorites, &[path.to_path_buf()]);
+    /// A new card for `path`, in board order, probed at once.
+    fn put_on_board(&mut self, path: PathBuf) {
+        self.engine.poll(&path);
+        self.cards.push(Card::new(path));
+        self.cards.sort_by(|a, b| board_order(&a.path, &b.path));
+    }
+
+    /// Take the cards of `paths` off the board for good: nothing on disk
+    /// changes, and favorites forget them.
+    pub fn remove_cards(&mut self, paths: &[PathBuf]) {
+        self.cards.retain(|c| !paths.contains(&c.path));
+        self.marked.retain(|p| !paths.contains(p));
+        forget(&mut self.config.favorites, paths);
+        self.sync_repos_to_config();
+    }
+
+    /// Take the cards of `paths` off the board but remember them: a scan of
+    /// their parent folder leaves them out, nothing runs on them, and they
+    /// keep their favorites.
+    pub fn hide_cards(&mut self, paths: &[PathBuf]) {
+        self.cards.retain(|c| !paths.contains(&c.path));
+        self.marked.retain(|p| !paths.contains(p));
+        for path in paths {
+            if !self.config.hidden.contains(path) {
+                self.config.hidden.push(path.clone());
+            }
+        }
+        self.config.hidden.sort();
+        self.sync_repos_to_config();
+    }
+
+    /// Put a hidden repository back on the board.
+    pub fn unhide(&mut self, path: &Path) {
+        if !self.config.hidden.iter().any(|h| h == path) {
+            return;
+        }
+        self.config.hidden.retain(|h| h != path);
+        if !self.cards.iter().any(|c| c.path == path) {
+            self.put_on_board(path.to_path_buf());
+        }
+        self.sync_repos_to_config();
+    }
+
+    pub fn unhide_all(&mut self) {
+        for path in std::mem::take(&mut self.config.hidden) {
+            if !self.cards.iter().any(|c| c.path == path) {
+                self.put_on_board(path);
+            }
+        }
         self.sync_repos_to_config();
     }
 
@@ -468,17 +519,6 @@ impl App {
 
     fn shown_paths(&self) -> BTreeSet<PathBuf> {
         self.shown_cards().iter().map(|c| c.path.clone()).collect()
-    }
-
-    pub fn remove_marked(&mut self) {
-        let gone: BTreeSet<PathBuf> = self.marked_repos().into_iter().collect();
-        self.cards.retain(|c| !gone.contains(&c.path));
-        self.marked.retain(|p| !gone.contains(p));
-        forget(
-            &mut self.config.favorites,
-            &gone.iter().cloned().collect::<Vec<_>>(),
-        );
-        self.sync_repos_to_config();
     }
 
     /// A click on a card's fetch error: its whole output for the clipboard;
@@ -1032,20 +1072,84 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn remove_and_remove_marked() {
+    fn removed_cards_leave_the_board_and_their_marks() {
         let (dir, paths) = repo_dirs(&["a", "b", "c"]);
         let mut app = app_with(Arc::default(), None);
         app.add_folder(dir.path());
         app.marked.insert(paths[0].clone());
         app.marked.insert(paths[1].clone());
-        app.remove(&paths[0]);
+        app.remove_cards(&paths[..1]);
         assert_eq!(app.cards.len(), 2);
         assert!(!app.marked.contains(&paths[0]));
-        app.remove_marked();
+        let marked = app.marked_repos();
+        app.remove_cards(&marked);
         assert_eq!(app.config.repos, vec![paths[2].clone()]);
         assert!(app.marked.is_empty());
         // Files on disk are untouched.
         assert!(paths.iter().all(|p| p.exists()));
+        // A removed repository comes back with its folder.
+        app.add_folder(dir.path());
+        assert_eq!(app.cards.len(), 3);
+    }
+
+    #[test]
+    fn hidden_repositories_stay_away_until_they_are_unhidden() {
+        let (dir, paths) = repo_dirs(&["a", "b", "c"]);
+        let backend = Arc::new(FakeBackend::default());
+        let mut app = app_with(backend.clone(), None);
+        app.add_folder(dir.path());
+        app.new_favorite(vec![paths[0].clone(), paths[1].clone()]);
+        app.favorite_dialog.as_mut().unwrap().draft.name = "f".into();
+        app.save_favorite();
+        app.marked.insert(paths[0].clone());
+
+        app.hide_cards(&paths[..2]);
+        app.hide_cards(&paths[..1]);
+        assert_eq!(app.config.hidden, paths[..2].to_vec(), "each once");
+        assert_eq!(app.config.repos, vec![paths[2].clone()]);
+        assert!(app.marked.is_empty());
+        assert_eq!(
+            app.config.favorites[0].repos.len(),
+            2,
+            "favorites keep them"
+        );
+
+        // The parent folder again: the hidden ones are left out, and said so.
+        app.toasts.clear();
+        app.add_folder(dir.path());
+        assert_eq!(app.cards.len(), 1);
+        let texts: Vec<_> = app.toasts.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "1 already on board",
+                "2 hidden, left out (Settings unhides)"
+            ]
+        );
+
+        // Nothing runs on a hidden repository: no card, so no poll or fetch.
+        let fetch_interval = Duration::from_secs(app.config.effective_fetch_interval_secs());
+        app.tick(Instant::now() + fetch_interval + Duration::from_secs(1));
+        settle(&mut app, |a| a.cards[0].probe.is_some());
+        assert!(backend.runs.lock().unwrap().iter().all(|r| r.0 == paths[2]));
+
+        // Picking a hidden repository itself brings it back.
+        app.add_folder(&paths[0]);
+        assert_eq!(app.config.hidden, vec![paths[1].clone()]);
+        assert_eq!(app.cards.len(), 2);
+
+        app.unhide(&paths[1]);
+        app.unhide(Path::new("/not/hidden"));
+        assert!(app.config.hidden.is_empty());
+        let on_board: Vec<_> = app.cards.iter().map(|c| c.path.clone()).collect();
+        assert_eq!(on_board, paths, "in board order");
+        assert_eq!(app.config.repos, paths);
+
+        app.hide_cards(&paths);
+        assert!(app.cards.is_empty());
+        app.unhide_all();
+        assert_eq!(app.config.repos, paths);
+        assert!(app.config.hidden.is_empty());
     }
 
     #[test]
@@ -1118,9 +1222,10 @@ pub(crate) mod tests {
         app.mark_all();
         assert_eq!(app.marked, etl.iter().cloned().collect());
 
-        // "Remove marked" leaves a marked hidden card on the board.
+        // Removing the marked cards leaves a marked card the filter hides.
         app.marked.insert("/x/web".into());
-        app.remove_marked();
+        let marked = app.marked_repos();
+        app.remove_cards(&marked);
         assert_eq!(app.config.repos, vec![PathBuf::from("/x/web")]);
         app.filter.clear();
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/x/web")]);
@@ -1261,14 +1366,13 @@ pub(crate) mod tests {
         );
 
         // A card that leaves the board leaves its favorites.
-        app.remove(Path::new("/x/etl-load"));
+        app.remove_cards(&[PathBuf::from("/x/etl-load")]);
         assert_eq!(
             app.config.favorites[0].repos,
             vec![PathBuf::from("/x/etl-store")]
         );
         assert!(app.config.favorites[1].repos.is_empty());
-        app.marked = BTreeSet::from([PathBuf::from("/x/etl-store")]);
-        app.remove_marked();
+        app.remove_cards(&[PathBuf::from("/x/etl-store")]);
         assert!(app.config.favorites[0].repos.is_empty());
 
         // Deleting keeps the active favorite the same one.

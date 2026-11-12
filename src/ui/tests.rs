@@ -209,17 +209,55 @@ fn bulk_destructive_shows_confirm_dialog() {
 }
 
 #[test]
-fn card_shows_status_and_remove_button_works() {
+fn card_shows_its_status() {
     let mut h = harness(marked_app(Arc::default(), &[]));
     h.run();
     h.get_by_label("repo");
     h.get_by_label("clean");
     h.get_by_label("no upstream");
     h.get_by_label("no tag");
-    h.get_by_label("×").click();
+    assert!(
+        h.query_by_label("\u{d7}").is_none(),
+        "no remove button on the card"
+    );
+    assert!(h.query_by_label("Remove marked").is_none());
+}
+
+#[test]
+fn right_click_removes_or_hides_the_marked_cards_and_settings_unhides() {
+    let mut h = favorites_app();
+    // An unmarked card: it alone is removed.
+    h.get_by_label("web").click_secondary();
+    h.run();
+    h.get_by_label("Remove from board").click();
+    h.run();
+    assert_eq!(h.state().cards.len(), 2);
+    assert!(h.state().config.hidden.is_empty());
+
+    // A marked card: all marked cards are hidden.
+    h.get_by_label("etl-load").click_secondary();
+    h.run();
+    h.get_by_label("2 repositories");
+    h.get_by_label("Hide").click();
     h.run();
     assert!(h.state().cards.is_empty());
     assert!(h.state().marked.is_empty());
+    let hidden = vec![PathBuf::from("/r/etl-load"), PathBuf::from("/r/etl-store")];
+    assert_eq!(h.state().config.hidden, hidden);
+
+    h.state_mut().settings_open = true;
+    h.run();
+    h.get_by_label("Hidden repositories");
+    h.get_by_label("/r/etl-store");
+    h.get_all_by_label("Unhide").next().unwrap().click();
+    h.run();
+    assert_eq!(h.state().config.hidden, hidden[1..].to_vec());
+    assert_eq!(h.state().cards.len(), 1);
+    h.get_by_label("Unhide all").click();
+    h.run();
+    assert!(h.state().config.hidden.is_empty());
+    assert_eq!(h.state().cards.len(), 2);
+    assert!(h.query_by_label("Hidden repositories").is_none());
 }
 
 /// A primary click at `pos` (for places without a widget of their own).
@@ -1282,16 +1320,7 @@ fn glyphs_used_in_labels_exist_in_default_fonts() {
     let mut h = harness(app_with(Arc::default(), None));
     h.run();
     let font = egui::FontId::proportional(14.0);
-    for c in [
-        '×',
-        '+',
-        '~',
-        '?',
-        '!',
-        '@',
-        '…',
-        crate::ui::view::OUTPUT_MARK,
-    ] {
+    for c in ['+', '~', '?', '!', '@', '…', crate::ui::view::OUTPUT_MARK] {
         assert!(
             h.ctx.fonts_mut(|f| f.has_glyph(&font, c)),
             "missing glyph {c}"

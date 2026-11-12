@@ -115,6 +115,8 @@ fn settings_page(app: &mut App, ui: &mut Ui) {
         }
     });
     let config_file = app.config_file().map(|p| p.display().to_string());
+    // `Some(None)` unhides all, `Some(Some(path))` that one.
+    let mut unhide: Option<Option<std::path::PathBuf>> = None;
     let config = &mut app.config;
     egui::Grid::new("settings-grid")
         .num_columns(2)
@@ -211,8 +213,30 @@ fn settings_page(app: &mut App, ui: &mut Ui) {
                 }
             });
     });
+    if !config.hidden.is_empty() {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong("Hidden repositories");
+            if ui.button("Unhide all").clicked() {
+                unhide = Some(None);
+            }
+        });
+        for path in &config.hidden {
+            ui.horizontal(|ui| {
+                if ui.button("Unhide").clicked() {
+                    unhide = Some(Some(path.clone()));
+                }
+                ui.label(path.display().to_string());
+            });
+        }
+    }
     if let Some(file) = &config_file {
         ui.separator();
         ui.weak(format!("Saved to {file}"));
+    }
+    match unhide {
+        Some(Some(path)) => app.unhide(&path),
+        Some(None) => app.unhide_all(),
+        None => {}
     }
 }

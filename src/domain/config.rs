@@ -108,6 +108,10 @@ pub struct Config {
     pub terminal: String,
     #[serde(default)]
     pub repos: Vec<PathBuf>,
+    /// Repositories taken off the board that a later scan of their parent
+    /// folder must not bring back.
+    #[serde(default)]
+    pub hidden: Vec<PathBuf>,
     #[serde(default = "default_buttons")]
     pub buttons: Vec<ButtonDef>,
     /// In the order they were made, which is the order of their buttons.
@@ -125,6 +129,7 @@ impl Default for Config {
             theme: Theme::default(),
             terminal: String::new(),
             repos: Vec::new(),
+            hidden: Vec::new(),
             buttons: default_buttons(),
             favorites: Vec::new(),
         }
@@ -179,6 +184,22 @@ mod tests {
         let by_hand = Config::from_toml("[[favorites]]\nname = \"a\"\ncolor = \"blue\"").unwrap();
         assert_eq!(by_hand.favorites[0].repos, Vec::<PathBuf>::new());
         assert_eq!(by_hand.favorites[0].emoji, None);
+    }
+
+    #[test]
+    fn hidden_repositories_survive_the_config_file() {
+        let mut config = Config::default();
+        config.repos.push("/x/shown".into());
+        config.hidden.push("/x/hidden".into());
+        config.favorites.push(Favorite {
+            name: "a".into(),
+            color: "red".into(),
+            emoji: None,
+            repos: vec!["/x/hidden".into()],
+        });
+        let text = config.to_toml().unwrap();
+        assert_eq!(Config::from_toml(&text).unwrap(), config);
+        assert!(Config::from_toml("").unwrap().hidden.is_empty());
     }
 
     #[test]

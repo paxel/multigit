@@ -48,8 +48,8 @@ both until the command is done, and is refreshed right after it.
 
 The filter field at the right end of the toolbar shows only the cards whose
 folder name contains the typed text (case ignored), and how many those are. A
-hidden card keeps its mark, but nothing touches it: commands, the toolbar's
-mark buttons and **Remove marked** act on the shown cards only.
+card the filter hides keeps its mark, but nothing touches it: commands, the
+toolbar's mark buttons and the right-click menu act on the shown cards only.
 
 A refresh of a repository whose checked-out commit did not move is one
 `git status`. Branches, tags and the commit line are read again after a fetch,
@@ -84,8 +84,15 @@ emoji. A repository can be in several.
   folder is scanned for repositories up to two levels deep (configurable),
   without descending into repositories it finds. Repositories already on the
   board are skipped.
-- **×** on a card, or **Remove marked** in the toolbar, takes cards off the
-  board. Nothing on disk is touched.
+- A right click on a card takes it off the board, in two ways; on a marked
+  card, both act on all marked cards. Nothing on disk is touched.
+  - **Remove from board**: the card is gone, and its favorites forget it.
+    Adding its folder again brings it back.
+  - **Hide**: the card is gone, but multigit remembers the repository: a
+    later scan of the folder above it leaves it out, it keeps its favorites,
+    and nothing runs on it. **Settings** lists the hidden repositories with
+    **Unhide** and **Unhide all**; picking a hidden repository itself with
+    **+** unhides it too.
 
 ## Running git
 

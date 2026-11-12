@@ -13,8 +13,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn harness(app: App) -> Harness<'static, App> {
+    harness_stepping(app, 0.25)
+}
+
+/// A harness whose frames are `step` seconds apart.
+fn harness_stepping(app: App, step: f32) -> Harness<'static, App> {
     let h = Harness::builder()
         .with_size(egui::vec2(1200.0, 800.0))
+        .with_step_dt(step)
         .build_ui_state(|ui, app: &mut App| app.show(ui), app);
     crate::ui::style::apply(&h.ctx);
     h
@@ -209,17 +215,55 @@ fn bulk_destructive_shows_confirm_dialog() {
 }
 
 #[test]
-fn card_shows_status_and_remove_button_works() {
+fn card_shows_its_status() {
     let mut h = harness(marked_app(Arc::default(), &[]));
     h.run();
     h.get_by_label("repo");
     h.get_by_label("clean");
     h.get_by_label("no upstream");
     h.get_by_label("no tag");
-    h.get_by_label("×").click();
+    assert!(
+        h.query_by_label("\u{d7}").is_none(),
+        "no remove button on the card"
+    );
+    assert!(h.query_by_label("Remove marked").is_none());
+}
+
+#[test]
+fn right_click_removes_or_hides_the_marked_cards_and_settings_unhides() {
+    let mut h = favorites_app();
+    // An unmarked card: it alone is removed.
+    h.get_by_label("web").click_secondary();
+    h.run();
+    h.get_by_label("Remove from board").click();
+    h.run();
+    assert_eq!(h.state().cards.len(), 2);
+    assert!(h.state().config.hidden.is_empty());
+
+    // A marked card: all marked cards are hidden.
+    h.get_by_label("etl-load").click_secondary();
+    h.run();
+    h.get_by_label("2 repositories");
+    h.get_by_label("Hide").click();
     h.run();
     assert!(h.state().cards.is_empty());
     assert!(h.state().marked.is_empty());
+    let hidden = vec![PathBuf::from("/r/etl-load"), PathBuf::from("/r/etl-store")];
+    assert_eq!(h.state().config.hidden, hidden);
+
+    h.state_mut().settings_open = true;
+    h.run();
+    h.get_by_label("Hidden repositories");
+    h.get_by_label("/r/etl-store");
+    h.get_all_by_label("Unhide").next().unwrap().click();
+    h.run();
+    assert_eq!(h.state().config.hidden, hidden[1..].to_vec());
+    assert_eq!(h.state().cards.len(), 1);
+    h.get_by_label("Unhide all").click();
+    h.run();
+    assert!(h.state().config.hidden.is_empty());
+    assert_eq!(h.state().cards.len(), 2);
+    assert!(h.query_by_label("Hidden repositories").is_none());
 }
 
 /// A primary click at `pos` (for places without a widget of their own).
@@ -401,27 +445,34 @@ fn filter_field_hides_cards_and_counts_the_shown_ones() {
 }
 
 #[test]
-fn sort_button_cycles_the_key_and_reorders_the_cards() {
+fn sort_button_lists_the_keys_and_a_pick_reorders_the_cards() {
     let backend = Arc::new(FakeBackend::default());
     let mut app = app_with(backend, None);
     app.cards = vec![card("/b/alpha"), card("/a/zeta")];
     let mut h = harness(app);
-    h.step();
+    h.run();
     let left_of = |h: &Harness<'static, App>, a: &str, b: &str| {
         h.get_by_label(a).rect().left() < h.get_by_label(b).rect().left()
     };
     assert!(left_of(&h, "alpha", "zeta"));
     h.get_by_label("Sort: name").click();
-    h.step();
-    h.step();
-    h.get_by_label("Sort: path");
-    assert!(left_of(&h, "zeta", "alpha"));
-    for label in ["path", "branch", "tag", "dirty first", "behind first"] {
-        h.get_by_label(&format!("Sort: {label}")).click();
-        h.step();
-        h.step();
+    h.run();
+    // Every key is in the list; one click picks any of them.
+    for key in crate::domain::board::SortKey::ALL {
+        h.get_by_label(key.label());
     }
-    h.get_by_label("Sort: name");
+    h.get_by_label("path").click();
+    h.run();
+    h.get_by_label("Sort: path");
+    assert!(
+        h.query_by_label("behind first").is_none(),
+        "the list closed"
+    );
+    assert!(left_of(&h, "zeta", "alpha"));
+    h.get_by_label("Sort: path").click();
+    h.run();
+    h.get_by_label("name").click();
+    h.run();
     assert!(left_of(&h, "alpha", "zeta"));
 }
 
@@ -455,6 +506,24 @@ fn card_shows_the_commit_on_one_line() {
     let card_right = h.get_by_label("status").rect().left() + 290.0;
     assert!(line.right() <= card_right + 1.0, "{line:?}");
     assert!(line.height() < 30.0, "{line:?}");
+}
+
+#[test]
+fn commit_line_has_one_tooltip_with_the_subject() {
+    let long = "Rewrite the whole thing from scratch, twice, with a very long subject line";
+    let mut h = commit_card(long);
+    h.get_by_label_contains("1a2b3c4 Rewrite").hover();
+    // Tooltips come up after the pointer has rested.
+    for _ in 0..8 {
+        h.step();
+    }
+    // The line itself and one tooltip; a cut-off label would bring a second.
+    assert_eq!(
+        h.get_all_by_label_contains("with a very long subject line")
+            .count(),
+        2
+    );
+    h.get_by_label(long);
 }
 
 #[test]
@@ -747,6 +816,21 @@ fn every_favorite_emoji_has_a_glyph() {
     assert!(!bundled_fonts_draw('\u{10ffff}'));
 }
 
+/// The toolbar button of the favorite with this label: the topmost node
+/// that carries it (the cards' chips carry it too).
+fn favorite_button<'a>(h: &'a Harness<'static, App>, label: &'a str) -> egui_kittest::Node<'a> {
+    h.get_all_by_label(label)
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+}
+
+/// A chip of that favorite on a card: the lowest node with the label.
+fn favorite_chip<'a>(h: &'a Harness<'static, App>, label: &'a str) -> egui_kittest::Node<'a> {
+    h.get_all_by_label(label)
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+}
+
 /// Three cards, the two `etl` ones marked.
 fn favorites_app() -> Harness<'static, App> {
     let backend = Arc::new(FakeBackend::default());
@@ -792,17 +876,34 @@ fn favorite_is_made_from_the_marked_cards_and_its_button_filters_the_board() {
         favorite.repos,
         vec![PathBuf::from("/r/etl-load"), PathBuf::from("/r/etl-store")]
     );
-    // Both cards carry the emoji; the favorite has its button.
-    assert_eq!(h.get_all_by_label(rocket).count(), 2);
+    // The favorite has its toolbar button, and both cards carry its chip;
+    // the emoji stands nowhere on its own.
     let button = format!("{rocket} ETL");
-    h.get_by_label(&button).click();
+    assert_eq!(h.get_all_by_label(&button).count(), 3);
+    assert!(h.query_by_label(rocket).is_none());
+    let chip_top = favorite_chip(&h, &button).rect().top();
+    let name_bottom = h.get_by_label("etl-store").rect().bottom();
+    assert!(chip_top >= name_bottom - 1.0, "the chip is under the name");
+    favorite_button(&h, &button).click();
     h.run();
     assert_eq!(h.state().active_favorite, Some(0));
     assert!(h.query_by_label("web").is_none());
     h.get_by_label("etl-load");
-    h.get_by_label(&button).click();
+    // A chip does what the toolbar button does.
+    favorite_chip(&h, &button).click();
     h.run();
+    assert_eq!(h.state().active_favorite, None);
     h.get_by_label("web");
+    assert!(
+        h.state().marked.contains(&PathBuf::from("/r/etl-store")),
+        "no mark flipped"
+    );
+
+    // A right click on a chip is a right click on its card.
+    favorite_chip(&h, &button).click_secondary();
+    h.run();
+    h.get_by_label("2 repositories");
+    h.get_by_label(&format!("Remove from {button}"));
 }
 
 #[test]
@@ -830,17 +931,17 @@ fn right_click_menus_change_and_delete_a_favorite() {
     assert!(h.state().config.favorites[0].repos.is_empty());
 
     // The favorite's own menu takes the marked cards and edits it.
-    h.get_by_label("Front").click_secondary();
+    favorite_button(&h, "Front").click_secondary();
     h.run();
     h.get_by_label("Add marked (2)").click();
     h.run();
     assert_eq!(h.state().config.favorites[0].repos.len(), 2);
-    h.get_by_label("Front").click_secondary();
+    favorite_button(&h, "Front").click_secondary();
     h.run();
     h.get_by_label("Remove marked (2)").click();
     h.run();
     assert!(h.state().config.favorites[0].repos.is_empty());
-    h.get_by_label("Front").click_secondary();
+    favorite_button(&h, "Front").click_secondary();
     h.run();
     h.get_by_label("Edit\u{2026}").click();
     h.run();
@@ -851,7 +952,7 @@ fn right_click_menus_change_and_delete_a_favorite() {
     h.run();
     assert_eq!(h.state().config.favorites[0].color, "pink");
 
-    h.get_by_label("Front").click_secondary();
+    favorite_button(&h, "Front").click_secondary();
     h.run();
     h.get_by_label("Delete").click();
     h.run();
@@ -870,6 +971,124 @@ fn right_click_on_the_branch_opens_the_branch_menu_not_the_cards() {
     h.run();
     h.get_by_label("Switch to");
     assert!(h.query_by_label("New favorite\u{2026}").is_none());
+}
+
+/// One marked card whose repository view has two files, a commit and two
+/// branches.
+fn repo_view_app() -> Harness<'static, App> {
+    use crate::domain::details::{BranchEntry, ChangeKind, Details, FileChange, parse_log};
+    let backend = Arc::new(FakeBackend::default());
+    *backend.details.lock().unwrap() = Some(Details {
+        files: vec![
+            FileChange {
+                path: "src/main.rs".into(),
+                kind: ChangeKind::Staged,
+            },
+            FileChange {
+                path: "notes.txt".into(),
+                kind: ChangeKind::Untracked,
+            },
+        ],
+        commits: parse_log("aaaabbbb\taaaabbb\tAda\t3 days ago\tFix the thing\n"),
+        branches: vec![
+            BranchEntry {
+                name: "main".into(),
+                current: true,
+            },
+            BranchEntry {
+                name: "side-branch".into(),
+                current: false,
+            },
+        ],
+    });
+    // Frames close enough together for two clicks to be a double click.
+    let mut h = harness_stepping(marked_app(backend, &[]), 0.05);
+    h.run();
+    h
+}
+
+#[test]
+fn double_click_opens_the_repository_view_and_leaves_the_mark() {
+    let mut h = repo_view_app();
+    let space = card_space(&h);
+    h.event(egui::Event::PointerMoved(space));
+    // Two clicks, one frame apart: within the time of a double click.
+    for click in 0..2 {
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: space,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        h.step();
+        let marked = h.state().marked.contains(&PathBuf::from("/repo"));
+        assert_eq!(marked, click == 1, "each click flips the mark");
+    }
+    h.run();
+    assert_eq!(
+        h.state().repo_view.as_ref().unwrap().repo,
+        PathBuf::from("/repo")
+    );
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.run();
+    h.get_by_label("Changed files (2)");
+    h.get_by_label("Commits");
+    h.get_by_label("Branches");
+    h.get_by_label("side-branch");
+    h.get_by_label("Pick a file or a commit to see its diff.");
+
+    // A file, then a commit: each shows its diff.
+    h.get_by_label("staged  src/main.rs").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.run();
+    h.get_by_label("+++ b/src/main.rs");
+    h.get_by_label("+new");
+    h.get_by_label("aaaabbb  Fix the thing").click();
+    h.run();
+    settle(&mut h, |a| {
+        let view = a.repo_view.as_ref().unwrap();
+        matches!(&view.diff, Some(Ok(diff)) if diff.contains("commit aaaabbbb"))
+    });
+    h.run();
+    h.get_by_label("commit aaaabbbb");
+
+    // The board is out of reach while the view is open; Esc returns to it.
+    key(&mut h, Key::Escape);
+    assert!(h.state().repo_view.is_none());
+    assert!(h.query_by_label("Commits").is_none());
+}
+
+#[test]
+fn open_in_the_card_menu_and_the_buttons_of_the_view() {
+    let mut h = repo_view_app();
+    h.get_by_label("repo").click_secondary();
+    h.run();
+    h.get_by_label("Open").click();
+    h.run();
+    settle(&mut h, |a| {
+        a.repo_view.as_ref().is_some_and(|v| v.details.is_some())
+    });
+    h.run();
+    h.get_by_label("untracked  notes.txt");
+    h.get_by_label("Refresh").click();
+    h.run();
+    assert!(h.state().repo_view.is_some());
+    h.get_by_label("Close").click();
+    h.run();
+    assert!(h.state().repo_view.is_none());
+}
+
+#[test]
+fn repository_view_shows_why_a_repository_cannot_be_read() {
+    let mut h = harness(marked_app(Arc::default(), &[]));
+    h.run();
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.run();
+    h.get_by_label("not a git repository");
 }
 
 #[test]
@@ -1182,6 +1401,58 @@ fn kawaii_glyphs_and_font_are_there() {
 }
 
 #[test]
+fn kawaii_music_setting_starts_and_stops_the_music() {
+    let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
+    let mut app = crate::ui::app::tests::app_on(Arc::default(), desktop.clone(), None);
+    app.settings_open = true;
+    app.config.theme = crate::domain::config::Theme::Kawaii;
+    let mut h = harness(app);
+    h.step();
+    h.step();
+    assert!(!h.state().music_plays(), "off until switched on");
+    h.get_by_label("Kawaii music").click();
+    h.step();
+    h.step();
+    assert!(h.state().config.music && h.state().music_plays());
+    h.get_by_label("Kawaii music").click();
+    h.step();
+    h.step();
+    assert!(!h.state().music_plays());
+}
+
+#[test]
+fn sound_settings_switch_play_and_reset() {
+    let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
+    let mut app = crate::ui::app::tests::app_on(Arc::default(), desktop.clone(), None);
+    app.settings_open = true;
+    app.config.boop_file = Some("/sounds/My Boop.ogg".into());
+    let mut h = harness(app);
+    h.run();
+    assert!(!h.state().config.sounds);
+    h.get_by_label("Sounds").click();
+    h.run();
+    assert!(h.state().config.sounds);
+    h.get_by_label("built-in tone");
+    h.get_by_label("My Boop.ogg");
+
+    // Play works whether sounds are on or off: it is for trying them out.
+    let plays: Vec<_> = h.get_all_by_label("Play").collect();
+    assert_eq!(plays.len(), 2);
+    plays[0].click();
+    h.run();
+    let played = desktop.played.lock().unwrap().len();
+    assert_eq!(played, 1);
+
+    // "Default" takes the user's file away; the beep has none to take.
+    let defaults: Vec<_> = h.get_all_by_label("Default").collect();
+    defaults[1].click();
+    h.run();
+    assert_eq!(h.state().config.boop_file, None);
+    assert_eq!(h.get_all_by_label("built-in tone").count(), 2);
+    assert_eq!(h.get_all_by_label("Choose file\u{2026}").count(), 2);
+}
+
+#[test]
 fn settings_button_editor() {
     let mut app = app_with(Arc::default(), None);
     app.settings_open = true;
@@ -1225,16 +1496,7 @@ fn glyphs_used_in_labels_exist_in_default_fonts() {
     let mut h = harness(app_with(Arc::default(), None));
     h.run();
     let font = egui::FontId::proportional(14.0);
-    for c in [
-        '×',
-        '+',
-        '~',
-        '?',
-        '!',
-        '@',
-        '…',
-        crate::ui::view::OUTPUT_MARK,
-    ] {
+    for c in ['+', '~', '?', '!', '@', '…', crate::ui::view::OUTPUT_MARK] {
         assert!(
             h.ctx.fonts_mut(|f| f.has_glyph(&font, c)),
             "missing glyph {c}"

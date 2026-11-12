@@ -38,9 +38,9 @@ Each card shows:
   example); a click on it copies everything git printed and takes the line
   off the card until a fetch fails again
 
-Cards are sorted by folder name. The **Sort** button in the toolbar switches
-to the next sort key with every click: name, path, branch, tag, dirty first,
-behind first. Cards without a branch or tag come last, equal cards are in name
+Cards are sorted by folder name. The **Sort** button in the toolbar opens the
+list of sort keys: name, path, branch, tag, dirty first, behind first, ahead
+first. Cards without a branch or tag come last, equal cards are in name
 order, and a card moves as soon as its status changes. The status of every card refreshes every
 10 seconds; a background `git fetch --all --prune` runs every minute so the
 unpulled count stays current. A repository with a running command is skipped by
@@ -48,8 +48,8 @@ both until the command is done, and is refreshed right after it.
 
 The filter field at the right end of the toolbar shows only the cards whose
 folder name contains the typed text (case ignored), and how many those are. A
-hidden card keeps its mark, but nothing touches it: commands, the toolbar's
-mark buttons and **Remove marked** act on the shown cards only.
+card the filter hides keeps its mark, but nothing touches it: commands, the
+toolbar's mark buttons and the right-click menu act on the shown cards only.
 
 A refresh of a repository whose checked-out commit did not move is one
 `git status`. Branches, tags and the commit line are read again after a fetch,
@@ -58,6 +58,18 @@ minute; so a branch or tag made in a terminal can take up to a minute to show.
 
 A card whose folder is gone or is no longer a repository stays on the board,
 greyed out, and comes back by itself when the folder returns.
+
+## Looking into a repository
+
+A double click on a card, or **Open** in its right-click menu, opens a
+read-only view of that repository over the board: its changed files (staged,
+modified, untracked), the last 100 commits of the current branch, and its
+branches. A click on a file shows its diff, a click on a commit its message
+and diff; a diff of more than 5000 lines is cut. The view reads the repository
+again when its card notices a change and on **Refresh**; **Close** or Esc
+returns to the board. The double click also marks and unmarks the card, so its
+mark ends as it was. A double click on a text that copies (name, branch, tag,
+commit) copies and does not open.
 
 ## Favorites
 
@@ -74,8 +86,9 @@ emoji. A repository can be in several.
 - A right click on a favorite's button edits its name, color and emoji, adds
   or removes the marked cards, or deletes it. Deleting a favorite leaves its
   repositories on the board.
-- A card shows a stripe in the color of each of its favorites at its left
-  edge, and their emojis in front of its name.
+- A card shows a chip for each of its favorites under its name, in the
+  favorite's color with its emoji and name. A click on a chip does what the
+  favorite's toolbar button does.
 
 ## Adding and removing repositories
 
@@ -83,8 +96,15 @@ emoji. A repository can be in several.
   folder is scanned for repositories up to two levels deep (configurable),
   without descending into repositories it finds. Repositories already on the
   board are skipped.
-- **×** on a card, or **Remove marked** in the toolbar, takes cards off the
-  board. Nothing on disk is touched.
+- A right click on a card takes it off the board, in two ways; on a marked
+  card, both act on all marked cards. Nothing on disk is touched.
+  - **Remove from board**: the card is gone, and its favorites forget it.
+    Adding its folder again brings it back.
+  - **Hide**: the card is gone, but multigit remembers the repository: a
+    later scan of the folder above it leaves it out, it keeps its favorites,
+    and nothing runs on it. **Settings** lists the hidden repositories with
+    **Unhide** and **Unhide all**; picking a hidden repository itself with
+    **+** unhides it too.
 
 ## Running git
 
@@ -108,7 +128,8 @@ emoji. A repository can be in several.
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
 - **Marking**: a click on a card marks it, a second click unmarks it; marked
   cards get a coloured border. The toolbar marks all, none, dirty (changes or
-  an operation in progress) or behind (unpulled commits). The toolbar repeats the card buttons
+  an operation in progress), behind (unpulled commits) or ahead (unpushed
+  commits). The toolbar repeats the card buttons
   for all marked repositories.
 - **Copying**: a click on a card's folder name, branch name (or the sha of a
   detached HEAD) or tag copies it to the clipboard instead of marking the
@@ -174,6 +195,10 @@ bring those along, but a folder that arrives with its `.git` directory does (an
 unpacked archive, a USB stick, a shared folder), and **+** on a folder such as
 `~/Downloads` adds every repository below it.
 
+The repository view follows the same rule: its diffs are read without the
+repository's external diff program and textconv filters, and without
+signature checks.
+
 For what it runs by itself, multigit switches off `core.fsmonitor`, hooks,
 `ext::` remotes, the signature check of `log.showSignature` (it runs
 `gpg.program`), and `remote.<name>.uploadpack` for remotes that are not
@@ -197,12 +222,34 @@ Light, Dark or Kawaii), Tab's
 single-match behaviour, and the card buttons (add, remove, reorder, or pick a
 preset).
 
+With **Sounds** switched on (it is off at first, in every theme), multigit
+beeps when a remote commit appears on a card (its unpulled count goes up) and
+boops when a local one does (its unpushed count goes up). However many cards
+have news, each sound plays once and then keeps quiet for five seconds; what
+your own command in multigit changed makes no sound. Settings has a volume,
+and per sound a file of your own (WAV, OGG, MP3 or FLAC, its first ten
+seconds), **Default** to go back to the built-in tone, and **Play** to hear
+it. multigit plays through the system's player program: `afplay` on macOS,
+and on Linux the first of `pw-play`, `paplay`, `aplay` and `ffplay` that is
+installed.
+
 The **Kawaii** theme is round and pastel, in the Fredoka font, with a rainbow
 drifting behind the cards, hearts and stars floating up, cards that bob, grow
 under the pointer and swing when marked, and a burst of stars on a copy. It
 moves while the window has focus. Without focus the picture stands still and
 the app draws no more often than in the other themes, except for five seconds
 after something changed on a card.
+
+With **Kawaii music** switched on (off at first), the Kawaii theme plays lofi
+beats that multigit makes itself: ten short sequences in random order, joined
+by short breaks (three notes, a drum fill, a hummed "ooh" or "aah"). A
+sequence is slow drums, a soft bass and a melody on a guitar-like or
+piano-like sound that states a four-note theme once and then varies it; under
+it a flute plays the same theme eight times slower, forwards or backwards, or
+a pad holds its chord. No sound
+files and no network are involved. It plays whenever the app is open in that
+theme, focused or not, through the same player program as the sounds, and has
+its own volume; a change of volume counts from the next passage on.
 
 **About multigit** in the Settings window shows the version and opens the
 source code, the issue tracker, a mail to the developer, the donation page and
@@ -267,7 +314,7 @@ To build the bundle yourself:
 
 ```sh
 cargo build --release
-packaging/macos/bundle.sh target/release/multigit 0.2.0 .
+packaging/macos/bundle.sh target/release/multigit 0.3.0 .
 ```
 
 ### From source

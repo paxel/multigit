@@ -1,11 +1,13 @@
 //! Starts other programs of the desktop: the default program for a file.
 
 use crate::application::desktop::Desktop;
+use crate::domain::audio::player_commands;
 use crate::domain::command::terminal_commands;
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The folder for files this process hands to other programs; removed when
 /// the app exits.
@@ -15,7 +17,7 @@ pub fn scratch_dir() -> PathBuf {
 
 /// Write `text` to `name` in the scratch folder `dir`, which is made for the
 /// user alone: command output can hold secrets.
-pub fn write_scratch_file(dir: &Path, name: &str, text: &str) -> io::Result<PathBuf> {
+pub fn write_scratch_file(dir: &Path, name: &str, text: impl AsRef<[u8]>) -> io::Result<PathBuf> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -54,8 +56,9 @@ pub fn spawn_detached(program: &OsStr, args: &[&OsStr], dir: Option<&Path>) -> i
     Ok(())
 }
 
-/// Start the first of `commands` whose program exists, in `dir`.
-pub fn spawn_first(commands: &[Vec<String>], dir: &Path) -> io::Result<()> {
+/// Start the first of `commands` whose program exists, in `dir`; `none`
+/// says what to do when there is none.
+pub fn spawn_first(commands: &[Vec<String>], dir: &Path, none: &str) -> io::Result<()> {
     for command in commands {
         let Some((program, args)) = command.split_first() else {
             continue;
@@ -66,11 +69,53 @@ pub fn spawn_first(commands: &[Vec<String>], dir: &Path) -> io::Result<()> {
             result => return result,
         }
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "no terminal found; set the terminal command in Settings",
-    ))
+    Err(io::Error::new(io::ErrorKind::NotFound, none))
 }
+
+/// Run the first of `commands` that works and wait for it; when `stop` gets
+/// set meanwhile, end the program and return. A program that is missing or
+/// ends with a failure (a player without a sound server) does not work: the
+/// next one is tried, and `none` is the error when none is left.
+pub fn run_until(commands: &[Vec<String>], stop: &AtomicBool, none: &str) -> io::Result<()> {
+    let mut failed = None;
+    for command in commands {
+        let Some((program, args)) = command.split_first() else {
+            continue;
+        };
+        let spawned = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        let mut child = match spawned {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            other => other?,
+        };
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if stop.load(Ordering::SeqCst) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        };
+        if status.success() {
+            return Ok(());
+        }
+        failed = Some(format!("{program} failed ({status})"));
+    }
+    match failed {
+        Some(failed) => Err(io::Error::other(failed)),
+        None => Err(io::Error::new(io::ErrorKind::NotFound, none)),
+    }
+}
+
+const NO_TERMINAL: &str = "no terminal found; set the terminal command in Settings";
+const NO_PLAYER: &str = "no audio player found (pw-play, paplay, aplay or ffplay)";
 
 /// The real desktop.
 #[derive(Debug, Default, Clone, Copy)]
@@ -79,6 +124,11 @@ pub struct SystemDesktop;
 impl Desktop for SystemDesktop {
     fn open_file(&self, file: &Path) -> io::Result<()> {
         spawn_detached(OsStr::new(opener()), &[file.as_os_str()], None)
+    }
+
+    fn play_wait(&self, file: &Path, stop: &AtomicBool) -> io::Result<()> {
+        let commands = player_commands(cfg!(target_os = "macos"), &file.to_string_lossy());
+        run_until(&commands, stop, NO_PLAYER)
     }
 
     fn open_url(&self, url: &str) -> io::Result<()> {
@@ -94,7 +144,13 @@ impl Desktop for SystemDesktop {
             &dir.to_string_lossy(),
         )
         .map_err(io::Error::other)?;
-        spawn_first(&commands, dir)
+        spawn_first(&commands, dir, NO_TERMINAL)
+    }
+
+    fn play(&self, file: &Path) -> io::Result<()> {
+        let commands = player_commands(cfg!(target_os = "macos"), &file.to_string_lossy());
+        let dir = file.parent().unwrap_or(Path::new("/"));
+        spawn_first(&commands, dir, NO_PLAYER)
     }
 }
 
@@ -152,7 +208,7 @@ mod tests {
             vec!["sh".to_owned(), "-c".to_owned(), "touch started".to_owned()],
             vec!["sh".to_owned(), "-c".to_owned(), "touch second".to_owned()],
         ];
-        spawn_first(&commands, dir.path()).unwrap();
+        spawn_first(&commands, dir.path(), "none").unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !dir.path().join("started").exists() {
             assert!(Instant::now() < deadline, "the program never ran");
@@ -160,11 +216,51 @@ mod tests {
         }
         assert!(!dir.path().join("second").exists());
 
-        let none = spawn_first(&commands[..2], dir.path()).unwrap_err();
+        let none = spawn_first(&commands[..2], dir.path(), NO_TERMINAL).unwrap_err();
         assert_eq!(none.kind(), io::ErrorKind::NotFound);
         assert!(none.to_string().contains("Settings"), "{none}");
+        assert!(NO_PLAYER.contains("pw-play"));
         // A configured command that cannot be parsed never starts anything.
         assert!(SystemDesktop.open_terminal(dir.path(), "term 'x").is_err());
+    }
+
+    #[test]
+    fn a_program_is_waited_for_and_ended_when_stopped() {
+        let sh = |script: &str| vec!["sh".to_owned(), "-c".to_owned(), script.to_owned()];
+        let missing = vec!["/nonexistent/multigit-test-player".to_owned()];
+        let stop = AtomicBool::new(false);
+        // It waits for the program to end by itself.
+        let started = Instant::now();
+        run_until(&[vec![], missing.clone(), sh("sleep 0.3")], &stop, "none").unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(250),
+            "did not wait"
+        );
+
+        // Stopped, it ends a program that would run for a minute.
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(100));
+                stop.store(true, Ordering::SeqCst);
+            });
+            run_until(&[sh("sleep 60")], &stop, "none").unwrap();
+        });
+        assert!(started.elapsed() < Duration::from_secs(20), "not stopped");
+
+        let none = run_until(std::slice::from_ref(&missing), &stop, NO_PLAYER).unwrap_err();
+        assert_eq!(none.kind(), io::ErrorKind::NotFound);
+
+        // A player that starts but fails is passed over for one that works,
+        // and is an error when no other is left: the music must not start
+        // it again and again.
+        let stop = AtomicBool::new(false);
+        let marker = tempfile::tempdir().unwrap();
+        let touch = format!("touch '{}'", marker.path().join("played").display());
+        run_until(&[sh("exit 1"), sh(&touch)], &stop, "none").unwrap();
+        assert!(marker.path().join("played").exists());
+        let broken = run_until(&[missing, sh("exit 3")], &stop, "none").unwrap_err();
+        assert!(broken.to_string().starts_with("sh failed"), "{broken}");
     }
 
     #[test]

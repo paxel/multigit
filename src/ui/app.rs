@@ -1,13 +1,16 @@
 //! Board state and the actions the UI triggers on it (no drawing here).
 
 use crate::application::desktop::Desktop;
-use crate::application::engine::{Backend, Engine, Event, Notify};
+use crate::application::engine::{Backend, Engine, Event, Notify, ProbeCause};
+use crate::application::music::Music;
 use crate::application::schedule::{Due, Schedule};
-use crate::domain::board::{SortKey, Sorted, compare, matches_filter};
+use crate::domain::audio::{self, SAMPLE_RATE, Sound};
+use crate::domain::board::{SortKey, Sorted, compare, is_ahead, matches_filter};
 use crate::domain::command::{Job, display, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::{Config, Theme};
 use crate::domain::destructive::is_destructive;
+use crate::domain::details::{Details, DiffTarget};
 use crate::domain::favorites::{FavoriteDraft, active_after_delete, forget};
 use crate::domain::history::History;
 use crate::domain::kawaii;
@@ -15,6 +18,7 @@ use crate::domain::naming::{board_order, title};
 use crate::domain::output::OutputLog;
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use crate::domain::status::{RepoState, Upstream};
+use crate::infrastructure::audio::decode;
 use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
 use crate::infrastructure::scan::scan;
 use crate::infrastructure::store::{self, Paths};
@@ -69,6 +73,11 @@ impl Card {
             .is_some_and(|s| !s.status.counts.is_clean() || s.state != RepoState::Normal)
     }
 
+    /// Has unpushed commits.
+    pub fn is_ahead(&self) -> bool {
+        self.snapshot().is_some_and(is_ahead)
+    }
+
     /// Has unpulled commits.
     pub fn is_behind(&self) -> bool {
         self.snapshot().is_some_and(
@@ -85,6 +94,18 @@ pub struct PendingRun {
     pub command: String,
     pub job: Job,
     pub repos: Vec<PathBuf>,
+}
+
+/// The open read-only view of one repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoView {
+    pub repo: PathBuf,
+    /// The lists; `None` until they were read the first time.
+    pub details: Option<Result<Details, String>>,
+    /// The file or commit whose diff is shown.
+    pub selected: Option<DiffTarget>,
+    /// The diff of `selected`; `None` while it is read.
+    pub diff: Option<Result<String, String>>,
 }
 
 /// What the settings window shows.
@@ -140,6 +161,7 @@ pub struct App {
     /// the config; not saved.
     pub active_favorite: Option<usize>,
     pub favorite_dialog: Option<FavoriteDialog>,
+    pub repo_view: Option<RepoView>,
     engine: Engine,
     desktop: Arc<dyn Desktop>,
     /// Where files for other programs are written; removed on exit.
@@ -177,6 +199,20 @@ pub struct App {
     notify: Notify,
     /// Folder dialog running on its own thread; yields the picked folder.
     picker: Option<Receiver<Option<PathBuf>>>,
+    /// File dialog for a sound, running on its own thread.
+    sound_picker: Option<(Sound, Receiver<Option<PathBuf>>)>,
+    /// When each sound last played.
+    sound_played: HashMap<Sound, Instant>,
+    /// For each sound, the file and volume its WAV in the scratch folder
+    /// was made from.
+    sound_made: HashMap<Sound, (Option<PathBuf>, u8)>,
+    /// The missing player was reported already.
+    player_missing_said: bool,
+    /// The Kawaii theme's music while it plays.
+    music: Option<Music>,
+    /// The music ended with an error; it is not started again until it was
+    /// switched off once.
+    music_failed: bool,
 }
 
 impl App {
@@ -208,6 +244,7 @@ impl App {
             sort: SortKey::default(),
             active_favorite: None,
             favorite_dialog: None,
+            repo_view: None,
             engine,
             desktop,
             scratch: scratch_dir(),
@@ -233,6 +270,12 @@ impl App {
             icon: None,
             notify,
             picker: None,
+            sound_picker: None,
+            sound_played: HashMap::new(),
+            sound_made: HashMap::new(),
+            player_missing_said: false,
+            music: None,
+            music_failed: false,
         }
     }
 
@@ -270,6 +313,132 @@ impl App {
         }
     }
 
+    /// Run a (blocking) file dialog for the user's own `sound` on its own
+    /// thread. Ignored while one is open.
+    pub fn open_sound_picker<F>(&mut self, sound: Sound, pick: F)
+    where
+        F: FnOnce() -> Option<PathBuf> + Send + 'static,
+    {
+        if self.sound_picker.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notify = self.notify.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(pick());
+            notify();
+        });
+        self.sound_picker = Some((sound, rx));
+    }
+
+    /// Take the file picked in the sound dialog, once it closed, as that
+    /// sound's file.
+    pub fn take_picked_sound(&mut self) {
+        let Some((sound, rx)) = &self.sound_picker else {
+            return;
+        };
+        let sound = *sound;
+        match rx.try_recv() {
+            Ok(file) => {
+                self.sound_picker = None;
+                if file.is_some() {
+                    self.config.set_sound_file(sound, file);
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.sound_picker = None,
+        }
+    }
+
+    pub fn music_plays(&self) -> bool {
+        self.music.is_some()
+    }
+
+    /// Start, stop or tune the music so it fits the settings: it plays in
+    /// the Kawaii theme with music switched on, and nowhere else.
+    pub fn sync_music(&mut self) {
+        if !(self.is_kawaii() && self.config.music) {
+            self.music = None;
+            self.music_failed = false;
+            return;
+        }
+        match &self.music {
+            Some(music) => {
+                music.set_volume(self.config.music_volume);
+                if let Some(error) = music.take_error() {
+                    self.music = None;
+                    self.music_failed = true;
+                    self.toast(format!("Cannot play music: {error}"));
+                }
+            }
+            None if !self.music_failed => {
+                let dir = self.scratch.clone();
+                let write = Arc::new(move |wav: &[u8]| write_scratch_file(&dir, "music.wav", wav));
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |d| d.as_nanos() as u64);
+                let volume = self.config.music_volume;
+                self.music = Some(Music::start(self.desktop.clone(), write, volume, seed));
+            }
+            None => {}
+        }
+    }
+
+    /// The WAV of `sound` in the scratch folder, made again when the
+    /// user's file or the volume changed. A file that cannot be read is
+    /// said once and the app's own tone is used.
+    fn sound_wav(&mut self, sound: Sound) -> std::io::Result<PathBuf> {
+        let made_from = (
+            self.config.sound_file(sound).cloned(),
+            self.config.sound_volume,
+        );
+        let file = self.scratch.join(sound.file_name());
+        if self.sound_made.get(&sound) == Some(&made_from) && file.exists() {
+            return Ok(file);
+        }
+        let (samples, rate) = match made_from.0.as_deref().map(decode) {
+            Some(Ok(decoded)) => (decoded.samples, decoded.rate),
+            Some(Err(e)) => {
+                let name = made_from.0.as_deref().map(title).unwrap_or_default();
+                self.toast(format!("Cannot read {name}: {e}"));
+                (sound.default_samples(), SAMPLE_RATE)
+            }
+            None => (sound.default_samples(), SAMPLE_RATE),
+        };
+        let wav = audio::wav_bytes(&samples, rate, made_from.1);
+        let file = write_scratch_file(&self.scratch, sound.file_name(), wav)?;
+        self.sound_made.insert(sound, made_from);
+        Ok(file)
+    }
+
+    /// Play `sound` now (the play button in Settings, and news on a card).
+    pub fn play_sound(&mut self, sound: Sound) {
+        let played = self
+            .sound_wav(sound)
+            .and_then(|file| self.desktop.play(&file));
+        if let Err(e) = played
+            && !std::mem::replace(&mut self.player_missing_said, true)
+        {
+            self.toast(format!("Cannot play sounds: {e}"));
+        }
+    }
+
+    /// News on a card at `now`: play each of `sounds` unless it played a
+    /// moment ago. Nothing while sounds are switched off.
+    pub fn sound_news(&mut self, sounds: &[Sound], now: Instant) {
+        if !self.config.sounds {
+            return;
+        }
+        for &sound in sounds {
+            let last = self.sound_played.get(&sound);
+            let since = last.map(|last| now.saturating_duration_since(*last).as_secs_f64());
+            if audio::may_play(since) {
+                self.sound_played.insert(sound, now);
+                self.play_sound(sound);
+            }
+        }
+    }
+
     pub fn toast(&mut self, text: impl Into<String>) {
         self.toasts.push(Toast {
             text: text.into(),
@@ -288,28 +457,131 @@ impl App {
             self.toast(format!("No git repository found in {}", folder.display()));
             return;
         }
-        let mut duplicates = 0;
+        // Picking a hidden repository itself, not a folder above it, asks
+        // for it by name: that unhides it.
+        let picked_itself = found.len() == 1 && folder.join(".git").exists();
+        let (mut duplicates, mut hidden) = (0, 0);
         for path in found {
             if self.cards.iter().any(|c| c.path == path) {
                 duplicates += 1;
-                continue;
+            } else if self.config.hidden.contains(&path) && !picked_itself {
+                hidden += 1;
+            } else {
+                self.config.hidden.retain(|h| *h != path);
+                self.put_on_board(path);
             }
-            self.engine.poll(&path);
-            self.cards.push(Card::new(path));
         }
-        self.cards.sort_by(|a, b| board_order(&a.path, &b.path));
         self.sync_repos_to_config();
         if duplicates > 0 {
             self.toast(format!("{duplicates} already on board"));
         }
+        if hidden > 0 {
+            self.toast(format!("{hidden} hidden, left out (Settings unhides)"));
+        }
     }
 
-    /// ×: take a card off the board (nothing on disk changes).
-    pub fn remove(&mut self, path: &Path) {
-        self.cards.retain(|c| c.path != path);
-        self.marked.remove(path);
-        forget(&mut self.config.favorites, &[path.to_path_buf()]);
+    /// A new card for `path`, in board order, probed at once.
+    fn put_on_board(&mut self, path: PathBuf) {
+        self.engine.poll(&path);
+        self.cards.push(Card::new(path));
+        self.cards.sort_by(|a, b| board_order(&a.path, &b.path));
+    }
+
+    /// Take the cards of `paths` off the board for good: nothing on disk
+    /// changes, and favorites forget them.
+    pub fn remove_cards(&mut self, paths: &[PathBuf]) {
+        self.cards.retain(|c| !paths.contains(&c.path));
+        self.marked.retain(|p| !paths.contains(p));
+        forget(&mut self.config.favorites, paths);
         self.sync_repos_to_config();
+    }
+
+    /// Take the cards of `paths` off the board but remember them: a scan of
+    /// their parent folder leaves them out, nothing runs on them, and they
+    /// keep their favorites.
+    pub fn hide_cards(&mut self, paths: &[PathBuf]) {
+        self.cards.retain(|c| !paths.contains(&c.path));
+        self.marked.retain(|p| !paths.contains(p));
+        for path in paths {
+            if !self.config.hidden.contains(path) {
+                self.config.hidden.push(path.clone());
+            }
+        }
+        self.config.hidden.sort();
+        self.sync_repos_to_config();
+    }
+
+    /// Put a hidden repository back on the board.
+    pub fn unhide(&mut self, path: &Path) {
+        if !self.config.hidden.iter().any(|h| h == path) {
+            return;
+        }
+        self.config.hidden.retain(|h| h != path);
+        if !self.cards.iter().any(|c| c.path == path) {
+            self.put_on_board(path.to_path_buf());
+        }
+        self.sync_repos_to_config();
+    }
+
+    pub fn unhide_all(&mut self) {
+        for path in std::mem::take(&mut self.config.hidden) {
+            if !self.cards.iter().any(|c| c.path == path) {
+                self.put_on_board(path);
+            }
+        }
+        self.sync_repos_to_config();
+    }
+
+    /// Open the read-only view of `repo` and read its lists.
+    pub fn open_repo_view(&mut self, repo: &Path) {
+        self.repo_view = Some(RepoView {
+            repo: repo.to_path_buf(),
+            details: None,
+            selected: None,
+            diff: None,
+        });
+        self.engine.load_details(repo.to_path_buf());
+    }
+
+    pub fn close_repo_view(&mut self) {
+        self.repo_view = None;
+    }
+
+    /// Read the lists of the open view again.
+    pub fn refresh_repo_view(&mut self) {
+        if let Some(view) = &self.repo_view {
+            self.engine.load_details(view.repo.clone());
+        }
+    }
+
+    /// A click on a file or commit in the view: show its diff.
+    pub fn select_in_repo_view(&mut self, target: DiffTarget) {
+        if let Some(view) = &mut self.repo_view {
+            view.selected = Some(target.clone());
+            view.diff = None;
+            self.engine.load_diff(view.repo.clone(), target);
+        }
+    }
+
+    /// The lists of the open view were read. A selection the lists no
+    /// longer hold goes; one they still hold gets its diff read again, and
+    /// the old diff stays on screen until the new one is there.
+    fn repo_view_loaded(&mut self, repo: &Path, result: Result<Details, String>) {
+        let Some(view) = self.repo_view.as_mut().filter(|v| v.repo == repo) else {
+            return;
+        };
+        let held = match (&result, &view.selected) {
+            (Ok(details), Some(target)) => details.holds(target),
+            _ => false,
+        };
+        if !held {
+            view.selected = None;
+            view.diff = None;
+        }
+        view.details = Some(result);
+        if let Some(target) = view.selected.clone() {
+            self.engine.load_diff(repo.to_path_buf(), target);
+        }
     }
 
     pub fn is_kawaii(&self) -> bool {
@@ -465,17 +737,6 @@ impl App {
         self.shown_cards().iter().map(|c| c.path.clone()).collect()
     }
 
-    pub fn remove_marked(&mut self) {
-        let gone: BTreeSet<PathBuf> = self.marked_repos().into_iter().collect();
-        self.cards.retain(|c| !gone.contains(&c.path));
-        self.marked.retain(|p| !gone.contains(p));
-        forget(
-            &mut self.config.favorites,
-            &gone.iter().cloned().collect::<Vec<_>>(),
-        );
-        self.sync_repos_to_config();
-    }
-
     /// A click on a card's fetch error: its whole output for the clipboard;
     /// the error leaves the card until a fetch fails again.
     pub fn take_fetch_error(&mut self, path: &Path) -> Option<String> {
@@ -506,6 +767,9 @@ impl App {
     }
     pub fn mark_behind(&mut self) {
         self.mark_where(Card::is_behind);
+    }
+    pub fn mark_ahead(&mut self) {
+        self.mark_where(Card::is_ahead);
     }
 
     /// The marked repositories the board shows, in board order.
@@ -667,16 +931,32 @@ impl App {
 
     fn handle_event(&mut self, event: Event) {
         match event {
-            Event::Probed { repo, result } => {
+            Event::Probed {
+                repo,
+                result,
+                cause,
+            } => {
                 let mut changed = false;
+                let mut sounds = Vec::new();
                 if let Some(card) = self.card_mut(&repo) {
                     let new = Some(*result);
                     // The first probe of a card is no change.
                     changed = card.probe.is_some() && card.probe != new;
+                    // What the user's own command did is no news to them.
+                    if cause != ProbeCause::Command
+                        && let (Some(Ok(before)), Some(Ok(after))) = (&card.probe, &new)
+                    {
+                        sounds = audio::news(before, after);
+                    }
                     card.probe = new;
                 }
+                self.sound_news(&sounds, Instant::now());
                 if changed {
                     self.wake_kawaii();
+                    // The open view of that repository follows its card.
+                    if self.repo_view.as_ref().is_some_and(|v| v.repo == repo) {
+                        self.refresh_repo_view();
+                    }
                 }
             }
             Event::Fetched { repo, error } => {
@@ -703,6 +983,20 @@ impl App {
             }
             Event::Options { command, options } => {
                 self.vocab.options.insert(command, options);
+            }
+            Event::Details { repo, result } => self.repo_view_loaded(&repo, result),
+            Event::Diff {
+                repo,
+                target,
+                result,
+            } => {
+                // A diff that is no longer asked for is dropped.
+                if let Some(view) = &mut self.repo_view
+                    && view.repo == repo
+                    && view.selected.as_ref() == Some(&target)
+                {
+                    view.diff = Some(result);
+                }
             }
         }
     }
@@ -772,6 +1066,7 @@ impl App {
             self.engine.set_concurrency(concurrency);
         }
         self.persist();
+        self.sync_music();
         self.toasts.retain(|t| t.until > now);
         self.schedule.until_next(now, fetch_interval)
     }
@@ -797,8 +1092,10 @@ impl App {
 }
 
 impl Drop for App {
-    /// Take the files written for other programs away again.
+    /// End the music's player, then take the files written for other
+    /// programs away again.
     fn drop(&mut self) {
+        self.music = None;
         let _ = std::fs::remove_dir_all(&self.scratch);
     }
 }
@@ -817,6 +1114,10 @@ pub(crate) mod tests {
     pub struct FakeBackend {
         pub runs: Mutex<Vec<(PathBuf, Vec<String>)>>,
         pub shell_runs: Mutex<Vec<(PathBuf, String)>>,
+        /// What the repository view gets as lists; an error while `None`.
+        pub details: Mutex<Option<Details>>,
+        /// How often the lists were read.
+        pub details_read: Mutex<usize>,
         pub snapshot: Mutex<Option<Snapshot>>,
     }
 
@@ -884,6 +1185,17 @@ pub(crate) mod tests {
         fn options(&self, _dir: &Path, _command: &str) -> Vec<String> {
             vec!["--rebase".into()]
         }
+        fn details(&self, _dir: &Path) -> Result<Details, String> {
+            *self.details_read.lock().unwrap() += 1;
+            let details = self.details.lock().unwrap().clone();
+            details.ok_or_else(|| "not a git repository".to_owned())
+        }
+        fn diff(&self, _dir: &Path, target: &DiffTarget) -> Result<String, String> {
+            Ok(match target {
+                DiffTarget::File(file) => format!("--- a/{0}\n+++ b/{0}\n-old\n+new", file.path),
+                DiffTarget::Commit(hash) => format!("commit {hash}\n\n    subject\n"),
+            })
+        }
     }
 
     /// Desktop that opens nothing and records what it was asked to open.
@@ -891,6 +1203,10 @@ pub(crate) mod tests {
     pub struct FakeDesktop {
         pub files: Mutex<Vec<PathBuf>>,
         pub urls: Mutex<Vec<String>>,
+        /// The size of every music passage handed to the player.
+        pub music: Mutex<Vec<usize>>,
+        /// Every WAV handed to the player, as it was at that moment.
+        pub played: Mutex<Vec<(PathBuf, Vec<u8>)>>,
         /// Folder and configured command of every terminal asked for.
         pub terminals: Mutex<Vec<(PathBuf, String)>>,
         pub fail: bool,
@@ -902,6 +1218,25 @@ pub(crate) mod tests {
                 return Err(io::Error::other("no opener"));
             }
             self.files.lock().unwrap().push(file.to_path_buf());
+            Ok(())
+        }
+        fn play(&self, file: &Path) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::other("no audio player found"));
+            }
+            let wav = std::fs::read(file)?;
+            self.played.lock().unwrap().push((file.to_path_buf(), wav));
+            Ok(())
+        }
+        fn play_wait(&self, file: &Path, stop: &std::sync::atomic::AtomicBool) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::other("no audio player found"));
+            }
+            self.music.lock().unwrap().push(std::fs::read(file)?.len());
+            // The passage "plays" until the music is stopped.
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
             Ok(())
         }
         fn open_url(&self, url: &str) -> io::Result<()> {
@@ -1024,20 +1359,84 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn remove_and_remove_marked() {
+    fn removed_cards_leave_the_board_and_their_marks() {
         let (dir, paths) = repo_dirs(&["a", "b", "c"]);
         let mut app = app_with(Arc::default(), None);
         app.add_folder(dir.path());
         app.marked.insert(paths[0].clone());
         app.marked.insert(paths[1].clone());
-        app.remove(&paths[0]);
+        app.remove_cards(&paths[..1]);
         assert_eq!(app.cards.len(), 2);
         assert!(!app.marked.contains(&paths[0]));
-        app.remove_marked();
+        let marked = app.marked_repos();
+        app.remove_cards(&marked);
         assert_eq!(app.config.repos, vec![paths[2].clone()]);
         assert!(app.marked.is_empty());
         // Files on disk are untouched.
         assert!(paths.iter().all(|p| p.exists()));
+        // A removed repository comes back with its folder.
+        app.add_folder(dir.path());
+        assert_eq!(app.cards.len(), 3);
+    }
+
+    #[test]
+    fn hidden_repositories_stay_away_until_they_are_unhidden() {
+        let (dir, paths) = repo_dirs(&["a", "b", "c"]);
+        let backend = Arc::new(FakeBackend::default());
+        let mut app = app_with(backend.clone(), None);
+        app.add_folder(dir.path());
+        app.new_favorite(vec![paths[0].clone(), paths[1].clone()]);
+        app.favorite_dialog.as_mut().unwrap().draft.name = "f".into();
+        app.save_favorite();
+        app.marked.insert(paths[0].clone());
+
+        app.hide_cards(&paths[..2]);
+        app.hide_cards(&paths[..1]);
+        assert_eq!(app.config.hidden, paths[..2].to_vec(), "each once");
+        assert_eq!(app.config.repos, vec![paths[2].clone()]);
+        assert!(app.marked.is_empty());
+        assert_eq!(
+            app.config.favorites[0].repos.len(),
+            2,
+            "favorites keep them"
+        );
+
+        // The parent folder again: the hidden ones are left out, and said so.
+        app.toasts.clear();
+        app.add_folder(dir.path());
+        assert_eq!(app.cards.len(), 1);
+        let texts: Vec<_> = app.toasts.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "1 already on board",
+                "2 hidden, left out (Settings unhides)"
+            ]
+        );
+
+        // Nothing runs on a hidden repository: no card, so no poll or fetch.
+        let fetch_interval = Duration::from_secs(app.config.effective_fetch_interval_secs());
+        app.tick(Instant::now() + fetch_interval + Duration::from_secs(1));
+        settle(&mut app, |a| a.cards[0].probe.is_some());
+        assert!(backend.runs.lock().unwrap().iter().all(|r| r.0 == paths[2]));
+
+        // Picking a hidden repository itself brings it back.
+        app.add_folder(&paths[0]);
+        assert_eq!(app.config.hidden, vec![paths[1].clone()]);
+        assert_eq!(app.cards.len(), 2);
+
+        app.unhide(&paths[1]);
+        app.unhide(Path::new("/not/hidden"));
+        assert!(app.config.hidden.is_empty());
+        let on_board: Vec<_> = app.cards.iter().map(|c| c.path.clone()).collect();
+        assert_eq!(on_board, paths, "in board order");
+        assert_eq!(app.config.repos, paths);
+
+        app.hide_cards(&paths);
+        assert!(app.cards.is_empty());
+        app.unhide_all();
+        assert_eq!(app.config.repos, paths);
+        assert!(app.config.hidden.is_empty());
     }
 
     #[test]
@@ -1051,7 +1450,12 @@ pub(crate) mod tests {
             ahead: 0,
             behind: 2,
         };
+        let ahead = Upstream::Tracking {
+            ahead: 1,
+            behind: 0,
+        };
         for (name, snap) in [
+            ("ahead", snapshot(Counts::default(), ahead, &[])),
             ("clean", snapshot(Counts::default(), Upstream::None, &[])),
             ("dirty", snapshot(dirty, Upstream::None, &[])),
             ("behind", snapshot(Counts::default(), behind, &[])),
@@ -1064,8 +1468,10 @@ pub(crate) mod tests {
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/dirty")]);
         app.mark_behind();
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/behind")]);
+        app.mark_ahead();
+        assert_eq!(app.marked_repos(), vec![PathBuf::from("/ahead")]);
         app.mark_all();
-        assert_eq!(app.marked.len(), 3);
+        assert_eq!(app.marked.len(), 4);
         app.mark_none();
         assert!(app.marked.is_empty());
     }
@@ -1103,9 +1509,10 @@ pub(crate) mod tests {
         app.mark_all();
         assert_eq!(app.marked, etl.iter().cloned().collect());
 
-        // "Remove marked" leaves a marked hidden card on the board.
+        // Removing the marked cards leaves a marked card the filter hides.
         app.marked.insert("/x/web".into());
-        app.remove_marked();
+        let marked = app.marked_repos();
+        app.remove_cards(&marked);
         assert_eq!(app.config.repos, vec![PathBuf::from("/x/web")]);
         app.filter.clear();
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/x/web")]);
@@ -1246,14 +1653,13 @@ pub(crate) mod tests {
         );
 
         // A card that leaves the board leaves its favorites.
-        app.remove(Path::new("/x/etl-load"));
+        app.remove_cards(&[PathBuf::from("/x/etl-load")]);
         assert_eq!(
             app.config.favorites[0].repos,
             vec![PathBuf::from("/x/etl-store")]
         );
         assert!(app.config.favorites[1].repos.is_empty());
-        app.marked = BTreeSet::from([PathBuf::from("/x/etl-store")]);
-        app.remove_marked();
+        app.remove_cards(&[PathBuf::from("/x/etl-store")]);
         assert!(app.config.favorites[0].repos.is_empty());
 
         // Deleting keeps the active favorite the same one.
@@ -1324,6 +1730,7 @@ pub(crate) mod tests {
         let probed = |snap: &Snapshot| Event::Probed {
             repo: "/x/a".into(),
             result: Box::new(Ok(snap.clone())),
+            cause: ProbeCause::Poll,
         };
         // The first probe and an unchanged one wake nothing.
         app.handle_event(probed(&clean));
@@ -1362,6 +1769,302 @@ pub(crate) mod tests {
         assert!(!app.advance_kawaii(0.033, false));
         app.config.theme = Theme::Kawaii;
         assert!(!app.advance_kawaii(0.033, false));
+    }
+
+    #[test]
+    fn repository_view_loads_its_lists_follows_the_card_and_keeps_a_held_selection() {
+        use crate::domain::details::{ChangeKind, FileChange, parse_log};
+        let backend = Arc::new(FakeBackend::default());
+        let mut app = app_with(backend.clone(), None);
+        app.cards = vec![Card::new("/x/a".into()), Card::new("/x/b".into())];
+        let file = |path: &str| FileChange {
+            path: path.into(),
+            kind: ChangeKind::Modified,
+        };
+        let lists = |files: &[&str]| Details {
+            files: files.iter().map(|f| file(f)).collect(),
+            commits: parse_log("aaaa\taa\tAda\tnow\tone\n"),
+            branches: vec![],
+        };
+        let view = |app: &App| app.repo_view.clone().unwrap();
+        let read = || *backend.details_read.lock().unwrap();
+
+        // A repository that cannot be read shows the error.
+        app.open_repo_view(Path::new("/x/a"));
+        assert_eq!(view(&app).details, None);
+        settle(&mut app, |a| view(a).details.is_some());
+        assert_eq!(view(&app).details, Some(Err("not a git repository".into())));
+
+        *backend.details.lock().unwrap() = Some(lists(&["one.rs", "two.rs"]));
+        app.refresh_repo_view();
+        settle(&mut app, |a| matches!(view(a).details, Some(Ok(_))));
+
+        let target = DiffTarget::File(file("two.rs"));
+        app.select_in_repo_view(target.clone());
+        assert_eq!(view(&app).diff, None);
+        settle(&mut app, |a| view(a).diff.is_some());
+        assert!(view(&app).diff.unwrap().unwrap().contains("+++ b/two.rs"));
+        // A diff nobody asks for any more is dropped.
+        app.handle_event(Event::Diff {
+            repo: "/x/a".into(),
+            target: DiffTarget::Commit("aaaa".into()),
+            result: Ok("stale".into()),
+        });
+        app.handle_event(Event::Diff {
+            repo: "/x/b".into(),
+            target: target.clone(),
+            result: Ok("other repository".into()),
+        });
+        assert!(view(&app).diff.unwrap().unwrap().contains("two.rs"));
+
+        // The card of the open repository changes: the lists are read again
+        // and the selection, still in them, stays with its diff.
+        let probed = |repo: &str, modified| Event::Probed {
+            repo: repo.into(),
+            result: Box::new(Ok(snapshot(
+                Counts {
+                    modified,
+                    ..Counts::default()
+                },
+                Upstream::None,
+                &["main"],
+            ))),
+            cause: ProbeCause::Poll,
+        };
+        for repo in ["/x/a", "/x/b"] {
+            app.handle_event(probed(repo, 0));
+        }
+        let before = read();
+        app.handle_event(probed("/x/b", 1));
+        assert_eq!(read(), before, "another card's change reads nothing");
+        app.handle_event(probed("/x/a", 1));
+        settle(&mut app, |_| read() == before + 1);
+        app.handle_events();
+        assert_eq!(view(&app).selected, Some(target));
+        assert!(
+            view(&app).diff.is_some(),
+            "the old diff stays until the new one is in"
+        );
+
+        // The selected file is gone after a reload: so is the selection.
+        *backend.details.lock().unwrap() = Some(lists(&["one.rs"]));
+        app.refresh_repo_view();
+        settle(&mut app, |a| view(a).selected.is_none());
+        assert_eq!(view(&app).diff, None);
+
+        // Lists of a repository whose view is not open are dropped.
+        app.handle_event(Event::Details {
+            repo: "/x/b".into(),
+            result: Err("other".into()),
+        });
+        assert!(matches!(view(&app).details, Some(Ok(_))));
+        app.close_repo_view();
+        app.refresh_repo_view();
+        app.select_in_repo_view(DiffTarget::Commit("aaaa".into()));
+        app.handle_event(Event::Details {
+            repo: "/x/a".into(),
+            result: Err("closed".into()),
+        });
+        assert!(app.repo_view.is_none());
+    }
+
+    /// An app with sounds on, one card, and what its fake player was given.
+    fn sound_app(fail: bool) -> (App, Arc<FakeDesktop>) {
+        let desktop = Arc::new(FakeDesktop {
+            fail,
+            ..FakeDesktop::default()
+        });
+        let mut app = app_on(Arc::default(), desktop.clone(), None);
+        app.config.sounds = true;
+        app.cards = vec![Card::new("/x/a".into()), Card::new("/x/b".into())];
+        (app, desktop)
+    }
+
+    fn counts_event(repo: &str, ahead: u32, behind: u32, cause: ProbeCause) -> Event {
+        let upstream = Upstream::Tracking { ahead, behind };
+        Event::Probed {
+            repo: repo.into(),
+            result: Box::new(Ok(snapshot(Counts::default(), upstream, &["main"]))),
+            cause,
+        }
+    }
+
+    #[test]
+    fn new_commits_beep_and_boop_once_per_round_and_not_for_own_commands() {
+        let (mut app, desktop) = sound_app(false);
+        let played = || -> Vec<String> {
+            let played = desktop.played.lock().unwrap();
+            played.iter().map(|p| title(&p.0)).collect()
+        };
+        // First probes: no news.
+        for repo in ["/x/a", "/x/b"] {
+            app.handle_event(counts_event(repo, 0, 0, ProbeCause::Poll));
+        }
+        assert!(played().is_empty());
+
+        // A background fetch brings remote commits to both cards: one beep.
+        app.handle_event(counts_event("/x/a", 0, 2, ProbeCause::Fetch));
+        app.handle_event(counts_event("/x/b", 0, 1, ProbeCause::Fetch));
+        assert_eq!(played(), ["beep.wav"]);
+        // A local commit made elsewhere: the boop has its own quiet time.
+        app.handle_event(counts_event("/x/a", 1, 2, ProbeCause::Poll));
+        assert_eq!(played(), ["beep.wav", "boop.wav"]);
+        // The user's own command changed the counts: silent.
+        app.handle_event(counts_event("/x/b", 3, 4, ProbeCause::Command));
+        // Counts going down: silent.
+        app.handle_event(counts_event("/x/a", 0, 0, ProbeCause::Poll));
+        assert_eq!(played().len(), 2);
+
+        // After the quiet time the same sound plays again.
+        let later = Instant::now() + Duration::from_secs_f64(audio::QUIET_SECS + 0.1);
+        app.sound_news(&[Sound::Beep], later);
+        app.sound_news(&[Sound::Beep], later + Duration::from_secs(1));
+        assert_eq!(played(), ["beep.wav", "boop.wav", "beep.wav"]);
+
+        // Switched off: nothing.
+        app.config.sounds = false;
+        app.sound_news(&[Sound::Boop], later + Duration::from_secs(60));
+        assert_eq!(played().len(), 3);
+        assert!(app.toasts.is_empty());
+    }
+
+    #[test]
+    fn sound_file_follows_volume_and_the_users_file() {
+        let (mut app, desktop) = sound_app(false);
+        let last = || desktop.played.lock().unwrap().last().unwrap().1.clone();
+        app.play_sound(Sound::Beep);
+        let default_wav = last();
+        assert_eq!(
+            default_wav,
+            audio::wav_bytes(&Sound::Beep.default_samples(), SAMPLE_RATE, 60)
+        );
+        app.config.sound_volume = 10;
+        app.play_sound(Sound::Beep);
+        assert_ne!(last(), default_wav, "made again at the new volume");
+
+        // The user's own file: decoded and written as WAV at the volume.
+        let dir = tempfile::tempdir().unwrap();
+        let own = dir.path().join("own.wav");
+        std::fs::write(&own, audio::wav_bytes(&[0.5; 400], 8000, 100)).unwrap();
+        app.config.set_sound_file(Sound::Beep, Some(own));
+        app.config.sound_volume = 100;
+        app.play_sound(Sound::Beep);
+        assert_eq!(last().len(), 44 + 800);
+        assert_eq!(u32::from_le_bytes(last()[24..28].try_into().unwrap()), 8000);
+
+        // A file that is no sound: said once, and the app's tone plays.
+        let bad = dir.path().join("bad.mp3");
+        std::fs::write(&bad, "text").unwrap();
+        app.config.set_sound_file(Sound::Boop, Some(bad));
+        app.play_sound(Sound::Boop);
+        app.play_sound(Sound::Boop);
+        assert_eq!(
+            last(),
+            audio::wav_bytes(&Sound::Boop.default_samples(), SAMPLE_RATE, 100)
+        );
+        let toasts: Vec<_> = app.toasts.iter().map(|t| t.text.clone()).collect();
+        assert_eq!(toasts.len(), 1, "{toasts:?}");
+        assert!(toasts[0].starts_with("Cannot read bad.mp3:"), "{toasts:?}");
+    }
+
+    #[test]
+    fn a_missing_player_is_said_once_and_the_picker_sets_the_file() {
+        let (mut app, _desktop) = sound_app(true);
+        app.play_sound(Sound::Beep);
+        app.play_sound(Sound::Boop);
+        let toasts: Vec<_> = app.toasts.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(toasts, ["Cannot play sounds: no audio player found"]);
+
+        app.open_sound_picker(Sound::Boop, || Some(PathBuf::from("/s/boop.ogg")));
+        app.open_sound_picker(Sound::Beep, || panic!("second dialog opened"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.config.boop_file.is_none() {
+            assert!(Instant::now() < deadline, "timed out");
+            std::thread::sleep(Duration::from_millis(5));
+            app.take_picked_sound();
+        }
+        assert_eq!(app.config.boop_file, Some(PathBuf::from("/s/boop.ogg")));
+        assert_eq!(app.config.beep_file, None);
+        // A cancelled dialog changes nothing.
+        app.open_sound_picker(Sound::Boop, || None);
+        std::thread::sleep(Duration::from_millis(50));
+        app.take_picked_sound();
+        app.take_picked_sound();
+        assert_eq!(app.config.boop_file, Some(PathBuf::from("/s/boop.ogg")));
+    }
+
+    #[test]
+    fn music_plays_in_the_kawaii_theme_with_music_on_and_nowhere_else() {
+        let desktop = Arc::new(FakeDesktop::default());
+        let mut app = app_on(Arc::default(), desktop.clone(), None);
+        let wait_for_passage = |n: usize| {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while desktop.music.lock().unwrap().len() < n {
+                assert!(Instant::now() < deadline, "no music");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        app.config.music = true;
+        app.sync_music();
+        assert!(!app.music_plays(), "not in another theme");
+        app.config.theme = Theme::Kawaii;
+        app.config.music = false;
+        app.sync_music();
+        assert!(!app.music_plays(), "not while switched off");
+
+        app.config.music = true;
+        app.sync_music();
+        app.sync_music();
+        assert!(app.music_plays());
+        wait_for_passage(1);
+        app.config.music_volume = 5;
+        app.sync_music();
+
+        // Another theme ends it; back in Kawaii it starts again.
+        app.config.theme = Theme::Dark;
+        app.sync_music();
+        assert!(!app.music_plays());
+        app.config.theme = Theme::Kawaii;
+        app.sync_music();
+        wait_for_passage(2);
+        assert_eq!(
+            desktop.music.lock().unwrap().len(),
+            2,
+            "one player at a time"
+        );
+        assert!(app.toasts.is_empty());
+        // The app going away ends the player.
+        drop(app);
+    }
+
+    #[test]
+    fn music_without_a_player_is_said_once_and_not_tried_again() {
+        let desktop = Arc::new(FakeDesktop {
+            fail: true,
+            ..FakeDesktop::default()
+        });
+        let mut app = app_on(Arc::default(), desktop, None);
+        app.config.theme = Theme::Kawaii;
+        app.config.music = true;
+        app.sync_music();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while app.toasts.is_empty() {
+            assert!(Instant::now() < deadline, "no error");
+            std::thread::sleep(Duration::from_millis(5));
+            app.sync_music();
+        }
+        for _ in 0..5 {
+            app.sync_music();
+        }
+        assert!(!app.music_plays());
+        let toasts: Vec<_> = app.toasts.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(toasts, ["Cannot play music: no audio player found"]);
+        // Switched off and on again, it is tried again.
+        app.config.music = false;
+        app.sync_music();
+        app.config.music = true;
+        app.sync_music();
+        assert!(app.music_plays());
     }
 
     #[test]

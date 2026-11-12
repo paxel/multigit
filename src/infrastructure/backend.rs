@@ -1,8 +1,10 @@
 //! The engine's [`Backend`] port implemented over the system git.
 
 use crate::application::engine::Backend;
+use crate::domain::details::{Details, DiffTarget};
 use crate::domain::output::ProcessOutput;
 use crate::domain::repo::{ProbeError, Snapshot};
+use crate::infrastructure::details;
 use crate::infrastructure::git::GitRunner;
 use crate::infrastructure::probe::{self, Probed};
 use std::collections::HashMap;
@@ -116,6 +118,14 @@ impl Backend for GitBackend {
 
     fn options(&self, dir: &Path, command: &str) -> Vec<String> {
         self.words(dir, &[command, "--git-completion-helper"])
+    }
+
+    fn details(&self, dir: &Path) -> Result<Details, String> {
+        details::details(&self.runner, dir)
+    }
+
+    fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String> {
+        details::diff(&self.runner, dir, target)
     }
 }
 

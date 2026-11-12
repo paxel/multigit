@@ -1,6 +1,8 @@
 //! Drawing of the board: toolbar, cards, output panel, CLI, toasts, dialogs.
 
+use crate::domain::board::SortKey;
 use crate::domain::command::{Job, display, shell_name, shell_program};
+use crate::domain::details::{Details, DiffTarget, LineKind, line_kind};
 use crate::domain::favorites::{EMOJIS, Favorite, PALETTE, color_rgb, dark_text_on, favorites_of};
 use crate::domain::kawaii;
 use crate::domain::naming::{parent_line, title};
@@ -8,7 +10,7 @@ use crate::domain::output::{Run, SectionState};
 use crate::domain::repo::Snapshot;
 use crate::domain::status::{Head, RepoState, Upstream};
 use crate::domain::switch::{Choice, branch_choices, matching, new_branch_command, tag_choices};
-use crate::ui::app::{App, Card, CopyFlash};
+use crate::ui::app::{App, Card, CopyFlash, RepoView};
 use crate::ui::cli::{CliAction, CliContext};
 use crate::ui::settings;
 use crate::ui::style::{KAWAII_PINK, KAWAII_YELLOW};
@@ -35,14 +37,6 @@ pub fn favorite_name_id() -> egui::Id {
     egui::Id::new("favorite-name")
 }
 
-/// Width of the stripe a favorite paints at a card's left edge.
-const STRIPE_WIDTH: f32 = 5.0;
-
-fn favorite_color(name: &str) -> Color32 {
-    let [r, g, b] = color_rgb(name);
-    Color32::from_rgb(r, g, b)
-}
-
 /// Black or white, whichever reads on the palette color `rgb`. The text
 /// carries its own color, so the theme's hover color cannot hide it.
 fn text_on(rgb: [u8; 3]) -> Color32 {
@@ -55,18 +49,31 @@ fn text_on(rgb: [u8; 3]) -> Color32 {
 
 /// A button filled with a palette color; the picked or active one has a
 /// thick border.
-fn swatch(ui: &mut Ui, text: &str, rgb: [u8; 3], picked: bool) -> egui::Response {
+fn swatch(ui: &mut Ui, text: &str, rgb: [u8; 3], picked: bool, small: bool) -> egui::Response {
     let [r, g, b] = rgb;
-    let mut button =
-        egui::Button::new(RichText::new(text).color(text_on(rgb))).fill(Color32::from_rgb(r, g, b));
+    let mut text = RichText::new(text).color(text_on(rgb));
+    if small {
+        text = text.small();
+    }
+    let mut button = egui::Button::new(text).fill(Color32::from_rgb(r, g, b));
+    if small {
+        button = button.small();
+    }
     if picked {
-        button = button.stroke(egui::Stroke::new(3.0, ui.visuals().strong_text_color()));
+        let width = if small { 2.0 } else { 3.0 };
+        button = button.stroke(egui::Stroke::new(width, ui.visuals().strong_text_color()));
     }
     ui.add(button)
 }
 
 fn favorite_button(ui: &mut Ui, favorite: &Favorite, active: bool) -> egui::Response {
-    swatch(ui, &favorite.label(), color_rgb(&favorite.color), active)
+    swatch(
+        ui,
+        &favorite.label(),
+        color_rgb(&favorite.color),
+        active,
+        false,
+    )
 }
 
 /// Id of the filter field.
@@ -76,7 +83,10 @@ pub fn filter_id() -> egui::Id {
 
 /// Something the user clicked that changes the board; applied after drawing.
 enum BoardAction {
+    /// From the right-click menu of this card: take its targets off the
+    /// board for good, or hide them.
     Remove(PathBuf),
+    Hide(PathBuf),
     Button(usize, PathBuf),
     Toggle(PathBuf),
     Terminal(PathBuf),
@@ -87,6 +97,10 @@ enum BoardAction {
     AddToFavorite(usize, PathBuf),
     RemoveFromFavorite(usize, PathBuf),
     NewFavorite(PathBuf),
+    /// Open the read-only view of this repository.
+    Open(PathBuf),
+    /// A chip of the favorite at this position was clicked.
+    ToggleFavorite(usize),
     /// A card text was clicked at this pointer position.
     Copy(String, egui::Pos2),
     /// The fetch error of this card was clicked at this pointer position.
@@ -148,6 +162,14 @@ fn ok_color(ui: &Ui) -> Color32 {
     }
 }
 
+/// File picker for a sound of the user's own. Blocks until the dialog closes.
+pub fn pick_sound_file() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Choose a sound")
+        .add_filter("Sound", &["wav", "ogg", "mp3", "flac"])
+        .pick_file()
+}
+
 /// Folder picker for (+). Blocks until the dialog closes.
 fn pick_folder() -> Option<PathBuf> {
     rfd::FileDialog::new()
@@ -165,6 +187,7 @@ impl App {
         if let Some(folder) = self.take_picked_folder() {
             self.add_folder(&folder);
         }
+        self.take_picked_sound();
         let mut next = self.tick(std::time::Instant::now());
         if !self.toasts.is_empty() {
             // Repaint soon enough to take expired toasts down.
@@ -201,6 +224,7 @@ impl App {
         self.copy_flash_overlay(ui);
         self.confirm_dialog(ui, enter_confirms);
         self.favorite_dialog(ui);
+        self.repo_view_dialog(ui);
         settings::show(self, ui.ctx());
     }
 
@@ -241,13 +265,14 @@ impl App {
                 .min_size(egui::vec2(0.0, ui.spacing().interact_size.y))
                 .vertical_align(egui::Align::Center),
         );
-        if ui
-            .button(format!("Sort: {}", self.sort.label()))
-            .on_hover_text("Sort the cards by the next key")
-            .clicked()
-        {
-            self.sort = self.sort.next();
-        }
+        let button = format!("Sort: {}", self.sort.label());
+        ui.menu_button(button, |ui| {
+            for key in SortKey::ALL {
+                if ui.selectable_label(self.sort == key, key.label()).clicked() {
+                    self.sort = key;
+                }
+            }
+        });
     }
 
     /// One button per favorite; no line without favorites. A click shows only
@@ -308,6 +333,61 @@ impl App {
         }
     }
 
+    /// The read-only view of one repository, over the board: its changed
+    /// files, last commits and branches, and the diff of what is picked.
+    fn repo_view_dialog(&mut self, ui: &Ui) {
+        let Some(view) = &self.repo_view else {
+            return;
+        };
+        let mut act = None;
+        let screen = ui.ctx().content_rect();
+        egui::Modal::new(egui::Id::new("repo-view")).show(ui.ctx(), |ui| {
+            ui.set_width((screen.width() - 80.0).max(400.0));
+            ui.set_height((screen.height() - 80.0).max(300.0));
+            ui.horizontal(|ui| {
+                ui.heading(title(&view.repo));
+                ui.weak(view.repo.display().to_string());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Close").clicked() {
+                        act = Some(RepoViewAct::Close);
+                    }
+                    if ui
+                        .button("Refresh")
+                        .on_hover_text("Read the repository again now")
+                        .clicked()
+                    {
+                        act = Some(RepoViewAct::Refresh);
+                    }
+                });
+            });
+            ui.separator();
+            match &view.details {
+                None => {
+                    ui.weak("loading");
+                }
+                Some(Err(error)) => {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                Some(Ok(details)) => {
+                    egui::Panel::left("repo-view-lists")
+                        .resizable(true)
+                        .default_size(380.0)
+                        .show(ui, |ui| repo_lists(ui, details, view, &mut act));
+                    egui::CentralPanel::default().show(ui, |ui| diff_pane(ui, view));
+                }
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                act = Some(RepoViewAct::Close);
+            }
+        });
+        match act {
+            Some(RepoViewAct::Close) => self.close_repo_view(),
+            Some(RepoViewAct::Refresh) => self.refresh_repo_view(),
+            Some(RepoViewAct::Select(target)) => self.select_in_repo_view(target),
+            None => {}
+        }
+    }
+
     /// The dialog that makes a favorite or changes one: name, color, emoji.
     fn favorite_dialog(&mut self, ui: &Ui) {
         let Some(dialog) = &mut self.favorite_dialog else {
@@ -334,7 +414,7 @@ impl App {
             ui.horizontal_wrapped(|ui| {
                 for (name, rgb) in PALETTE {
                     let picked = dialog.draft.color == name;
-                    if swatch(ui, name, rgb, picked).clicked() {
+                    if swatch(ui, name, rgb, picked, false).clicked() {
                         dialog.draft.color = name.to_owned();
                     }
                 }
@@ -391,8 +471,19 @@ impl App {
         if ui.button("dirty").clicked() {
             self.mark_dirty();
         }
-        if ui.button("behind").clicked() {
+        if ui
+            .button("behind")
+            .on_hover_text("Mark the repositories with unpulled commits")
+            .clicked()
+        {
             self.mark_behind();
+        }
+        if ui
+            .button("ahead")
+            .on_hover_text("Mark the repositories with unpushed commits")
+            .clicked()
+        {
+            self.mark_ahead();
         }
         ui.separator();
         let marked = self.marked_repos().len();
@@ -412,13 +503,6 @@ impl App {
             {
                 self.run_button_on_marked(i);
             }
-        }
-        if ui
-            .add_enabled(any_marked, egui::Button::new("Remove marked"))
-            .on_hover_text("Take the marked repositories off the board (files stay)")
-            .clicked()
-        {
-            self.remove_marked();
         }
         ui.separator();
         if ui.button("Settings").clicked() {
@@ -475,6 +559,7 @@ impl App {
                                 favorites: &self.config.favorites,
                                 marked_shown: &marked_shown,
                                 kawaii,
+                                active_favorite: self.active_favorite,
                             };
                             if kawaii {
                                 let offset = self.card_offset(&card.path, index);
@@ -490,7 +575,14 @@ impl App {
             });
         for action in actions {
             match action {
-                BoardAction::Remove(p) => self.remove(&p),
+                BoardAction::Remove(p) => {
+                    let targets = self.menu_targets(&p);
+                    self.remove_cards(&targets);
+                }
+                BoardAction::Hide(p) => {
+                    let targets = self.menu_targets(&p);
+                    self.hide_cards(&targets);
+                }
                 BoardAction::Button(i, p) => self.run_button(i, &p),
                 BoardAction::Terminal(p) => self.open_terminal(&p),
                 BoardAction::Run(p, command) => self.start_run(&command, vec![p]),
@@ -502,6 +594,8 @@ impl App {
                     let targets = self.menu_targets(&p);
                     self.remove_from_favorite(i, &targets);
                 }
+                BoardAction::Open(p) => self.open_repo_view(&p),
+                BoardAction::ToggleFavorite(i) => self.toggle_favorite(i),
                 BoardAction::NewFavorite(p) => {
                     let targets = self.menu_targets(&p);
                     self.new_favorite(targets);
@@ -714,6 +808,115 @@ fn output_toggle(ui: &mut Ui, hidden: &mut bool, unseen: Option<Option<bool>>) {
     }
 }
 
+/// What was clicked in the repository view.
+enum RepoViewAct {
+    Close,
+    Refresh,
+    Select(DiffTarget),
+}
+
+/// One of the three lists of the repository view, scrolling on its own in
+/// `height`.
+fn repo_list(ui: &mut Ui, heading: &str, height: f32, rows: impl FnOnce(&mut Ui)) {
+    ui.strong(heading);
+    egui::ScrollArea::vertical()
+        .id_salt(heading)
+        .max_height(height)
+        .auto_shrink([false, true])
+        .show(ui, rows);
+    ui.add_space(4.0);
+}
+
+/// Changed files, commits and branches; a click on a file or commit picks
+/// it for the diff pane.
+fn repo_lists(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<RepoViewAct>) {
+    let room = (ui.available_height() - 110.0).max(150.0);
+    let mut row = |ui: &mut Ui, target: DiffTarget, text: RichText, hover: &str| {
+        let picked = view.selected.as_ref() == Some(&target);
+        let entry = egui::Button::selectable(picked, text).truncate();
+        if ui.add(entry).on_hover_text(hover).clicked() {
+            *act = Some(RepoViewAct::Select(target));
+        }
+    };
+    let files = format!("Changed files ({})", details.files.len());
+    repo_list(ui, &files, room * 0.3, |ui| {
+        if details.files.is_empty() {
+            ui.weak("none: the working tree is clean");
+        }
+        for file in &details.files {
+            let text = format!("{}  {}", file.kind.label(), file.path);
+            row(
+                ui,
+                DiffTarget::File(file.clone()),
+                RichText::new(text),
+                &file.path,
+            );
+        }
+    });
+    repo_list(ui, "Commits", room * 0.45, |ui| {
+        if details.commits.is_empty() {
+            ui.weak("no commits yet");
+        }
+        for commit in &details.commits {
+            let text = format!("{}  {}", commit.short, commit.subject);
+            let hover = format!("{}, {}\n{}", commit.author, commit.age, commit.subject);
+            let target = DiffTarget::Commit(commit.hash.clone());
+            row(ui, target, RichText::new(text).monospace(), &hover);
+        }
+    });
+    repo_list(ui, "Branches", room * 0.25, |ui| {
+        for branch in &details.branches {
+            let name = RichText::new(&branch.name).monospace();
+            if branch.current {
+                ui.label(name.strong()).on_hover_text("checked out");
+            } else {
+                ui.label(name);
+            }
+        }
+    });
+}
+
+/// The diff of the picked file or commit, colored by line.
+fn diff_pane(ui: &mut Ui, view: &RepoView) {
+    let diff = match (&view.selected, &view.diff) {
+        (None, _) => {
+            ui.weak("Pick a file or a commit to see its diff.");
+            return;
+        }
+        (Some(_), None) => {
+            ui.weak("loading");
+            return;
+        }
+        (Some(_), Some(Err(error))) => {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+            return;
+        }
+        (Some(_), Some(Ok(diff))) => diff,
+    };
+    if diff.trim().is_empty() {
+        ui.weak("no difference");
+        return;
+    }
+    let lines: Vec<&str> = diff.lines().collect();
+    let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+    let (added, removed) = (ok_color(ui), ui.visuals().error_fg_color);
+    egui::ScrollArea::both()
+        .auto_shrink([false, false])
+        .show_rows(ui, row_height, lines.len(), |ui, rows| {
+            // Rows keep their width: a long line must not wrap.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            for line in lines.get(rows).unwrap_or_default() {
+                let text = RichText::new(*line).monospace();
+                ui.label(match line_kind(line) {
+                    LineKind::Added => text.color(added),
+                    LineKind::Removed => text.color(removed),
+                    LineKind::Header => text.strong(),
+                    LineKind::Plain => text,
+                });
+            }
+        });
+}
+
 /// Heart and star of the Kawaii theme.
 pub const HEART: &str = "\u{2665}";
 pub const STAR: &str = "\u{2605}";
@@ -784,6 +987,7 @@ struct CardView<'a> {
     /// The Kawaii theme: a solid card over the rainbow, a ring under the
     /// pointer.
     kawaii: bool,
+    active_favorite: Option<usize>,
 }
 
 impl CardView<'_> {
@@ -795,17 +999,21 @@ impl CardView<'_> {
             buttons,
             ..
         } = *self;
-        let member_of = favorites_of(self.favorites, &card.path);
-        let emojis: String = member_of
-            .iter()
-            .filter_map(|&i| self.favorites.get(i)?.emoji.as_deref())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let chips: Vec<Chip> = favorites_of(self.favorites, &card.path)
+            .into_iter()
+            .filter_map(|index| {
+                Some(Chip {
+                    index,
+                    favorite: self.favorites.get(index)?,
+                    active: self.active_favorite == Some(index),
+                })
+            })
+            .collect();
         let content = CardContent {
             card,
             busy,
             buttons,
-            emojis: &emojis,
+            chips: &chips,
         };
         let mut anchors = card_ui(ui, &content, marked, self.kawaii, actions);
         if let Some(whole) = anchors.first().filter(|_| self.kawaii) {
@@ -821,20 +1029,6 @@ impl CardView<'_> {
                     egui::Stroke::new(2.5 * grown, KAWAII_PINK),
                     egui::StrokeKind::Outside,
                 );
-            }
-        }
-        // One stripe per favorite at the left edge, inside the card's margin.
-        if let Some(whole) = anchors.first().map(|r| r.rect) {
-            let width = STRIPE_WIDTH.min(CARD_MARGIN / member_of.len().max(1) as f32);
-            let colors = member_of.iter().filter_map(|&i| self.favorites.get(i));
-            for (n, favorite) in colors.enumerate() {
-                let left = whole.left() + MARKED_STROKE + n as f32 * width;
-                let stripe = egui::Rect::from_min_max(
-                    egui::pos2(left, whole.top() + MARKED_STROKE),
-                    egui::pos2(left + width, whole.bottom() - MARKED_STROKE),
-                );
-                ui.painter()
-                    .rect_filled(stripe, 0.0, favorite_color(&favorite.color));
             }
         }
         for anchor in anchors.drain(..) {
@@ -877,6 +1071,28 @@ impl CardView<'_> {
                 actions.push(BoardAction::RemoveFromFavorite(i, path.clone()));
             }
         }
+        ui.separator();
+        if ui
+            .button("Open")
+            .on_hover_text("Look into this repository: changed files, commits, branches")
+            .clicked()
+        {
+            actions.push(BoardAction::Open(path.clone()));
+        }
+        if ui
+            .button("Hide")
+            .on_hover_text("Off the board, but remembered: adding its folder again leaves it out")
+            .clicked()
+        {
+            actions.push(BoardAction::Hide(path.clone()));
+        }
+        if ui
+            .button("Remove from board")
+            .on_hover_text("Off the board; the files stay")
+            .clicked()
+        {
+            actions.push(BoardAction::Remove(path.clone()));
+        }
     }
 }
 
@@ -885,8 +1101,18 @@ struct CardContent<'a> {
     card: &'a Card,
     busy: bool,
     buttons: &'a [crate::domain::config::ButtonDef],
-    /// The emojis of the card's favorites.
-    emojis: &'a str,
+    /// The card's favorites.
+    chips: &'a [Chip<'a>],
+}
+
+/// A favorite as a card shows it: a small button in the favorite's color
+/// that does what the favorite's toolbar button does.
+struct Chip<'a> {
+    /// Position of the favorite in the config.
+    index: usize,
+    favorite: &'a Favorite,
+    /// It is the favorite whose cards alone are shown.
+    active: bool,
 }
 
 /// Draws the card; the responses that carry the card's right-click menu, the
@@ -929,6 +1155,10 @@ fn card_ui(
     if response.response.clicked() {
         actions.push(BoardAction::Toggle(card.path.clone()));
     }
+    // The second click of a double click has flipped the mark back.
+    if response.response.double_clicked() {
+        actions.push(BoardAction::Open(card.path.clone()));
+    }
     anchors.insert(0, response.response);
     anchors
 }
@@ -944,27 +1174,17 @@ fn card_frame(
         card,
         busy,
         buttons,
-        emojis,
+        chips,
     } = *content;
     let path_text = card.path.display().to_string();
     frame.show(ui, |ui| {
         ui.set_width(CARD_WIDTH);
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                if !emojis.is_empty() {
-                    ui.label(RichText::new(emojis).size(15.0));
-                }
                 let name = title(&card.path);
                 let text = RichText::new(&name).strong().size(15.0);
                 anchors.push(copyable(ui, text, name, actions).on_hover_text(&path_text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .small_button("×")
-                        .on_hover_text("Remove from board (files stay)")
-                        .clicked()
-                    {
-                        actions.push(BoardAction::Remove(card.path.clone()));
-                    }
                     // No terminal in a folder that is gone.
                     let terminal = egui::Button::new(TERMINAL_LABEL).small();
                     if ui
@@ -976,6 +1196,25 @@ fn card_frame(
                     }
                 });
             });
+            if !chips.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                    for chip in chips {
+                        let rgb = color_rgb(&chip.favorite.color);
+                        let button = swatch(ui, &chip.favorite.label(), rgb, chip.active, true)
+                            .on_hover_text(if chip.active {
+                                "Show all repositories again"
+                            } else {
+                                "Show only this favorite's repositories"
+                            });
+                        if button.clicked() {
+                            actions.push(BoardAction::ToggleFavorite(chip.index));
+                        }
+                        // A right click on a chip is a right click on the card.
+                        anchors.push(button);
+                    }
+                });
+            }
             let parents = parent_line(&card.path, |text| fits(ui, text, CARD_WIDTH));
             let line = copyable(ui, weak(parents), path_text.clone(), actions);
             anchors.push(line.on_hover_text(&path_text));
@@ -1298,9 +1537,12 @@ fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
         ui.horizontal(|ui| {
             ui.label(weak("commit"));
             let text = format!("{} {}", commit.short, commit.subject);
-            // A click copies the whole hash, not the short one shown.
+            // A click copies the whole hash, not the short one shown. The
+            // tooltip is the subject; the one a cut-off label brings along
+            // would say it a second time.
             let line = egui::Label::new(text)
                 .truncate()
+                .show_tooltip_when_elided(false)
                 .sense(egui::Sense::click());
             let response = ui
                 .add(line)

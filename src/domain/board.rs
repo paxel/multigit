@@ -17,20 +17,20 @@ pub enum SortKey {
     Tag,
     DirtyFirst,
     BehindFirst,
+    AheadFirst,
 }
 
 impl SortKey {
-    /// The key the sort button switches to next.
-    pub fn next(self) -> Self {
-        match self {
-            Self::Name => Self::Path,
-            Self::Path => Self::Branch,
-            Self::Branch => Self::Tag,
-            Self::Tag => Self::DirtyFirst,
-            Self::DirtyFirst => Self::BehindFirst,
-            Self::BehindFirst => Self::Name,
-        }
-    }
+    /// Every key, in the order the sort button lists them.
+    pub const ALL: [Self; 7] = [
+        Self::Name,
+        Self::Path,
+        Self::Branch,
+        Self::Tag,
+        Self::DirtyFirst,
+        Self::BehindFirst,
+        Self::AheadFirst,
+    ];
 
     /// As the sort button names it.
     pub fn label(self) -> &'static str {
@@ -41,6 +41,7 @@ impl SortKey {
             Self::Tag => "tag",
             Self::DirtyFirst => "dirty first",
             Self::BehindFirst => "behind first",
+            Self::AheadFirst => "ahead first",
         }
     }
 }
@@ -70,11 +71,20 @@ impl Sorted<'_> {
             .is_some_and(|s| !s.status.counts.is_clean() || s.state != RepoState::Normal)
     }
 
+    fn ahead(&self) -> bool {
+        self.snapshot.is_some_and(is_ahead)
+    }
+
     fn behind(&self) -> bool {
         self.snapshot.is_some_and(
             |s| matches!(s.status.upstream, Upstream::Tracking { behind, .. } if behind > 0),
         )
     }
+}
+
+/// Whether the snapshot has unpushed commits.
+pub fn is_ahead(snapshot: &Snapshot) -> bool {
+    matches!(snapshot.status.upstream, Upstream::Tracking { ahead, .. } if ahead > 0)
 }
 
 /// Values in order, a missing one after all present ones.
@@ -96,6 +106,7 @@ pub fn compare(key: SortKey, a: Sorted, b: Sorted) -> Ordering {
         SortKey::Tag => missing_last(a.tag(), b.tag()),
         SortKey::DirtyFirst => b.dirty().cmp(&a.dirty()),
         SortKey::BehindFirst => b.behind().cmp(&a.behind()),
+        SortKey::AheadFirst => b.ahead().cmp(&a.ahead()),
     };
     by_key.then_with(|| board_order(a.path, b.path))
 }
@@ -146,25 +157,46 @@ mod tests {
     }
 
     #[test]
-    fn sort_keys_cycle_through_all_six_and_back() {
-        let mut key = SortKey::default();
-        let mut labels = Vec::new();
-        for _ in 0..6 {
-            labels.push(key.label());
-            key = key.next();
-        }
+    fn ahead_first_puts_cards_with_unpushed_commits_in_front() {
+        let ahead = |n| {
+            let mut s = snap(Some("main"), None, 0, 0);
+            s.status.upstream = Upstream::Tracking {
+                ahead: n,
+                behind: 0,
+            };
+            s
+        };
+        let mut no_upstream = snap(Some("main"), None, 0, 0);
+        no_upstream.status.upstream = Upstream::None;
+        assert!(is_ahead(&ahead(2)) && !is_ahead(&ahead(0)) && !is_ahead(&no_upstream));
+        let cards = [
+            ("/x/alpha", Some(ahead(0))),
+            ("/x/beta", Some(ahead(3))),
+            ("/x/gamma", None),
+            ("/x/delta", Some(ahead(1))),
+            ("/x/epsilon", Some(no_upstream)),
+        ];
         assert_eq!(
-            labels,
+            order(SortKey::AheadFirst, &cards),
+            ["beta", "delta", "alpha", "epsilon", "gamma"]
+        );
+    }
+
+    #[test]
+    fn sort_keys_are_listed_with_name_first() {
+        assert_eq!(SortKey::ALL.first(), Some(&SortKey::default()));
+        assert_eq!(
+            SortKey::ALL.map(SortKey::label),
             [
                 "name",
                 "path",
                 "branch",
                 "tag",
                 "dirty first",
-                "behind first"
+                "behind first",
+                "ahead first"
             ]
         );
-        assert_eq!(key, SortKey::Name);
     }
 
     #[test]

@@ -2,10 +2,19 @@
 //! editor; behind its "About" button the About page and the licence list.
 
 use crate::domain::about;
+use crate::domain::audio::Sound;
 use crate::domain::config::{ButtonDef, Theme, button_presets};
+use crate::domain::naming::title;
 use crate::infrastructure::launcher::ICON_PNG;
 use crate::ui::app::{App, SettingsPage};
+use crate::ui::view::pick_sound_file;
 use egui::{Context, DragValue, RichText, TextEdit, Ui};
+
+/// A click in the sound rows of Settings.
+enum SoundAct {
+    Choose(Sound),
+    Play(Sound),
+}
 
 enum RowAction {
     Up(usize),
@@ -115,6 +124,9 @@ fn settings_page(app: &mut App, ui: &mut Ui) {
         }
     });
     let config_file = app.config_file().map(|p| p.display().to_string());
+    let mut sound_act = None;
+    // `Some(None)` unhides all, `Some(Some(path))` that one.
+    let mut unhide: Option<Option<std::path::PathBuf>> = None;
     let config = &mut app.config;
     egui::Grid::new("settings-grid")
         .num_columns(2)
@@ -154,6 +166,50 @@ fn settings_page(app: &mut App, ui: &mut Ui) {
         &mut config.auto_insert_single_match,
         "Tab inserts a single completion directly",
     );
+
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut config.music, "Kawaii music")
+            .on_hover_text("Lofi beats, made by multigit itself, while the Kawaii theme is on");
+        ui.add(
+            egui::Slider::new(&mut config.music_volume, 0..=100)
+                .suffix(" %")
+                .text("volume"),
+        );
+    });
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut config.sounds, "Sounds")
+            .on_hover_text("A beep when a remote commit appears, a boop for a local one");
+        ui.add(
+            egui::Slider::new(&mut config.sound_volume, 0..=100)
+                .suffix(" %")
+                .text("volume"),
+        );
+    });
+    egui::Grid::new("sounds-grid")
+        .num_columns(5)
+        .spacing([6.0, 4.0])
+        .show(ui, |ui| {
+            for sound in Sound::ALL {
+                ui.label(sound.label());
+                let file = config.sound_file(sound).map(|f| title(f));
+                ui.weak(file.as_deref().unwrap_or("built-in tone"));
+                if ui.button("Choose file\u{2026}").clicked() {
+                    sound_act = Some(SoundAct::Choose(sound));
+                }
+                let has_file = config.sound_file(sound).is_some();
+                if ui
+                    .add_enabled(has_file, egui::Button::new("Default"))
+                    .clicked()
+                {
+                    config.set_sound_file(sound, None);
+                }
+                if ui.button("Play").clicked() {
+                    sound_act = Some(SoundAct::Play(sound));
+                }
+                ui.end_row();
+            }
+        });
 
     ui.separator();
     ui.strong("Card buttons");
@@ -211,8 +267,35 @@ fn settings_page(app: &mut App, ui: &mut Ui) {
                 }
             });
     });
+    if !config.hidden.is_empty() {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong("Hidden repositories");
+            if ui.button("Unhide all").clicked() {
+                unhide = Some(None);
+            }
+        });
+        for path in &config.hidden {
+            ui.horizontal(|ui| {
+                if ui.button("Unhide").clicked() {
+                    unhide = Some(Some(path.clone()));
+                }
+                ui.label(path.display().to_string());
+            });
+        }
+    }
     if let Some(file) = &config_file {
         ui.separator();
         ui.weak(format!("Saved to {file}"));
+    }
+    match sound_act {
+        Some(SoundAct::Choose(sound)) => app.open_sound_picker(sound, pick_sound_file),
+        Some(SoundAct::Play(sound)) => app.play_sound(sound),
+        None => {}
+    }
+    match unhide {
+        Some(Some(path)) => app.unhide(&path),
+        Some(None) => app.unhide_all(),
+        None => {}
     }
 }

@@ -10,6 +10,7 @@
 
 use crate::application::semaphore::Semaphore;
 use crate::domain::command::Job;
+use crate::domain::details::{Details, DiffTarget};
 use crate::domain::output::{ProcessOutput, SectionState};
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use std::collections::HashMap;
@@ -39,6 +40,22 @@ pub trait Backend: Send + Sync + 'static {
     fn list_commands(&self, dir: &Path) -> (Vec<String>, Vec<String>);
     /// Options git reports for a builtin via `--git-completion-helper`.
     fn options(&self, dir: &Path, command: &str) -> Vec<String>;
+    /// The lists of the repository view. Read-only, and like the automatic
+    /// calls it must not run programs the repository's own config names.
+    fn details(&self, dir: &Path) -> Result<Details, String>;
+    /// The diff of a file or commit for the repository view; same rule.
+    fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String>;
+}
+
+/// What made a probe run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeCause {
+    /// The regular refresh.
+    Poll,
+    /// A background fetch just ran.
+    Fetch,
+    /// A command the user ran in that repository just ended.
+    Command,
 }
 
 /// Messages from worker threads to the UI.
@@ -48,6 +65,7 @@ pub enum Event {
         repo: PathBuf,
         /// Boxed: a snapshot is far bigger than the other events.
         result: Box<Result<Snapshot, ProbeError>>,
+        cause: ProbeCause,
     },
     /// A background fetch finished; `error` is set when it failed.
     Fetched {
@@ -66,6 +84,17 @@ pub enum Event {
     Options {
         command: String,
         options: Vec<String>,
+    },
+    /// The lists of the repository view were read.
+    Details {
+        repo: PathBuf,
+        result: Result<Details, String>,
+    },
+    /// A diff for the repository view was read.
+    Diff {
+        repo: PathBuf,
+        target: DiffTarget,
+        result: Result<String, String>,
     },
 }
 
@@ -196,6 +225,11 @@ impl Engine {
                     shared.send(Event::Probed {
                         repo: repo.clone(),
                         result: Box::new(result),
+                        cause: if fetch {
+                            ProbeCause::Fetch
+                        } else {
+                            ProbeCause::Poll
+                        },
                     });
                 }
             }
@@ -238,6 +272,7 @@ impl Engine {
                 shared.send(Event::Probed {
                     repo: repo.clone(),
                     result: Box::new(result),
+                    cause: ProbeCause::Command,
                 });
             }
             slot.pending_commands.fetch_sub(1, Ordering::SeqCst);
@@ -251,6 +286,28 @@ impl Engine {
         thread::spawn(move || {
             let (all, builtins) = shared.backend.list_commands(&dir);
             shared.send(Event::Commands { all, builtins });
+        });
+    }
+
+    /// Read the lists of the repository view (sends [`Event::Details`]).
+    pub fn load_details(&self, repo: PathBuf) {
+        let shared = self.shared.clone();
+        thread::spawn(move || {
+            let result = shared.backend.details(&repo);
+            shared.send(Event::Details { repo, result });
+        });
+    }
+
+    /// Read a diff for the repository view (sends [`Event::Diff`]).
+    pub fn load_diff(&self, repo: PathBuf, target: DiffTarget) {
+        let shared = self.shared.clone();
+        thread::spawn(move || {
+            let result = shared.backend.diff(&repo, &target);
+            shared.send(Event::Diff {
+                repo,
+                target,
+                result,
+            });
         });
     }
 
@@ -351,6 +408,12 @@ mod tests {
         fn options(&self, _dir: &Path, command: &str) -> Vec<String> {
             vec![format!("--{command}-opt")]
         }
+        fn details(&self, dir: &Path) -> Result<Details, String> {
+            Err(format!("details {}", dir.display()))
+        }
+        fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String> {
+            Ok(format!("diff {} {target:?}", dir.display()))
+        }
     }
 
     fn engine(fake: Arc<Fake>) -> (Engine, Receiver<Event>) {
@@ -370,7 +433,8 @@ mod tests {
             recv(&rx),
             Event::Probed {
                 repo: "/r".into(),
-                result: Box::new(Ok(snapshot()))
+                result: Box::new(Ok(snapshot())),
+                cause: ProbeCause::Poll
             }
         );
     }
@@ -483,12 +547,12 @@ mod tests {
         fake.open();
         let (mut engine, rx) = engine(fake.clone());
         let probed = |rx: &Receiver<Event>| loop {
-            if matches!(recv(rx), Event::Probed { .. }) {
-                break;
+            if let Event::Probed { cause, .. } = recv(rx) {
+                break cause;
             }
         };
         assert!(engine.poll(Path::new("/r")));
-        probed(&rx);
+        let mut causes = vec![probed(&rx)];
         // The poll sent its result just before it is done: a fetch asked for
         // in between is skipped, so ask until it is taken.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -496,9 +560,13 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "the poll never ended");
             thread::sleep(Duration::from_millis(1));
         }
-        probed(&rx);
+        causes.push(probed(&rx));
         engine.run_command(1, Path::new("/r"), Job::Git(vec!["push".into()]));
-        probed(&rx);
+        causes.push(probed(&rx));
+        assert_eq!(
+            causes,
+            [ProbeCause::Poll, ProbeCause::Fetch, ProbeCause::Command]
+        );
         assert_eq!(fake.fresh.lock().unwrap().clone(), [false, true, true]);
     }
 
@@ -533,6 +601,24 @@ mod tests {
             Event::Commands {
                 all: vec!["pull".into()],
                 builtins: vec!["pull".into()]
+            }
+        );
+        engine.load_details("/r".into());
+        assert_eq!(
+            recv(&rx),
+            Event::Details {
+                repo: "/r".into(),
+                result: Err("details /r".into())
+            }
+        );
+        let target = DiffTarget::Commit("abc".into());
+        engine.load_diff("/r".into(), target.clone());
+        assert_eq!(
+            recv(&rx),
+            Event::Diff {
+                repo: "/r".into(),
+                target,
+                result: Ok("diff /r Commit(\"abc\")".into())
             }
         );
         engine.load_options("/".into(), "pull".into());

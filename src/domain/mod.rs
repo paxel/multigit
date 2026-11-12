@@ -1,6 +1,7 @@
 //! Pure logic and models; no processes, files or UI.
 
 pub mod about;
+pub mod audio;
 pub mod board;
 pub mod command;
 pub mod completion;

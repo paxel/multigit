@@ -1,8 +1,9 @@
 //! Board state and the actions the UI triggers on it (no drawing here).
 
 use crate::application::desktop::Desktop;
-use crate::application::engine::{Backend, Engine, Event, Notify};
+use crate::application::engine::{Backend, Engine, Event, Notify, ProbeCause};
 use crate::application::schedule::{Due, Schedule};
+use crate::domain::audio::{self, SAMPLE_RATE, Sound};
 use crate::domain::board::{SortKey, Sorted, compare, is_ahead, matches_filter};
 use crate::domain::command::{Job, display, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
@@ -16,6 +17,7 @@ use crate::domain::naming::{board_order, title};
 use crate::domain::output::OutputLog;
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use crate::domain::status::{RepoState, Upstream};
+use crate::infrastructure::audio::decode;
 use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
 use crate::infrastructure::scan::scan;
 use crate::infrastructure::store::{self, Paths};
@@ -196,6 +198,15 @@ pub struct App {
     notify: Notify,
     /// Folder dialog running on its own thread; yields the picked folder.
     picker: Option<Receiver<Option<PathBuf>>>,
+    /// File dialog for a sound, running on its own thread.
+    sound_picker: Option<(Sound, Receiver<Option<PathBuf>>)>,
+    /// When each sound last played.
+    sound_played: HashMap<Sound, Instant>,
+    /// For each sound, the file and volume its WAV in the scratch folder
+    /// was made from.
+    sound_made: HashMap<Sound, (Option<PathBuf>, u8)>,
+    /// The missing player was reported already.
+    player_missing_said: bool,
 }
 
 impl App {
@@ -253,6 +264,10 @@ impl App {
             icon: None,
             notify,
             picker: None,
+            sound_picker: None,
+            sound_played: HashMap::new(),
+            sound_made: HashMap::new(),
+            player_missing_said: false,
         }
     }
 
@@ -286,6 +301,98 @@ impl App {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.picker = None;
                 None
+            }
+        }
+    }
+
+    /// Run a (blocking) file dialog for the user's own `sound` on its own
+    /// thread. Ignored while one is open.
+    pub fn open_sound_picker<F>(&mut self, sound: Sound, pick: F)
+    where
+        F: FnOnce() -> Option<PathBuf> + Send + 'static,
+    {
+        if self.sound_picker.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notify = self.notify.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(pick());
+            notify();
+        });
+        self.sound_picker = Some((sound, rx));
+    }
+
+    /// Take the file picked in the sound dialog, once it closed, as that
+    /// sound's file.
+    pub fn take_picked_sound(&mut self) {
+        let Some((sound, rx)) = &self.sound_picker else {
+            return;
+        };
+        let sound = *sound;
+        match rx.try_recv() {
+            Ok(file) => {
+                self.sound_picker = None;
+                if file.is_some() {
+                    self.config.set_sound_file(sound, file);
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.sound_picker = None,
+        }
+    }
+
+    /// The WAV of `sound` in the scratch folder, made again when the
+    /// user's file or the volume changed. A file that cannot be read is
+    /// said once and the app's own tone is used.
+    fn sound_wav(&mut self, sound: Sound) -> std::io::Result<PathBuf> {
+        let made_from = (
+            self.config.sound_file(sound).cloned(),
+            self.config.sound_volume,
+        );
+        let file = self.scratch.join(sound.file_name());
+        if self.sound_made.get(&sound) == Some(&made_from) && file.exists() {
+            return Ok(file);
+        }
+        let (samples, rate) = match made_from.0.as_deref().map(decode) {
+            Some(Ok(decoded)) => (decoded.samples, decoded.rate),
+            Some(Err(e)) => {
+                let name = made_from.0.as_deref().map(title).unwrap_or_default();
+                self.toast(format!("Cannot read {name}: {e}"));
+                (sound.default_samples(), SAMPLE_RATE)
+            }
+            None => (sound.default_samples(), SAMPLE_RATE),
+        };
+        let wav = audio::wav_bytes(&samples, rate, made_from.1);
+        let file = write_scratch_file(&self.scratch, sound.file_name(), wav)?;
+        self.sound_made.insert(sound, made_from);
+        Ok(file)
+    }
+
+    /// Play `sound` now (the play button in Settings, and news on a card).
+    pub fn play_sound(&mut self, sound: Sound) {
+        let played = self
+            .sound_wav(sound)
+            .and_then(|file| self.desktop.play(&file));
+        if let Err(e) = played
+            && !std::mem::replace(&mut self.player_missing_said, true)
+        {
+            self.toast(format!("Cannot play sounds: {e}"));
+        }
+    }
+
+    /// News on a card at `now`: play each of `sounds` unless it played a
+    /// moment ago. Nothing while sounds are switched off.
+    pub fn sound_news(&mut self, sounds: &[Sound], now: Instant) {
+        if !self.config.sounds {
+            return;
+        }
+        for &sound in sounds {
+            let last = self.sound_played.get(&sound);
+            let since = last.map(|last| now.saturating_duration_since(*last).as_secs_f64());
+            if audio::may_play(since) {
+                self.sound_played.insert(sound, now);
+                self.play_sound(sound);
             }
         }
     }
@@ -782,14 +889,26 @@ impl App {
 
     fn handle_event(&mut self, event: Event) {
         match event {
-            Event::Probed { repo, result } => {
+            Event::Probed {
+                repo,
+                result,
+                cause,
+            } => {
                 let mut changed = false;
+                let mut sounds = Vec::new();
                 if let Some(card) = self.card_mut(&repo) {
                     let new = Some(*result);
                     // The first probe of a card is no change.
                     changed = card.probe.is_some() && card.probe != new;
+                    // What the user's own command did is no news to them.
+                    if cause != ProbeCause::Command
+                        && let (Some(Ok(before)), Some(Ok(after))) = (&card.probe, &new)
+                    {
+                        sounds = audio::news(before, after);
+                    }
                     card.probe = new;
                 }
+                self.sound_news(&sounds, Instant::now());
                 if changed {
                     self.wake_kawaii();
                     // The open view of that repository follows its card.
@@ -1039,6 +1158,8 @@ pub(crate) mod tests {
     pub struct FakeDesktop {
         pub files: Mutex<Vec<PathBuf>>,
         pub urls: Mutex<Vec<String>>,
+        /// Every WAV handed to the player, as it was at that moment.
+        pub played: Mutex<Vec<(PathBuf, Vec<u8>)>>,
         /// Folder and configured command of every terminal asked for.
         pub terminals: Mutex<Vec<(PathBuf, String)>>,
         pub fail: bool,
@@ -1050,6 +1171,14 @@ pub(crate) mod tests {
                 return Err(io::Error::other("no opener"));
             }
             self.files.lock().unwrap().push(file.to_path_buf());
+            Ok(())
+        }
+        fn play(&self, file: &Path) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::other("no audio player found"));
+            }
+            let wav = std::fs::read(file)?;
+            self.played.lock().unwrap().push((file.to_path_buf(), wav));
             Ok(())
         }
         fn open_url(&self, url: &str) -> io::Result<()> {
@@ -1543,6 +1672,7 @@ pub(crate) mod tests {
         let probed = |snap: &Snapshot| Event::Probed {
             repo: "/x/a".into(),
             result: Box::new(Ok(snap.clone())),
+            cause: ProbeCause::Poll,
         };
         // The first probe and an unchanged one wake nothing.
         app.handle_event(probed(&clean));
@@ -1641,6 +1771,7 @@ pub(crate) mod tests {
                 Upstream::None,
                 &["main"],
             ))),
+            cause: ProbeCause::Poll,
         };
         for repo in ["/x/a", "/x/b"] {
             app.handle_event(probed(repo, 0));
@@ -1677,6 +1808,131 @@ pub(crate) mod tests {
             result: Err("closed".into()),
         });
         assert!(app.repo_view.is_none());
+    }
+
+    /// An app with sounds on, one card, and what its fake player was given.
+    fn sound_app(fail: bool) -> (App, Arc<FakeDesktop>) {
+        let desktop = Arc::new(FakeDesktop {
+            fail,
+            ..FakeDesktop::default()
+        });
+        let mut app = app_on(Arc::default(), desktop.clone(), None);
+        app.config.sounds = true;
+        app.cards = vec![Card::new("/x/a".into()), Card::new("/x/b".into())];
+        (app, desktop)
+    }
+
+    fn counts_event(repo: &str, ahead: u32, behind: u32, cause: ProbeCause) -> Event {
+        let upstream = Upstream::Tracking { ahead, behind };
+        Event::Probed {
+            repo: repo.into(),
+            result: Box::new(Ok(snapshot(Counts::default(), upstream, &["main"]))),
+            cause,
+        }
+    }
+
+    #[test]
+    fn new_commits_beep_and_boop_once_per_round_and_not_for_own_commands() {
+        let (mut app, desktop) = sound_app(false);
+        let played = || -> Vec<String> {
+            let played = desktop.played.lock().unwrap();
+            played.iter().map(|p| title(&p.0)).collect()
+        };
+        // First probes: no news.
+        for repo in ["/x/a", "/x/b"] {
+            app.handle_event(counts_event(repo, 0, 0, ProbeCause::Poll));
+        }
+        assert!(played().is_empty());
+
+        // A background fetch brings remote commits to both cards: one beep.
+        app.handle_event(counts_event("/x/a", 0, 2, ProbeCause::Fetch));
+        app.handle_event(counts_event("/x/b", 0, 1, ProbeCause::Fetch));
+        assert_eq!(played(), ["beep.wav"]);
+        // A local commit made elsewhere: the boop has its own quiet time.
+        app.handle_event(counts_event("/x/a", 1, 2, ProbeCause::Poll));
+        assert_eq!(played(), ["beep.wav", "boop.wav"]);
+        // The user's own command changed the counts: silent.
+        app.handle_event(counts_event("/x/b", 3, 4, ProbeCause::Command));
+        // Counts going down: silent.
+        app.handle_event(counts_event("/x/a", 0, 0, ProbeCause::Poll));
+        assert_eq!(played().len(), 2);
+
+        // After the quiet time the same sound plays again.
+        let later = Instant::now() + Duration::from_secs_f64(audio::QUIET_SECS + 0.1);
+        app.sound_news(&[Sound::Beep], later);
+        app.sound_news(&[Sound::Beep], later + Duration::from_secs(1));
+        assert_eq!(played(), ["beep.wav", "boop.wav", "beep.wav"]);
+
+        // Switched off: nothing.
+        app.config.sounds = false;
+        app.sound_news(&[Sound::Boop], later + Duration::from_secs(60));
+        assert_eq!(played().len(), 3);
+        assert!(app.toasts.is_empty());
+    }
+
+    #[test]
+    fn sound_file_follows_volume_and_the_users_file() {
+        let (mut app, desktop) = sound_app(false);
+        let last = || desktop.played.lock().unwrap().last().unwrap().1.clone();
+        app.play_sound(Sound::Beep);
+        let default_wav = last();
+        assert_eq!(
+            default_wav,
+            audio::wav_bytes(&Sound::Beep.default_samples(), SAMPLE_RATE, 60)
+        );
+        app.config.sound_volume = 10;
+        app.play_sound(Sound::Beep);
+        assert_ne!(last(), default_wav, "made again at the new volume");
+
+        // The user's own file: decoded and written as WAV at the volume.
+        let dir = tempfile::tempdir().unwrap();
+        let own = dir.path().join("own.wav");
+        std::fs::write(&own, audio::wav_bytes(&[0.5; 400], 8000, 100)).unwrap();
+        app.config.set_sound_file(Sound::Beep, Some(own));
+        app.config.sound_volume = 100;
+        app.play_sound(Sound::Beep);
+        assert_eq!(last().len(), 44 + 800);
+        assert_eq!(u32::from_le_bytes(last()[24..28].try_into().unwrap()), 8000);
+
+        // A file that is no sound: said once, and the app's tone plays.
+        let bad = dir.path().join("bad.mp3");
+        std::fs::write(&bad, "text").unwrap();
+        app.config.set_sound_file(Sound::Boop, Some(bad));
+        app.play_sound(Sound::Boop);
+        app.play_sound(Sound::Boop);
+        assert_eq!(
+            last(),
+            audio::wav_bytes(&Sound::Boop.default_samples(), SAMPLE_RATE, 100)
+        );
+        let toasts: Vec<_> = app.toasts.iter().map(|t| t.text.clone()).collect();
+        assert_eq!(toasts.len(), 1, "{toasts:?}");
+        assert!(toasts[0].starts_with("Cannot read bad.mp3:"), "{toasts:?}");
+    }
+
+    #[test]
+    fn a_missing_player_is_said_once_and_the_picker_sets_the_file() {
+        let (mut app, _desktop) = sound_app(true);
+        app.play_sound(Sound::Beep);
+        app.play_sound(Sound::Boop);
+        let toasts: Vec<_> = app.toasts.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(toasts, ["Cannot play sounds: no audio player found"]);
+
+        app.open_sound_picker(Sound::Boop, || Some(PathBuf::from("/s/boop.ogg")));
+        app.open_sound_picker(Sound::Beep, || panic!("second dialog opened"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.config.boop_file.is_none() {
+            assert!(Instant::now() < deadline, "timed out");
+            std::thread::sleep(Duration::from_millis(5));
+            app.take_picked_sound();
+        }
+        assert_eq!(app.config.boop_file, Some(PathBuf::from("/s/boop.ogg")));
+        assert_eq!(app.config.beep_file, None);
+        // A cancelled dialog changes nothing.
+        app.open_sound_picker(Sound::Boop, || None);
+        std::thread::sleep(Duration::from_millis(50));
+        app.take_picked_sound();
+        app.take_picked_sound();
+        assert_eq!(app.config.boop_file, Some(PathBuf::from("/s/boop.ogg")));
     }
 
     #[test]

@@ -222,6 +222,17 @@ Light, Dark or Kawaii), Tab's
 single-match behaviour, and the card buttons (add, remove, reorder, or pick a
 preset).
 
+With **Sounds** switched on (it is off at first, in every theme), multigit
+beeps when a remote commit appears on a card (its unpulled count goes up) and
+boops when a local one does (its unpushed count goes up). However many cards
+have news, each sound plays once and then keeps quiet for five seconds; what
+your own command in multigit changed makes no sound. Settings has a volume,
+and per sound a file of your own (WAV, OGG, MP3 or FLAC, its first ten
+seconds), **Default** to go back to the built-in tone, and **Play** to hear
+it. multigit plays through the system's player program: `afplay` on macOS,
+and on Linux the first of `pw-play`, `paplay`, `aplay` and `ffplay` that is
+installed.
+
 The **Kawaii** theme is round and pastel, in the Fredoka font, with a rainbow
 drifting behind the cards, hearts and stars floating up, cards that bob, grow
 under the pointer and swing when marked, and a burst of stars on a copy. It

@@ -47,6 +47,17 @@ pub trait Backend: Send + Sync + 'static {
     fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String>;
 }
 
+/// What made a probe run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeCause {
+    /// The regular refresh.
+    Poll,
+    /// A background fetch just ran.
+    Fetch,
+    /// A command the user ran in that repository just ended.
+    Command,
+}
+
 /// Messages from worker threads to the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
@@ -54,6 +65,7 @@ pub enum Event {
         repo: PathBuf,
         /// Boxed: a snapshot is far bigger than the other events.
         result: Box<Result<Snapshot, ProbeError>>,
+        cause: ProbeCause,
     },
     /// A background fetch finished; `error` is set when it failed.
     Fetched {
@@ -213,6 +225,11 @@ impl Engine {
                     shared.send(Event::Probed {
                         repo: repo.clone(),
                         result: Box::new(result),
+                        cause: if fetch {
+                            ProbeCause::Fetch
+                        } else {
+                            ProbeCause::Poll
+                        },
                     });
                 }
             }
@@ -255,6 +272,7 @@ impl Engine {
                 shared.send(Event::Probed {
                     repo: repo.clone(),
                     result: Box::new(result),
+                    cause: ProbeCause::Command,
                 });
             }
             slot.pending_commands.fetch_sub(1, Ordering::SeqCst);
@@ -415,7 +433,8 @@ mod tests {
             recv(&rx),
             Event::Probed {
                 repo: "/r".into(),
-                result: Box::new(Ok(snapshot()))
+                result: Box::new(Ok(snapshot())),
+                cause: ProbeCause::Poll
             }
         );
     }
@@ -528,12 +547,12 @@ mod tests {
         fake.open();
         let (mut engine, rx) = engine(fake.clone());
         let probed = |rx: &Receiver<Event>| loop {
-            if matches!(recv(rx), Event::Probed { .. }) {
-                break;
+            if let Event::Probed { cause, .. } = recv(rx) {
+                break cause;
             }
         };
         assert!(engine.poll(Path::new("/r")));
-        probed(&rx);
+        let mut causes = vec![probed(&rx)];
         // The poll sent its result just before it is done: a fetch asked for
         // in between is skipped, so ask until it is taken.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -541,9 +560,13 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "the poll never ended");
             thread::sleep(Duration::from_millis(1));
         }
-        probed(&rx);
+        causes.push(probed(&rx));
         engine.run_command(1, Path::new("/r"), Job::Git(vec!["push".into()]));
-        probed(&rx);
+        causes.push(probed(&rx));
+        assert_eq!(
+            causes,
+            [ProbeCause::Poll, ProbeCause::Fetch, ProbeCause::Command]
+        );
         assert_eq!(fake.fresh.lock().unwrap().clone(), [false, true, true]);
     }
 

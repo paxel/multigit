@@ -1401,6 +1401,38 @@ fn kawaii_glyphs_and_font_are_there() {
 }
 
 #[test]
+fn sound_settings_switch_play_and_reset() {
+    let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
+    let mut app = crate::ui::app::tests::app_on(Arc::default(), desktop.clone(), None);
+    app.settings_open = true;
+    app.config.boop_file = Some("/sounds/My Boop.ogg".into());
+    let mut h = harness(app);
+    h.run();
+    assert!(!h.state().config.sounds);
+    h.get_by_label("Sounds").click();
+    h.run();
+    assert!(h.state().config.sounds);
+    h.get_by_label("built-in tone");
+    h.get_by_label("My Boop.ogg");
+
+    // Play works whether sounds are on or off: it is for trying them out.
+    let plays: Vec<_> = h.get_all_by_label("Play").collect();
+    assert_eq!(plays.len(), 2);
+    plays[0].click();
+    h.run();
+    let played = desktop.played.lock().unwrap().len();
+    assert_eq!(played, 1);
+
+    // "Default" takes the user's file away; the beep has none to take.
+    let defaults: Vec<_> = h.get_all_by_label("Default").collect();
+    defaults[1].click();
+    h.run();
+    assert_eq!(h.state().config.boop_file, None);
+    assert_eq!(h.get_all_by_label("built-in tone").count(), 2);
+    assert_eq!(h.get_all_by_label("Choose file\u{2026}").count(), 2);
+}
+
+#[test]
 fn settings_button_editor() {
     let mut app = app_with(Arc::default(), None);
     app.settings_open = true;

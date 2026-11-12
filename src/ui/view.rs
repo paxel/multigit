@@ -162,6 +162,14 @@ fn ok_color(ui: &Ui) -> Color32 {
     }
 }
 
+/// File picker for a sound of the user's own. Blocks until the dialog closes.
+pub fn pick_sound_file() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Choose a sound")
+        .add_filter("Sound", &["wav", "ogg", "mp3", "flac"])
+        .pick_file()
+}
+
 /// Folder picker for (+). Blocks until the dialog closes.
 fn pick_folder() -> Option<PathBuf> {
     rfd::FileDialog::new()
@@ -179,6 +187,7 @@ impl App {
         if let Some(folder) = self.take_picked_folder() {
             self.add_folder(&folder);
         }
+        self.take_picked_sound();
         let mut next = self.tick(std::time::Instant::now());
         if !self.toasts.is_empty() {
             // Repaint soon enough to take expired toasts down.

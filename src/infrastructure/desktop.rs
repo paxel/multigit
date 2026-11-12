@@ -1,6 +1,7 @@
 //! Starts other programs of the desktop: the default program for a file.
 
 use crate::application::desktop::Desktop;
+use crate::domain::audio::player_commands;
 use crate::domain::command::terminal_commands;
 use std::ffi::OsStr;
 use std::io;
@@ -15,7 +16,7 @@ pub fn scratch_dir() -> PathBuf {
 
 /// Write `text` to `name` in the scratch folder `dir`, which is made for the
 /// user alone: command output can hold secrets.
-pub fn write_scratch_file(dir: &Path, name: &str, text: &str) -> io::Result<PathBuf> {
+pub fn write_scratch_file(dir: &Path, name: &str, text: impl AsRef<[u8]>) -> io::Result<PathBuf> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -54,8 +55,9 @@ pub fn spawn_detached(program: &OsStr, args: &[&OsStr], dir: Option<&Path>) -> i
     Ok(())
 }
 
-/// Start the first of `commands` whose program exists, in `dir`.
-pub fn spawn_first(commands: &[Vec<String>], dir: &Path) -> io::Result<()> {
+/// Start the first of `commands` whose program exists, in `dir`; `none`
+/// says what to do when there is none.
+pub fn spawn_first(commands: &[Vec<String>], dir: &Path, none: &str) -> io::Result<()> {
     for command in commands {
         let Some((program, args)) = command.split_first() else {
             continue;
@@ -66,11 +68,11 @@ pub fn spawn_first(commands: &[Vec<String>], dir: &Path) -> io::Result<()> {
             result => return result,
         }
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "no terminal found; set the terminal command in Settings",
-    ))
+    Err(io::Error::new(io::ErrorKind::NotFound, none))
 }
+
+const NO_TERMINAL: &str = "no terminal found; set the terminal command in Settings";
+const NO_PLAYER: &str = "no audio player found (pw-play, paplay, aplay or ffplay)";
 
 /// The real desktop.
 #[derive(Debug, Default, Clone, Copy)]
@@ -94,7 +96,13 @@ impl Desktop for SystemDesktop {
             &dir.to_string_lossy(),
         )
         .map_err(io::Error::other)?;
-        spawn_first(&commands, dir)
+        spawn_first(&commands, dir, NO_TERMINAL)
+    }
+
+    fn play(&self, file: &Path) -> io::Result<()> {
+        let commands = player_commands(cfg!(target_os = "macos"), &file.to_string_lossy());
+        let dir = file.parent().unwrap_or(Path::new("/"));
+        spawn_first(&commands, dir, NO_PLAYER)
     }
 }
 
@@ -152,7 +160,7 @@ mod tests {
             vec!["sh".to_owned(), "-c".to_owned(), "touch started".to_owned()],
             vec!["sh".to_owned(), "-c".to_owned(), "touch second".to_owned()],
         ];
-        spawn_first(&commands, dir.path()).unwrap();
+        spawn_first(&commands, dir.path(), "none").unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !dir.path().join("started").exists() {
             assert!(Instant::now() < deadline, "the program never ran");
@@ -160,9 +168,10 @@ mod tests {
         }
         assert!(!dir.path().join("second").exists());
 
-        let none = spawn_first(&commands[..2], dir.path()).unwrap_err();
+        let none = spawn_first(&commands[..2], dir.path(), NO_TERMINAL).unwrap_err();
         assert_eq!(none.kind(), io::ErrorKind::NotFound);
         assert!(none.to_string().contains("Settings"), "{none}");
+        assert!(NO_PLAYER.contains("pw-play"));
         // A configured command that cannot be parsed never starts anything.
         assert!(SystemDesktop.open_terminal(dir.path(), "term 'x").is_err());
     }

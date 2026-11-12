@@ -1,5 +1,6 @@
 //! User configuration stored in `~/.config/multigit/config.toml`.
 
+use crate::domain::audio::Sound;
 use crate::domain::favorites::Favorite;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -81,6 +82,9 @@ fn default_concurrency() -> usize {
 fn default_scan_depth() -> usize {
     2
 }
+fn default_volume() -> u8 {
+    60
+}
 fn default_true() -> bool {
     true
 }
@@ -106,6 +110,17 @@ pub struct Config {
     /// folder. Empty: the app finds a terminal.
     #[serde(default)]
     pub terminal: String,
+    /// Beep and boop when commits appear.
+    #[serde(default)]
+    pub sounds: bool,
+    /// Volume of beep and boop, in percent.
+    #[serde(default = "default_volume")]
+    pub sound_volume: u8,
+    /// The user's own sound file for the beep; the app's tone without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beep_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boop_file: Option<PathBuf>,
     #[serde(default)]
     pub repos: Vec<PathBuf>,
     /// Repositories taken off the board that a later scan of their parent
@@ -128,6 +143,10 @@ impl Default for Config {
             auto_insert_single_match: true,
             theme: Theme::default(),
             terminal: String::new(),
+            sounds: false,
+            sound_volume: default_volume(),
+            beep_file: None,
+            boop_file: None,
             repos: Vec::new(),
             hidden: Vec::new(),
             buttons: default_buttons(),
@@ -145,6 +164,22 @@ impl Config {
     /// Serialize for writing back to disk.
     pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
         toml::to_string_pretty(self)
+    }
+
+    /// The user's own file for `sound`, if one is set.
+    pub fn sound_file(&self, sound: Sound) -> Option<&PathBuf> {
+        match sound {
+            Sound::Beep => self.beep_file.as_ref(),
+            Sound::Boop => self.boop_file.as_ref(),
+        }
+    }
+
+    /// Set or take away the user's own file for `sound`.
+    pub fn set_sound_file(&mut self, sound: Sound, file: Option<PathBuf>) {
+        match sound {
+            Sound::Beep => self.beep_file = file,
+            Sound::Boop => self.boop_file = file,
+        }
     }
 
     /// Concurrency clamped to at least one process.
@@ -200,6 +235,31 @@ mod tests {
         let text = config.to_toml().unwrap();
         assert_eq!(Config::from_toml(&text).unwrap(), config);
         assert!(Config::from_toml("").unwrap().hidden.is_empty());
+    }
+
+    #[test]
+    fn sound_settings_survive_the_config_file() {
+        let mut config = Config::from_toml("").unwrap();
+        assert!(!config.sounds, "silent until switched on");
+        assert_eq!(config.sound_volume, 60);
+        assert_eq!(config.sound_file(Sound::Beep), None);
+        config.sounds = true;
+        config.sound_volume = 35;
+        config.set_sound_file(Sound::Boop, Some("/s/boop.ogg".into()));
+        let text = config.to_toml().unwrap();
+        assert!(!text.contains("beep_file"), "{text}");
+        let back = Config::from_toml(&text).unwrap();
+        assert_eq!(back, config);
+        assert_eq!(
+            back.sound_file(Sound::Boop),
+            Some(&PathBuf::from("/s/boop.ogg"))
+        );
+        config.set_sound_file(Sound::Boop, None);
+        config.set_sound_file(Sound::Beep, Some("/s/b.wav".into()));
+        assert_eq!(
+            (config.boop_file.as_ref(), config.beep_file.is_some()),
+            (None, true)
+        );
     }
 
     #[test]

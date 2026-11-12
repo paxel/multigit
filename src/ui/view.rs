@@ -1298,9 +1298,12 @@ fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
         ui.horizontal(|ui| {
             ui.label(weak("commit"));
             let text = format!("{} {}", commit.short, commit.subject);
-            // A click copies the whole hash, not the short one shown.
+            // A click copies the whole hash, not the short one shown. The
+            // tooltip is the subject; the one a cut-off label brings along
+            // would say it a second time.
             let line = egui::Label::new(text)
                 .truncate()
+                .show_tooltip_when_elided(false)
                 .sense(egui::Sense::click());
             let response = ui
                 .add(line)

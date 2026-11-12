@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.3.0]
 
+### Fixed
+
+- The tooltip of a card's commit line shows the commit message once, not twice.
+
 ---
 
 Historical changes have been moved to [OLDER_CHANGES.md](OLDER_CHANGES.md).

@@ -458,6 +458,24 @@ fn card_shows_the_commit_on_one_line() {
 }
 
 #[test]
+fn commit_line_has_one_tooltip_with_the_subject() {
+    let long = "Rewrite the whole thing from scratch, twice, with a very long subject line";
+    let mut h = commit_card(long);
+    h.get_by_label_contains("1a2b3c4 Rewrite").hover();
+    // Tooltips come up after the pointer has rested.
+    for _ in 0..8 {
+        h.step();
+    }
+    // The line itself and one tooltip; a cut-off label would bring a second.
+    assert_eq!(
+        h.get_all_by_label_contains("with a very long subject line")
+            .count(),
+        2
+    );
+    h.get_by_label(long);
+}
+
+#[test]
 fn clicking_the_commit_line_copies_the_full_hash() {
     let mut h = commit_card("Fix race in SSE handler");
     h.get_by_label("1a2b3c4 Fix race in SSE handler").click();

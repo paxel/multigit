@@ -274,7 +274,7 @@ fn card_shows_the_remote_of_its_branch_and_a_click_copies_its_url() {
     // It pushes to the other one: the card says so, and shows no password.
     snap(h.state_mut(), &|snap| {
         snap.status.tracking = Some("origin/main".into());
-        snap.push = Some("fork/main".into());
+        snap.push = Some("fork".into());
     });
     h.run();
     h.get_by_label("https example.org/team/multigit");

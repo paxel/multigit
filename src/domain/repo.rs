@@ -64,8 +64,8 @@ pub struct Snapshot {
     pub commit: Option<Commit>,
     /// The remotes, each with its URL.
     pub remotes: Vec<Remote>,
-    /// Where the branch pushes to, as git names it (`origin/main`). Only
-    /// asked for with more than one remote: with one it cannot differ.
+    /// The name of the remote the branch pushes to. Only asked for with
+    /// more than one remote: with one it cannot be another.
     pub push: Option<String>,
 }
 
@@ -101,7 +101,8 @@ impl Snapshot {
     /// The remote the branch pushes to, when that is another one than the
     /// card shows.
     pub fn push_remote(&self) -> Option<&Remote> {
-        let push = remote_of(&self.remotes, self.push.as_deref()?)?;
+        let name = self.push.as_deref()?;
+        let push = self.remotes.iter().find(|remote| remote.name == name)?;
         (Some(push) != self.remote()).then_some(push)
     }
 }
@@ -274,11 +275,11 @@ mod tests {
         // Pushing elsewhere is told; pushing to the same remote is not.
         snap.status.tracking = Some("upstream/main".into());
         assert_eq!(pushes(&snap), None);
-        snap.push = Some("upstream/main".into());
+        snap.push = Some("upstream".into());
         assert_eq!(pushes(&snap), None);
-        snap.push = Some("fork/main".into());
+        snap.push = Some("fork".into());
         assert_eq!(pushes(&snap).as_deref(), Some("fork"));
-        snap.push = Some("gone/main".into());
+        snap.push = Some("gone".into());
         assert_eq!(pushes(&snap), None);
     }
 

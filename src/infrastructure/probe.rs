@@ -4,7 +4,7 @@ use crate::domain::completion::RepoRefs;
 use crate::domain::output::ProcessOutput;
 use crate::domain::remote::parse_remotes;
 use crate::domain::repo::{Commit, DatedRef, DatedRefs, ProbeError, Snapshot, tags_on_commit_of};
-use crate::domain::status::{RepoState, parse_porcelain_v2};
+use crate::domain::status::{Head, RepoState, parse_porcelain_v2};
 use crate::infrastructure::git::GitRunner;
 use std::path::{Path, PathBuf};
 
@@ -107,15 +107,21 @@ pub fn probe_full(runner: &GitRunner, dir: &Path) -> Result<Probed, ProbeError> 
     let remotes = parse_remotes(&remotes_out.stdout);
     let (mut refs, dated) = parse_refs(&refs_out.stdout);
     refs.remotes = remotes.iter().map(|remote| remote.name.clone()).collect();
-    // Where the branch pushes to can only be another remote when there are
-    // several. Fails without a branch or without a place to push to.
-    let push = if remotes.len() > 1 {
-        query(runner, dir, &["rev-parse", "--abbrev-ref", "@{push}"])
+    // The remote the branch pushes to can only be another one when there
+    // are several. git names it also before anything was pushed there.
+    let push = match &status.head {
+        Head::Branch(branch) if remotes.len() > 1 => {
+            let branch = format!("refs/heads/{branch}");
+            query(
+                runner,
+                dir,
+                &["for-each-ref", "--format=%(push:remotename)", &branch],
+            )
             .ok()
             .map(|out| out.stdout.trim().to_owned())
             .filter(|name| !name.is_empty())
-    } else {
-        None
+        }
+        _ => None,
     };
     refs.files = status.changed_paths.clone();
 
@@ -400,7 +406,7 @@ mod tests {
         let snap = probe(&isolated_runner(), b.path()).unwrap();
         assert_eq!(snap.remotes.len(), 2);
         assert_eq!(snap.remote().unwrap().name, "origin");
-        assert_eq!(snap.push.as_deref(), Some("fork/main"));
+        assert_eq!(snap.push.as_deref(), Some("fork"));
         assert_eq!(snap.push_remote().unwrap().name, "fork");
         // Detached, there is no branch that pushes anywhere.
         b.git(&["switch", "-q", "--detach"]);

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 /// Writes a passage's WAV file and says where it is.
 pub type WriteWav = Arc<dyn Fn(&[u8]) -> io::Result<PathBuf> + Send + Sync>;
@@ -17,9 +18,21 @@ pub type WriteWav = Arc<dyn Fn(&[u8]) -> io::Result<PathBuf> + Send + Sync>;
 /// The running music. Dropping it stops the player.
 pub struct Music {
     stop: Arc<AtomicBool>,
+    /// Ends the player that runs now: set to stop for good and to go on
+    /// at another volume.
+    halt: Arc<AtomicBool>,
     volume: Arc<AtomicU8>,
     error: Arc<Mutex<Option<String>>>,
     thread: Option<JoinHandle<()>>,
+}
+
+/// A rest of a passage shorter than this many samples is not worth a
+/// player of its own.
+const MIN_REST: usize = SAMPLE_RATE as usize / 20;
+
+/// The samples that play in `seconds`.
+fn samples_in(seconds: f64) -> usize {
+    (seconds * f64::from(SAMPLE_RATE)) as usize
 }
 
 impl Music {
@@ -27,17 +40,39 @@ impl Music {
     /// between every two.
     pub fn start(desktop: Arc<dyn Desktop>, write: WriteWav, volume: u8, seed: u64) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
+        let halt = Arc::new(AtomicBool::new(false));
         let volume = Arc::new(AtomicU8::new(volume));
         let error = Arc::new(Mutex::new(None));
         let thread = {
             let (stop, volume, error) = (stop.clone(), volume.clone(), error.clone());
+            let halt = halt.clone();
             std::thread::spawn(move || {
+                // A passage plays to its end, or to the stop. A change of
+                // the volume ends the player; the rest of the passage is
+                // then written at the new volume and played from where the
+                // old player was, by the time it ran.
                 let play = |samples: Vec<f32>| -> io::Result<()> {
-                    if stop.load(Ordering::SeqCst) {
-                        return Ok(());
+                    let mut from = 0;
+                    while !stop.load(Ordering::SeqCst) {
+                        let Some(rest) = samples.get(from..).filter(|r| r.len() > MIN_REST) else {
+                            break;
+                        };
+                        halt.store(false, Ordering::SeqCst);
+                        // The stop may have come between the two lines
+                        // above; its halt is gone then, so look again.
+                        if stop.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let wav = wav_bytes(rest, SAMPLE_RATE, volume.load(Ordering::SeqCst));
+                        let file = write(&wav)?;
+                        let started = Instant::now();
+                        desktop.play_wait(&file, &halt)?;
+                        if !halt.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        from += samples_in(started.elapsed().as_secs_f64());
                     }
-                    let wav = wav_bytes(&samples, SAMPLE_RATE, volume.load(Ordering::SeqCst));
-                    desktop.play_wait(&write(&wav)?, &stop)
+                    Ok(())
                 };
                 let mut random = seed;
                 let mut previous = None;
@@ -63,15 +98,24 @@ impl Music {
         };
         Self {
             stop,
+            halt,
             volume,
             error,
             thread: Some(thread),
         }
     }
 
-    /// The volume in percent, from the next passage on.
+    /// The volume in percent. A new one is heard at once: the passage that
+    /// plays goes on from where it is.
     pub fn set_volume(&self, volume: u8) {
-        self.volume.store(volume, Ordering::SeqCst);
+        if self.volume.swap(volume, Ordering::SeqCst) != volume {
+            self.halt.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// The volume in percent the music plays at.
+    pub fn volume(&self) -> u8 {
+        self.volume.load(Ordering::SeqCst)
     }
 
     /// Why the music stopped by itself, told once.
@@ -84,6 +128,7 @@ impl Drop for Music {
     /// Stop the player and wait until it is gone.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        self.halt.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -164,11 +209,51 @@ mod tests {
         assert!((10.0..=30.0).contains(&seconds(lengths[0])), "{lengths:?}");
         assert!(seconds(lengths[1]) < 5.0, "{lengths:?}");
         assert!((10.0..=30.0).contains(&seconds(lengths[2])), "{lengths:?}");
-        music.set_volume(10);
         assert_eq!(music.take_error(), None);
         // Dropping stops the passage that is playing and ends the thread.
         drop(music);
         assert_eq!(player.played.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_new_volume_goes_on_with_the_rest_of_the_passage() {
+        let dir = tempfile::tempdir().unwrap();
+        let player = Arc::new(FakePlayer {
+            pass: 0,
+            played: Mutex::default(),
+            fail: false,
+        });
+        let music = Music::start(player.clone(), writer(dir.path()), 50, 7);
+        let played = || player.played.lock().unwrap().clone();
+        wait("the passage", || played().len() == 1);
+        // The same volume again is no change.
+        music.set_volume(50);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(played().len(), 1);
+
+        music.set_volume(10);
+        assert_eq!(music.volume(), 10);
+        wait("the rest of the passage", || played().len() == 2);
+        let (whole, rest) = (played()[0], played()[1]);
+        let lost = (whole - rest) / 2;
+        // At least the 300 ms waited above are gone, and not the passage.
+        assert!(lost >= samples_in(0.3), "{whole} then {rest}");
+        assert!(lost < samples_in(5.0), "{whole} then {rest}");
+        // The rest is quieter: the file was written at the new volume.
+        let peak = |file: &Path| {
+            let wav = std::fs::read(file).unwrap();
+            wav[44..]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| i16::from_le_bytes(*b).unsigned_abs())
+                .max()
+                .unwrap()
+        };
+        let quiet = peak(&dir.path().join("music.wav"));
+        assert!(quiet > 0 && quiet < i16::MAX.unsigned_abs() / 9, "{quiet}");
+        drop(music);
+        assert_eq!(played().len(), 2);
     }
 
     #[test]

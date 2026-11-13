@@ -188,6 +188,7 @@ impl App {
             self.add_folder(&folder);
         }
         self.take_picked_sound();
+        self.pointer_held = ui.input(|i| i.pointer.any_down());
         let mut next = self.tick(std::time::Instant::now());
         if !self.toasts.is_empty() {
             // Repaint soon enough to take expired toasts down.

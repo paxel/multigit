@@ -210,6 +210,9 @@ pub struct App {
     player_missing_said: bool,
     /// The Kawaii theme's music while it plays.
     music: Option<Music>,
+    /// A mouse button is down. A volume slider that is still dragged does
+    /// not retune the music; the volume is taken when it is let go.
+    pub pointer_held: bool,
     /// The music ended with an error; it is not started again until it was
     /// switched off once.
     music_failed: bool,
@@ -275,6 +278,7 @@ impl App {
             sound_made: HashMap::new(),
             player_missing_said: false,
             music: None,
+            pointer_held: false,
             music_failed: false,
         }
     }
@@ -354,6 +358,11 @@ impl App {
         self.music.is_some()
     }
 
+    /// The volume the playing music was last given.
+    pub fn music_volume_playing(&self) -> Option<u8> {
+        self.music.as_ref().map(Music::volume)
+    }
+
     /// Start, stop or tune the music so it fits the settings: it plays in
     /// the Kawaii theme with music switched on, and nowhere else.
     pub fn sync_music(&mut self) {
@@ -364,7 +373,9 @@ impl App {
         }
         match &self.music {
             Some(music) => {
-                music.set_volume(self.config.music_volume);
+                if !self.pointer_held {
+                    music.set_volume(self.config.music_volume);
+                }
                 if let Some(error) = music.take_error() {
                     self.music = None;
                     self.music_failed = true;
@@ -2017,8 +2028,18 @@ pub(crate) mod tests {
         app.sync_music();
         assert!(app.music_plays());
         wait_for_passage(1);
+        // A slider that is still dragged changes nothing yet; let go, the
+        // passage goes on at the new volume in a player of its own.
         app.config.music_volume = 5;
+        app.pointer_held = true;
         app.sync_music();
+        assert_eq!(app.music_volume_playing(), Some(40));
+        app.pointer_held = false;
+        app.sync_music();
+        assert_eq!(app.music_volume_playing(), Some(5));
+        wait_for_passage(2);
+        let passages = desktop.music.lock().unwrap().clone();
+        assert!(passages[1] <= passages[0], "the rest: {passages:?}");
 
         // Another theme ends it; back in Kawaii it starts again.
         app.config.theme = Theme::Dark;
@@ -2026,10 +2047,10 @@ pub(crate) mod tests {
         assert!(!app.music_plays());
         app.config.theme = Theme::Kawaii;
         app.sync_music();
-        wait_for_passage(2);
+        wait_for_passage(3);
         assert_eq!(
             desktop.music.lock().unwrap().len(),
-            2,
+            3,
             "one player at a time"
         );
         assert!(app.toasts.is_empty());

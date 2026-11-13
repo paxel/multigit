@@ -1648,6 +1648,32 @@ fn open_in_the_card_menu_and_the_buttons_of_the_view() {
 }
 
 #[test]
+fn the_graph_tab_keeps_its_width_while_the_graph_is_still_loading() {
+    let mut h = repo_view_app();
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.run();
+    h.get_by_label("Graph").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().graph.is_some());
+    // As on a slow machine: the tab is drawn for the first time before the
+    // graph is read, with nothing in it but "loading".
+    let graph = h.state_mut().repo_view.as_mut().unwrap().graph.take();
+    h.ctx.memory_mut(|memory| *memory = egui::Memory::default());
+    // Steps, not `run`: with its memory gone egui repaints for a while.
+    h.run_steps(4);
+    h.get_by_label("loading");
+    let pane = h.get_by_label("Pick a commit to see it.").rect();
+    assert!(pane.left() > 650.0 && pane.left() < 800.0, "{pane:?}");
+    // Then the graph comes, and the width is what it was.
+    h.state_mut().repo_view.as_mut().unwrap().graph = graph;
+    h.run_steps(4);
+    h.get_by_label("All branches");
+    let pane = h.get_by_label("Pick a commit to see it.").rect();
+    assert!(pane.left() > 650.0 && pane.left() < 800.0, "{pane:?}");
+}
+
+#[test]
 fn the_graph_tab_draws_named_commits_folds_plain_runs_and_picks_a_commit() {
     let mut h = repo_view_app();
     h.state_mut().open_repo_view(std::path::Path::new("/repo"));

@@ -80,10 +80,16 @@ impl App {
                     egui::Panel::left(egui::Id::new(("repo-view-lists", view.tab)))
                         .resizable(true)
                         .default_size(width)
-                        .show(ui, |ui| match view.tab {
-                            RepoTab::Files => file_list(ui, details, view, &mut act),
-                            RepoTab::Commits => commit_list(ui, details, view, &mut act),
-                            RepoTab::Graph => graph_list(ui, details, view, &mut act),
+                        .show(ui, |ui| {
+                            // A panel is as wide as what it shows. While a
+                            // list only says "loading" that is one word,
+                            // and the panel would keep that width.
+                            ui.take_available_width();
+                            match view.tab {
+                                RepoTab::Files => file_list(ui, details, view, &mut act),
+                                RepoTab::Commits => commit_list(ui, details, view, &mut act),
+                                RepoTab::Graph => graph_list(ui, details, view, &mut act),
+                            }
                         });
                     egui::CentralPanel::default().show(ui, |ui| diff_pane(ui, view, &mut act));
                 }

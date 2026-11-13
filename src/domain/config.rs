@@ -119,6 +119,10 @@ pub struct Config {
     /// Its volume, in percent.
     #[serde(default = "default_music_volume")]
     pub music_volume: u8,
+    /// The themes of the music that are switched off, by their labels; a
+    /// theme the app gets later plays until it is switched off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub music_off: Vec<String>,
     /// Beep and boop when commits appear.
     #[serde(default)]
     pub sounds: bool,
@@ -157,6 +161,7 @@ impl Default for Config {
             terminal: String::new(),
             music: false,
             music_volume: default_music_volume(),
+            music_off: Vec::new(),
             sounds: false,
             sound_volume: default_volume(),
             output_hidden: false,
@@ -260,6 +265,11 @@ mod tests {
         assert_eq!(config.music_volume, 40);
         config.music = true;
         config.music_volume = 15;
+        assert!(config.music_off.is_empty(), "every theme plays at first");
+        assert!(!config.to_toml().unwrap().contains("music_off"));
+        config.music_off = vec!["Retro".to_owned()];
+        let read = Config::from_toml(&config.to_toml().unwrap()).unwrap();
+        assert_eq!(read.music_off, ["Retro"]);
         assert_eq!(config.sound_volume, 60);
         assert_eq!(config.sound_file(Sound::Beep), None);
         config.sounds = true;

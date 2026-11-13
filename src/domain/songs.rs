@@ -819,6 +819,8 @@ impl Change {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Style {
     pub name: &'static str,
+    /// Its name beside its checkbox in the settings, and in the config.
+    pub label: &'static str,
     pub kit: Kit,
     pub songs: [Song; 5],
     /// Four short breaks, then two long ones.
@@ -835,6 +837,7 @@ const BACKWARDS: Under = Under::Long { backwards: true };
 /// the long tunes, soft drums.
 pub const JAPAN: Style = Style {
     name: "Japanese traditional lofi",
+    label: "Japanese",
     kit: Kit {
         first: Voice::Pluck,
         second: Voice::Keys,
@@ -917,6 +920,7 @@ pub const JAPAN: Style = Style {
 /// consoles, and their drums made of noise.
 pub const RETRO: Style = Style {
     name: "Retro gaming lofi",
+    label: "Retro",
     kit: Kit {
         first: Voice::Square,
         second: Voice::Pulse,
@@ -1001,6 +1005,7 @@ pub const RETRO: Style = Style {
 /// chords and double bass drums, slowed down.
 pub const METAL: Style = Style {
     name: "Babymetal-style lofi",
+    label: "Babymetal",
     kit: Kit {
         first: Voice::Guitar,
         second: Voice::Idol,
@@ -1088,6 +1093,23 @@ pub static STYLES: [Style; 3] = [JAPAN, RETRO, METAL];
 /// After a song the music leaves its style one time in this many.
 pub const CHANGE_ONE_IN: usize = 4;
 
+/// The styles the music may play, as numbers into `styles`: all but the
+/// ones whose label is in `off`. All of them when none would be left.
+pub fn styles_on(styles: &[Style], off: &[String]) -> Vec<usize> {
+    let on: Vec<usize> = (0..styles.len())
+        .filter(|i| {
+            styles
+                .get(*i)
+                .is_some_and(|s| !off.iter().any(|o| o == s.label))
+        })
+        .collect();
+    if on.is_empty() {
+        (0..styles.len()).collect()
+    } else {
+        on
+    }
+}
+
 /// One thing the music plays. The numbers count into the styles the
 /// program runs over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1118,6 +1140,16 @@ fn song_of(styles: &[Style], (style, song): (usize, usize)) -> Option<(&Kit, &So
 }
 
 impl Passage {
+    /// Whether every style it plays is one of `styles`.
+    pub fn within(&self, styles: &[usize]) -> bool {
+        match *self {
+            Passage::Song { style, .. } | Passage::Break { style, .. } => styles.contains(&style),
+            Passage::Change { from, into, .. } => {
+                styles.contains(&from.0) && styles.contains(&into.0)
+            }
+        }
+    }
+
     /// The passage as samples; nothing for numbers that name no song.
     pub fn render(&self, styles: &[Style]) -> Vec<f32> {
         let rendered = match *self {
@@ -1143,6 +1175,8 @@ impl Passage {
 #[derive(Debug, Clone)]
 pub struct Program {
     styles: &'static [Style],
+    /// The styles that may play, as numbers into `styles`.
+    on: Vec<usize>,
     random: u64,
     /// The style and song that play, or played last.
     at: Option<(usize, usize)>,
@@ -1163,6 +1197,7 @@ impl Program {
     pub fn over(styles: &'static [Style], seed: u64) -> Self {
         Self {
             styles,
+            on: (0..styles.len()).collect(),
             random: seed,
             at: None,
             songs: Vec::new(),
@@ -1173,6 +1208,43 @@ impl Program {
 
     pub fn styles(&self) -> &'static [Style] {
         self.styles
+    }
+
+    /// Let only these styles play from the next passage on; all of them
+    /// when `on` names none. What was planned stays: a caller that must
+    /// not hear a style any more starts over with `restart`.
+    pub fn allow(&mut self, on: &[usize]) {
+        let mut on: Vec<usize> = on
+            .iter()
+            .copied()
+            .filter(|i| *i < self.styles.len())
+            .collect();
+        on.sort_unstable();
+        on.dedup();
+        if on.is_empty() {
+            on = (0..self.styles.len()).collect();
+        }
+        self.on = on;
+    }
+
+    /// Forget what played and what was planned: a song comes next.
+    pub fn restart(&mut self) {
+        self.at = None;
+        self.queued = None;
+        self.songs.clear();
+        self.links.clear();
+    }
+
+    /// One of the styles that may play, but not `not`.
+    fn draw_style(&mut self, not: Option<usize>) -> Option<usize> {
+        let from: Vec<usize> = self
+            .on
+            .iter()
+            .copied()
+            .filter(|i| Some(*i) != not)
+            .collect();
+        let at = self.draw(from.len());
+        from.get(at).copied()
     }
 
     fn draw(&mut self, below: usize) -> usize {
@@ -1216,14 +1288,16 @@ impl Program {
         if let Some(song) = self.queued.take() {
             return song;
         }
-        let count = self.styles.len();
         let Some((style, last)) = self.at else {
-            let style = self.draw(count);
+            let style = self.draw_style(None).unwrap_or(0);
             let song = self.take(true, 5, None);
             return self.song(style, song);
         };
-        if count > 1 && self.draw(CHANGE_ONE_IN) == 0 {
-            let next = (style + 1 + self.draw(count - 1)) % count;
+        let others = self.on.iter().any(|i| *i != style);
+        if others
+            && self.draw(CHANGE_ONE_IN) == 0
+            && let Some(next) = self.draw_style(Some(style))
+        {
             self.songs.clear();
             self.links.clear();
             let song = self.take(true, 5, None);
@@ -1652,6 +1726,66 @@ mod tests {
         // Pure chance: stays of a single song and long stays both happen.
         assert!(stays.contains(&1), "{stays:?}");
         assert!(stays.iter().any(|s| *s > 8), "{stays:?}");
+    }
+
+    static THREE: [Style; 3] = [JAPAN, RETRO, METAL];
+
+    #[test]
+    fn only_the_allowed_styles_play_and_one_alone_never_changes() {
+        let mut program = Program::over(&THREE, 11);
+        program.allow(&[2, 0, 0, 9]);
+        let played: Vec<_> = (0..600).map(|_| program.next_passage()).collect();
+        assert!(played.iter().all(|p| p.within(&[0, 2])), "never style 1");
+        let changes = played
+            .iter()
+            .filter(|p| matches!(p, Passage::Change { .. }))
+            .count();
+        assert!(changes > 20, "{changes} changes between the two");
+
+        // One style: its songs and breaks, never a change break.
+        program.allow(&[1]);
+        program.restart();
+        let alone: Vec<_> = (0..600).map(|_| program.next_passage()).collect();
+        assert!(matches!(alone[0], Passage::Song { style: 1, .. }));
+        assert!(alone.iter().all(|p| p.within(&[1])));
+        assert!(alone.iter().all(|p| !matches!(p, Passage::Change { .. })));
+        assert!(
+            alone
+                .iter()
+                .any(|p| matches!(p, Passage::Break { style: 1, .. }))
+        );
+
+        // No style at all means all of them.
+        program.allow(&[]);
+        program.restart();
+        let all: Vec<_> = (0..600).map(|_| program.next_passage()).collect();
+        for style in 0..3 {
+            assert!(all.iter().any(|p| p.within(&[style])), "style {style}");
+        }
+
+        let change = Passage::Change {
+            change: 0,
+            from: (0, 1),
+            into: (2, 3),
+        };
+        assert!(change.within(&[0, 2]) && !change.within(&[0]) && !change.within(&[2]));
+    }
+
+    #[test]
+    fn the_styles_that_are_switched_off_are_named_by_their_labels() {
+        let labels: Vec<_> = STYLES.iter().map(|s| s.label).collect();
+        let mut unique = labels.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), labels.len(), "{labels:?}");
+        assert_eq!(&labels[..3], ["Japanese", "Retro", "Babymetal"]);
+        let all: Vec<usize> = (0..STYLES.len()).collect();
+        assert_eq!(styles_on(&STYLES, &[]), all);
+        let off = vec!["Retro".to_owned(), "Polka".to_owned()];
+        let on = styles_on(&STYLES, &off);
+        assert!(!on.contains(&1) && on.len() == STYLES.len() - 1, "{on:?}");
+        let every: Vec<String> = labels.iter().map(|l| (*l).to_owned()).collect();
+        assert_eq!(styles_on(&STYLES, &every), all, "none left means all");
     }
 
     #[test]

@@ -19,6 +19,7 @@ use crate::domain::kawaii;
 use crate::domain::naming::{board_order, title};
 use crate::domain::output::{OutputLog, SectionState};
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
+use crate::domain::songs::{STYLES, styles_on};
 use crate::domain::status::{RepoState, Upstream};
 use crate::infrastructure::audio::decode;
 use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
@@ -432,8 +433,10 @@ impl App {
             self.music_failed = false;
             return;
         }
+        let themes = styles_on(&STYLES, &self.config.music_off);
         match &self.music {
             Some(music) => {
+                music.set_themes(&themes);
                 if !self.pointer_held {
                     music.set_volume(self.config.music_volume);
                 }
@@ -450,7 +453,13 @@ impl App {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(1, |d| d.as_nanos() as u64);
                 let volume = self.config.music_volume;
-                self.music = Some(Music::start(self.desktop.clone(), write, volume, seed));
+                self.music = Some(Music::start(
+                    self.desktop.clone(),
+                    write,
+                    volume,
+                    themes,
+                    seed,
+                ));
             }
             None => {}
         }

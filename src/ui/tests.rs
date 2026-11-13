@@ -2108,6 +2108,37 @@ fn kawaii_glyphs_and_font_are_there() {
 }
 
 #[test]
+fn every_music_theme_has_a_checkbox_and_the_last_one_stays_on() {
+    use crate::domain::songs::STYLES;
+    let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
+    let mut app = crate::ui::app::tests::app_on(Arc::default(), desktop, None);
+    app.settings_open = true;
+    let mut h = harness(app);
+    h.step();
+    let labels: Vec<&str> = STYLES.iter().map(|s| s.label).collect();
+    assert!(h.state().config.music_off.is_empty(), "all on at first");
+    // Switch off all but the last theme, one by one.
+    for (i, label) in labels.iter().enumerate().take(labels.len() - 1) {
+        h.get_by_label(label).click();
+        h.step();
+        h.step();
+        assert_eq!(h.state().config.music_off, labels[..=i], "{label}");
+    }
+    // The last one cannot be switched off.
+    let last = labels[labels.len() - 1];
+    h.get_by_label(last).click();
+    h.step();
+    h.step();
+    assert_eq!(h.state().config.music_off.len(), labels.len() - 1);
+    assert!(!h.state().config.music_off.iter().any(|l| l == last));
+    // A theme switched on again leaves the list.
+    h.get_by_label(labels[0]).click();
+    h.step();
+    h.step();
+    assert_eq!(h.state().config.music_off, labels[1..labels.len() - 1]);
+}
+
+#[test]
 fn kawaii_music_setting_starts_and_stops_the_music() {
     let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
     let mut app = crate::ui::app::tests::app_on(Arc::default(), desktop.clone(), None);

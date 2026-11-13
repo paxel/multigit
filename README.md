@@ -285,7 +285,11 @@ songs of about a minute, which vary a little every time they play, and short
 and long breaks between them. After each song chance decides: three times in
 four the music stays in the theme, one time in four a longer break leads
 into another theme: a radio being tuned, a tape that stops, or a modem
-dialling in. A new volume is heard as soon as the slider is let go. No sound
+dialling in. Under the switch, Settings has a checkbox for each theme: only
+the checked ones play, and with a single one checked the music never leaves
+it. The last checked box cannot be unchecked. Unchecking the theme that plays
+ends its passage at once and starts a song of another; any other change is
+heard when the music next changes its theme. A new volume is heard as soon as the slider is let go. No sound
 files and no network are involved. It plays whenever the app is open in that
 theme, focused or not, through the same player program as the sounds, and has
 its own volume; a change of volume counts from the next passage on.

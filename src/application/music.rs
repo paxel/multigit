@@ -4,7 +4,7 @@
 
 use crate::application::desktop::Desktop;
 use crate::domain::audio::{SAMPLE_RATE, wav_bytes};
-use crate::domain::songs::Program;
+use crate::domain::songs::{Passage, Program};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -22,6 +22,12 @@ pub struct Music {
     /// at another volume.
     halt: Arc<AtomicBool>,
     volume: Arc<AtomicU8>,
+    /// The themes that may play, as numbers into the program's styles.
+    themes: Arc<Mutex<Vec<usize>>>,
+    /// What plays now. Only changed while `themes` is locked.
+    playing: Arc<Mutex<Option<Passage>>>,
+    /// Ends the passage that plays: its theme was switched off.
+    skip: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -36,31 +42,43 @@ fn samples_in(seconds: f64) -> usize {
 }
 
 impl Music {
-    /// Start playing what the program drawn from `seed` says: songs with
-    /// a break between every two.
-    pub fn start(desktop: Arc<dyn Desktop>, write: WriteWav, volume: u8, seed: u64) -> Self {
+    /// Start playing what the program drawn from `seed` says: songs of
+    /// `themes` with a break between every two.
+    pub fn start(
+        desktop: Arc<dyn Desktop>,
+        write: WriteWav,
+        volume: u8,
+        themes: Vec<usize>,
+        seed: u64,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let halt = Arc::new(AtomicBool::new(false));
         let volume = Arc::new(AtomicU8::new(volume));
         let error = Arc::new(Mutex::new(None));
+        let themes = Arc::new(Mutex::new(themes));
+        let playing = Arc::new(Mutex::new(None));
+        let skip = Arc::new(AtomicBool::new(false));
         let thread = {
             let (stop, volume, error) = (stop.clone(), volume.clone(), error.clone());
-            let halt = halt.clone();
+            let (halt, skip) = (halt.clone(), skip.clone());
+            let (themes, playing) = (themes.clone(), playing.clone());
             std::thread::spawn(move || {
-                // A passage plays to its end, or to the stop. A change of
+                // A passage plays to its end, to the stop, or until its
+                // theme is switched off. A change of
                 // the volume ends the player; the rest of the passage is
                 // then written at the new volume and played from where the
                 // old player was, by the time it ran.
                 let play = |samples: Vec<f32>| -> io::Result<()> {
                     let mut from = 0;
-                    while !stop.load(Ordering::SeqCst) {
+                    while !stop.load(Ordering::SeqCst) && !skip.load(Ordering::SeqCst) {
                         let Some(rest) = samples.get(from..).filter(|r| r.len() > MIN_REST) else {
                             break;
                         };
                         halt.store(false, Ordering::SeqCst);
-                        // The stop may have come between the two lines
-                        // above; its halt is gone then, so look again.
-                        if stop.load(Ordering::SeqCst) {
+                        // The stop or the skip may have come between the
+                        // two lines above; its halt is gone then, so look
+                        // again.
+                        if stop.load(Ordering::SeqCst) || skip.load(Ordering::SeqCst) {
                             break;
                         }
                         let wav = wav_bytes(rest, SAMPLE_RATE, volume.load(Ordering::SeqCst));
@@ -76,14 +94,33 @@ impl Music {
                 };
                 let mut program = Program::new(seed);
                 let styles = program.styles();
-                let mut ready = program.next_passage().render(styles);
+                // What comes next, and its samples when they are made.
+                let mut next: Option<(Passage, Vec<f32>)> = None;
                 while !stop.load(Ordering::SeqCst) {
+                    let (passage, made) = {
+                        let on = themes.lock().unwrap_or_else(|p| p.into_inner());
+                        program.allow(&on);
+                        skip.store(false, Ordering::SeqCst);
+                        // What was planned with a theme that is switched
+                        // off now is dropped: a song of another one plays.
+                        let kept = next.take().filter(|(planned, _)| planned.within(&on));
+                        let (passage, made) = match kept {
+                            Some((passage, made)) => (passage, Some(made)),
+                            None => {
+                                program.restart();
+                                (program.next_passage(), None)
+                            }
+                        };
+                        *playing.lock().unwrap_or_else(|p| p.into_inner()) = Some(passage);
+                        (passage, made)
+                    };
+                    let ready = made.unwrap_or_else(|| passage.render(styles));
                     // The next passage is made while this one plays, so no
                     // silence the length of the making falls between them.
                     let upcoming = program.next_passage();
                     let making = std::thread::spawn(move || upcoming.render(styles));
                     let played = play(ready);
-                    ready = making.join().unwrap_or_default();
+                    next = Some((upcoming, making.join().unwrap_or_default()));
                     if let Err(e) = played {
                         *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.to_string());
                         break;
@@ -95,6 +132,9 @@ impl Music {
             stop,
             halt,
             volume,
+            themes,
+            playing,
+            skip,
             error,
             thread: Some(thread),
         }
@@ -104,6 +144,22 @@ impl Music {
     /// plays goes on from where it is.
     pub fn set_volume(&self, volume: u8) {
         if self.volume.swap(volume, Ordering::SeqCst) != volume {
+            self.halt.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// The themes that may play. A passage of a theme that is not among
+    /// them ends at once, and a song of another theme starts; any other
+    /// change is heard when the music next changes its theme.
+    pub fn set_themes(&self, themes: &[usize]) {
+        let mut on = self.themes.lock().unwrap_or_else(|p| p.into_inner());
+        if on.as_slice() == themes {
+            return;
+        }
+        *on = themes.to_vec();
+        let playing = *self.playing.lock().unwrap_or_else(|p| p.into_inner());
+        if playing.is_some_and(|passage| !passage.within(themes)) {
+            self.skip.store(true, Ordering::SeqCst);
             self.halt.store(true, Ordering::SeqCst);
         }
     }
@@ -194,7 +250,7 @@ mod tests {
             played: Mutex::default(),
             fail: false,
         });
-        let music = Music::start(player.clone(), writer(dir.path()), 50, 7);
+        let music = Music::start(player.clone(), writer(dir.path()), 50, vec![0, 1, 2], 7);
         wait("three passages", || {
             player.played.lock().unwrap().len() == 3
         });
@@ -218,7 +274,7 @@ mod tests {
             played: Mutex::default(),
             fail: false,
         });
-        let music = Music::start(player.clone(), writer(dir.path()), 50, 7);
+        let music = Music::start(player.clone(), writer(dir.path()), 50, vec![0, 1, 2], 7);
         let played = || player.played.lock().unwrap().clone();
         wait("the passage", || played().len() == 1);
         // The same volume again is no change.
@@ -252,6 +308,40 @@ mod tests {
     }
 
     #[test]
+    fn a_theme_switched_off_ends_its_passage_and_other_changes_are_not_heard() {
+        let dir = tempfile::tempdir().unwrap();
+        let player = Arc::new(FakePlayer {
+            pass: 0,
+            played: Mutex::default(),
+            fail: false,
+        });
+        // Only the first theme may play.
+        let music = Music::start(player.clone(), writer(dir.path()), 50, vec![0], 7);
+        let played = || player.played.lock().unwrap().len();
+        let now = |music: &Music| music.playing.lock().unwrap().unwrap();
+        wait("the song", || played() == 1);
+        assert!(matches!(now(&music), Passage::Song { style: 0, .. }));
+
+        // Another theme switched on, the same themes again: the song goes on.
+        music.set_themes(&[0, 1]);
+        music.set_themes(&[0, 1]);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(played(), 1);
+
+        // The theme that plays switched off: a song of the other one, at
+        // once and without a break before it.
+        music.set_themes(&[1]);
+        wait("the other theme", || played() == 2);
+        assert!(matches!(now(&music), Passage::Song { style: 1, .. }));
+        let seconds =
+            (*player.played.lock().unwrap().last().unwrap() - 44) as f32 / 2.0 / SAMPLE_RATE as f32;
+        assert!(seconds > 40.0, "a whole song, not a rest: {seconds}");
+        assert_eq!(music.take_error(), None);
+        drop(music);
+        assert_eq!(played(), 2);
+    }
+
+    #[test]
     fn a_player_that_cannot_play_ends_the_music_with_its_error() {
         let dir = tempfile::tempdir().unwrap();
         let player = Arc::new(FakePlayer {
@@ -259,7 +349,7 @@ mod tests {
             played: Mutex::default(),
             fail: true,
         });
-        let music = Music::start(player, writer(dir.path()), 50, 1);
+        let music = Music::start(player, writer(dir.path()), 50, vec![0, 1, 2], 1);
         let mut error = None;
         wait("the error", || {
             error = error.take().or_else(|| music.take_error());

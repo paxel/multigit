@@ -229,6 +229,69 @@ fn card_shows_its_status() {
     assert!(h.query_by_label("Remove marked").is_none());
 }
 
+/// The remote with this name, at example.org.
+fn remote(name: &str, url: &str) -> crate::domain::remote::Remote {
+    crate::domain::remote::Remote {
+        name: name.into(),
+        url: url.into(),
+    }
+}
+
+#[test]
+fn card_shows_the_remote_of_its_branch_and_a_click_copies_its_url() {
+    let app = marked_app(Arc::default(), &[]);
+    let snap = |app: &mut App, change: &dyn Fn(&mut crate::domain::repo::Snapshot)| {
+        let Some(Ok(snap)) = &mut app.cards[0].probe else {
+            panic!("no snapshot");
+        };
+        change(snap);
+    };
+    let mut h = harness(app);
+    h.run();
+    h.get_by_label("no remote");
+
+    // Two remotes; the branch tracks the second one.
+    snap(h.state_mut(), &|snap| {
+        snap.remotes = vec![
+            remote("origin", "https://me:s3cret@example.org/team/multigit.git"),
+            remote("fork", "git@github.com:paxel/multigit.git"),
+        ];
+        snap.status.tracking = Some("fork/main".into());
+    });
+    h.run();
+    h.get_by_label("remote");
+    assert!(h.query_by_label_contains("push:").is_none());
+    h.get_by_label("ssh github.com/paxel/multigit").click();
+    h.step();
+    assert_eq!(
+        copied(&h),
+        vec!["git@github.com:paxel/multigit.git".to_owned()]
+    );
+    assert!(h.state().marked.contains(&PathBuf::from("/repo")));
+    h.event(egui::Event::PointerGone);
+    h.run();
+
+    // It pushes to the other one: the card says so, and shows no password.
+    snap(h.state_mut(), &|snap| {
+        snap.status.tracking = Some("origin/main".into());
+        snap.push = Some("fork/main".into());
+    });
+    h.run();
+    h.get_by_label("https example.org/team/multigit");
+    h.get_by_label("push:");
+    h.get_by_label("fork");
+    assert!(h.query_by_label_contains("s3cret").is_none());
+
+    // Several remotes, none of them origin, and no upstream.
+    snap(h.state_mut(), &|snap| {
+        snap.remotes = vec![remote("a", "/srv/a.git"), remote("b", "/srv/b.git")];
+        snap.status.tracking = None;
+        snap.push = None;
+    });
+    h.run();
+    h.get_by_label("no remote for this branch");
+}
+
 #[test]
 fn right_click_removes_or_hides_the_marked_cards_and_settings_unhides() {
     let mut h = favorites_app();

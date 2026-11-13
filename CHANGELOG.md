@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The Kawaii music has three themes, each with its own instruments, songs and breaks: Japanese traditional lofi, retro gaming lofi and Babymetal-style lofi. It changes theme about every five minutes, with a longer break between two themes; one of them is a modem dialling in.
 - Bunnies and cats live on the cards in the Kawaii theme. They blink, wiggle their ears, hop from card to card and sleep while nothing happens; they look up at a new remote commit, dance for a local one, let their ears hang over a failed fetch, look at the pointer and jump with a heart when clicked.
 - In the Kawaii theme a card throws a burst of hearts and stars when a command on it ends well.
+- Every card shows the remote its branch tracks, as a short URL with the protocol first (`ssh github.com/paxel/multigit`); a click copies the URL. A branch that pushes to another remote says so.
 
 ### Changed
 

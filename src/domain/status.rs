@@ -51,6 +51,9 @@ pub enum RepoState {
 pub struct Status {
     pub head: Head,
     pub upstream: Upstream,
+    /// The upstream of the branch as git names it (`origin/main`), when it
+    /// has one, there or gone.
+    pub tracking: Option<String>,
     pub counts: Counts,
     /// Paths that are changed, untracked or conflicted; used for CLI completion.
     pub changed_paths: Vec<String>,
@@ -65,7 +68,7 @@ pub struct ParseError(pub String);
 pub fn parse_porcelain_v2(output: &str) -> Result<Status, ParseError> {
     let mut oid: Option<String> = None;
     let mut head_name: Option<String> = None;
-    let mut has_upstream = false;
+    let mut tracking: Option<String> = None;
     let mut ahead_behind: Option<(u32, u32)> = None;
     let mut counts = Counts::default();
     let mut changed_paths = Vec::new();
@@ -76,7 +79,7 @@ pub fn parse_porcelain_v2(output: &str) -> Result<Status, ParseError> {
                 header,
                 &mut oid,
                 &mut head_name,
-                &mut has_upstream,
+                &mut tracking,
                 &mut ahead_behind,
             )?;
             continue;
@@ -113,7 +116,7 @@ pub fn parse_porcelain_v2(output: &str) -> Result<Status, ParseError> {
         (Some(name), _) => Head::Branch(name.to_owned()),
         (None, _) => return Err(ParseError("missing # branch.head".to_owned())),
     };
-    let upstream = match (has_upstream, ahead_behind) {
+    let upstream = match (tracking.is_some(), ahead_behind) {
         (false, _) => Upstream::None,
         (true, None) => Upstream::Gone,
         (true, Some((ahead, behind))) => Upstream::Tracking { ahead, behind },
@@ -121,6 +124,7 @@ pub fn parse_porcelain_v2(output: &str) -> Result<Status, ParseError> {
     Ok(Status {
         head,
         upstream,
+        tracking,
         counts,
         changed_paths,
     })
@@ -130,14 +134,14 @@ fn parse_header(
     header: &str,
     oid: &mut Option<String>,
     head_name: &mut Option<String>,
-    has_upstream: &mut bool,
+    tracking: &mut Option<String>,
     ahead_behind: &mut Option<(u32, u32)>,
 ) -> Result<(), ParseError> {
     let (key, value) = header.split_once(' ').unwrap_or((header, ""));
     match key {
         "branch.oid" => *oid = Some(value.to_owned()),
         "branch.head" => *head_name = Some(value.to_owned()),
-        "branch.upstream" => *has_upstream = true,
+        "branch.upstream" => *tracking = Some(value.to_owned()),
         "branch.ab" => {
             let bad = || ParseError(header.to_owned());
             let (a, b) = value.split_once(' ').ok_or_else(bad)?;
@@ -200,7 +204,11 @@ mod tests {
     fn upstream_without_ab_is_gone() {
         let out =
             format!("# branch.oid {OID}\n# branch.head topic\n# branch.upstream origin/topic\n");
-        assert_eq!(parse_porcelain_v2(&out).unwrap().upstream, Upstream::Gone);
+        let gone = parse_porcelain_v2(&out).unwrap();
+        assert_eq!(gone.upstream, Upstream::Gone);
+        assert_eq!(gone.tracking.as_deref(), Some("origin/topic"));
+        let none = parse_porcelain_v2(&format!("# branch.oid {OID}\n# branch.head topic\n"));
+        assert_eq!(none.unwrap().tracking, None);
     }
 
     #[test]

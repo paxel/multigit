@@ -32,6 +32,10 @@ Each card shows:
 - the checked-out commit: short hash and subject
 - the working tree: `clean`, or `+staged ~modified ?untracked !conflicts`
 - `rebasing` or `merging` while one is in progress
+- the remote the branch tracks, as a short URL with the protocol first
+  (`ssh github.com/paxel/multigit`; a click copies the URL as git has it),
+  and `push:` with the name of the remote the branch pushes to when that is
+  another one
 - unpushed and unpulled commits, `no upstream`, or `upstream gone`
 - the result of the last command run on it
 - a failed background fetch as one red line (`Error: auth failed`, for

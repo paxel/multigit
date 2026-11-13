@@ -1449,6 +1449,7 @@ pub(crate) mod tests {
         let mut snap = Snapshot::of(Status {
             head: Head::Branch("main".into()),
             upstream,
+            tracking: None,
             counts,
             changed_paths: vec![],
         });

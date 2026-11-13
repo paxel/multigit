@@ -7,6 +7,7 @@ use crate::domain::favorites::{EMOJIS, Favorite, PALETTE, color_rgb, dark_text_o
 use crate::domain::kawaii;
 use crate::domain::naming::{parent_line, title};
 use crate::domain::output::{Run, SectionState};
+use crate::domain::remote::{safe_url, short_url};
 use crate::domain::repo::Snapshot;
 use crate::domain::status::{Head, RepoState, Upstream};
 use crate::domain::switch::{Choice, branch_choices, matching, new_branch_command, tag_choices};
@@ -1417,6 +1418,53 @@ fn tag_texts(
     }
 }
 
+/// The card's remote line: the remote the branch tracks, its URL written
+/// short with the protocol first; a click copies the URL as git has it. A
+/// second line only when the branch pushes to another remote.
+fn remote_lines(ui: &mut Ui, path: &Path, snap: &Snapshot, actions: &mut Vec<BoardAction>) {
+    ui.horizontal(|ui| {
+        let Some(remote) = snap.remote() else {
+            let none = if snap.remotes.is_empty() {
+                "no remote"
+            } else {
+                "no remote for this branch"
+            };
+            menu_anchor(ui, weak(none), path, actions);
+            return;
+        };
+        menu_anchor(ui, weak("remote"), path, actions);
+        let text = RichText::new(short_url(&remote.url)).monospace();
+        let line = egui::Label::new(text)
+            .truncate()
+            .show_tooltip_when_elided(false)
+            .sense(egui::Sense::click());
+        let hover = format!("{}: {}", remote.name, safe_url(&remote.url));
+        let url = ui
+            .add(line)
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(hover);
+        if url.clicked() {
+            let at = url
+                .interact_pointer_pos()
+                .unwrap_or_else(|| url.rect.center());
+            actions.push(BoardAction::Copy(remote.url.clone(), at));
+        }
+    });
+    if let Some(push) = snap.push_remote() {
+        ui.horizontal(|ui| {
+            let hover = format!(
+                "This branch pushes to {}: {}",
+                push.name,
+                safe_url(&push.url)
+            );
+            let warn = ui.visuals().warn_fg_color;
+            menu_anchor(ui, weak("push:"), path, actions).on_hover_text(&hover);
+            let name = RichText::new(&push.name).monospace().color(warn);
+            menu_anchor(ui, name, path, actions).on_hover_text(&hover);
+        });
+    }
+}
+
 /// The status of a card. Only names a user pastes somewhere copy themselves
 /// (branch, sha, tag); a click on anything else reaches the card.
 fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
@@ -1504,6 +1552,7 @@ fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
                 .on_hover_text("+staged ~modified ?untracked !conflicts");
         }
     });
+    remote_lines(ui, &card.path, snap, actions);
     ui.horizontal(|ui| match snap.status.upstream {
         Upstream::None => {
             ui.label(weak("no upstream"));

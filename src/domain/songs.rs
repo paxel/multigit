@@ -165,7 +165,10 @@ pub struct FarEvents {
 /// Nothing falls on a beat, and nothing in the first beats or the last
 /// nine seconds, so every echo has died when the song ends.
 pub fn far_events(seed: u64, seconds: f32, beat: f32) -> FarEvents {
-    let mut random = shuffle(shuffle(seed ^ 0xB0B5_FA11));
+    // Seeds that lie close together must not give events that do.
+    let mut random = shuffle(shuffle(
+        (seed ^ 0xB0B5_FA11).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+    ));
     let beats = (((seconds - 9.0) / beat) as u64).max(3) - 2;
     let place = |random: &mut u64| {
         *random = shuffle(*random);

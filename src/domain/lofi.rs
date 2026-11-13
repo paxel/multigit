@@ -458,7 +458,8 @@ pub fn bomb(seed: u64) -> Vec<f32> {
             let thump = (phase * TAU).sin() * (-t * 2.0).exp() * (t / 0.02).min(1.0);
             one += 0.03 * (noise.sample() - one);
             two += 0.03 * (one - two);
-            let rumble = two * 9.0 * (-t * 1.3).exp();
+            // Not only the deepest part: small speakers have none of it.
+            let rumble = (two * 6.0 + one * 3.0) * (-t * 1.3).exp();
             let both = thump * 0.8 + rumble;
             both / (1.0 + both.abs()) * 1.3
         })

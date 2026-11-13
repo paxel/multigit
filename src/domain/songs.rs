@@ -6,9 +6,21 @@
 //! After a song, one time in four, a change break leads into another style.
 
 use crate::domain::lofi::{
-    Drums, Noise, RATE, Voice, Vowel, add, finish, jaw_harp, pitch, samples, shuffle, voice,
+    Drums, Noise, RATE, Voice, Vowel, add, bomb, crackle, distant, far_call, finish, jaw_harp,
+    pitch, reverb, samples, shuffle, voice,
 };
 use std::f32::consts::TAU;
+
+/// Where a style plays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Space {
+    /// Close and dry, as every style but one.
+    Dry,
+    /// A big empty place with a war far off: the melody instruments have
+    /// an echo, a record crackles all through, and now and then a bomb
+    /// falls or something calls, far away and very quiet.
+    Far,
+}
 
 /// The instruments of a style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +33,7 @@ pub struct Kit {
     pub pad: Voice,
     pub bass: Voice,
     pub drums: Drums,
+    pub space: Space,
 }
 
 /// Who plays the melody of a part.
@@ -137,6 +150,35 @@ impl Variation {
             mirror: c % 2 == 1,
         }
     }
+}
+
+/// What happens far off during a song in the `Far` space: when the bombs
+/// fall and when the call comes, in seconds from the song's start.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FarEvents {
+    pub bombs: Vec<f32>,
+    pub call: Option<f32>,
+}
+
+/// What `seed` lets happen far off in a song of `seconds` with beats of
+/// `beat` seconds: no to three bombs, and in one song of three the call.
+/// Nothing falls on a beat, and nothing in the first beats or the last
+/// nine seconds, so every echo has died when the song ends.
+pub fn far_events(seed: u64, seconds: f32, beat: f32) -> FarEvents {
+    let mut random = shuffle(shuffle(seed ^ 0xB0B5_FA11));
+    let beats = (((seconds - 9.0) / beat) as u64).max(3) - 2;
+    let place = |random: &mut u64| {
+        *random = shuffle(*random);
+        let on = 2 + (*random >> 8) % beats;
+        *random = shuffle(*random);
+        let off = 0.3 + 0.4 * ((*random >> 8) % 1000) as f32 / 1000.0;
+        (on as f32 + off) * beat
+    };
+    let count = (random >> 8) % 4;
+    let bombs = (0..count).map(|_| place(&mut random)).collect();
+    random = shuffle(random);
+    let call = (random >> 8).is_multiple_of(3).then(|| place(&mut random));
+    FarEvents { bombs, call }
 }
 
 /// A note: where it starts, counted in beats from the start of the song,
@@ -336,10 +378,23 @@ impl Song {
     fn instruments(&self, kit: &Kit, variation: &Variation) -> Vec<f32> {
         let beat = self.beat();
         let mut mix = vec![0.0; samples(self.seconds())];
+        // The note each melody instrument played last, and where it ended.
+        let mut first: Option<(u8, f32)> = None;
+        let mut second: Option<(u8, f32)> = None;
         for n in self.melody(variation) {
-            let lead = if n.second { kit.second } else { kit.first };
+            let (lead, last) = if n.second {
+                (kit.second, &mut second)
+            } else {
+                (kit.first, &mut first)
+            };
+            // An instrument that slides comes from its last note when that
+            // one has only just ended.
+            let before = last
+                .filter(|(_, end)| n.at - end < 1.0)
+                .map(|(midi, _)| midi);
+            *last = Some((n.midi, n.at + n.beats));
             // Notes ring a little past their length.
-            let sound = lead.play(n.midi, (n.beats + 0.6) * beat);
+            let sound = lead.play_after(before, n.midi, (n.beats + 0.6) * beat);
             add(&mut mix, n.at * beat, &sound, 0.26);
         }
         for n in self.long_tune(variation) {
@@ -350,6 +405,8 @@ impl Song {
                 0.16,
             );
         }
+        // In the far space the bass stays out of the echo.
+        let mut low = (kit.space == Space::Far).then(|| vec![0.0; mix.len()]);
         for bar in self.each_bar() {
             let at = bar.number as f32 * 4.0 * beat;
             let [root, third, fifth, _] = moved(self.motif, bar.part.shift);
@@ -361,9 +418,32 @@ impl Song {
                 }
             }
             if bar.part.groove != Groove::None {
-                let low = kit.bass.play(root.saturating_sub(24), 2.5 * beat);
-                add(&mut mix, at, &low, 0.3);
+                let note = kit.bass.play(root.saturating_sub(24), 2.5 * beat);
+                add(low.as_deref_mut().unwrap_or(&mut mix), at, &note, 0.3);
             }
+        }
+        if let Some(low) = low {
+            mix = reverb(&mix, 2.4, 0.35);
+            for (slot, value) in mix.iter_mut().zip(low) {
+                *slot += value;
+            }
+        }
+        mix
+    }
+
+    /// What the far space adds to a song: the crackle of the record, and
+    /// the bombs and the call that `seed` lets happen, far away.
+    fn far_off(&self, seed: u64) -> Vec<f32> {
+        let seconds = self.seconds();
+        let mut mix = vec![0.0; samples(seconds)];
+        add(&mut mix, 0.0, &crackle(seconds, seed), CRACKLE);
+        let events = far_events(seed, seconds, self.beat());
+        for (i, at) in events.bombs.iter().enumerate() {
+            let far = distant(&bomb(seed.wrapping_add(i as u64)));
+            add(&mut mix, *at, &far, FAR_BOMB);
+        }
+        if let Some(at) = events.call {
+            add(&mut mix, at, &distant(&far_call(seed)), FAR_CALL);
         }
         mix
     }
@@ -434,10 +514,21 @@ impl Song {
         for (slot, drum) in mix.iter_mut().zip(self.drums(kit, &variation)) {
             *slot += drum;
         }
+        if kit.space == Space::Far {
+            for (slot, far) in mix.iter_mut().zip(self.far_off(seed)) {
+                *slot += far;
+            }
+        }
         finish(&mut mix);
         mix
     }
 }
+
+/// How loud the far space's sounds are in the mix: all of them far below
+/// the music.
+const CRACKLE: f32 = 0.05;
+const FAR_BOMB: f32 = 0.1;
+const FAR_CALL: f32 = 0.1;
 
 /// A snare roll over one beat that grows into its last hit.
 fn roll(mix: &mut [f32], at: f32, beat: f32, snare: &[f32]) {
@@ -481,6 +572,14 @@ pub enum Link {
     Rolls,
     /// A jaw harp twangs three times on the next song's first note.
     Twang,
+    /// The first melody instrument comes down from the next song's last
+    /// note to its first in one slide.
+    Glide,
+    /// The needle in the groove: crackle, two rim shots and one low note.
+    Needle,
+    /// Long: the far battlefield. A held chord with its echo, two bombs
+    /// and the call of something that walks out there.
+    Battlefield,
     /// Long: a porch. A foot stomps, the jaw harp twangs, the bass starts
     /// to walk and the first melody instrument picks its way in.
     Porch,
@@ -489,7 +588,7 @@ pub enum Link {
 impl Link {
     fn bars(self) -> f32 {
         match self {
-            Link::Solo | Link::Chant | Link::Porch => 4.0,
+            Link::Solo | Link::Chant | Link::Porch | Link::Battlefield => 4.0,
             Link::Build | Link::Climb => 3.0,
             _ => 1.0,
         }
@@ -630,6 +729,37 @@ impl Link {
                     }
                 }
             }
+            Link::Glide => {
+                let slid = kit.first.play_after(Some(d), a, beat * 2.4);
+                add(&mut mix, beat * 0.5, &slid, 0.3);
+            }
+            Link::Needle => {
+                add(&mut mix, 0.0, &crackle(self.seconds(next), 78), 0.12);
+                add(&mut mix, beat, &snare, 0.65);
+                let note = kit.bass.play(a.saturating_sub(24), beat * 1.5);
+                add(&mut mix, beat * 1.5, &note, 0.3);
+                add(&mut mix, beat * 2.75, &snare, 0.4);
+            }
+            Link::Battlefield => {
+                let mut chord = vec![0.0; mix.len()];
+                for midi in [a.saturating_sub(12), c.saturating_sub(12), b] {
+                    add(&mut chord, beat * 0.5, &kit.pad.play(midi, beat * 9.0), 0.1);
+                }
+                for (slot, value) in mix.iter_mut().zip(reverb(&chord, 3.0, 0.5)) {
+                    *slot += value;
+                }
+                let note = kit.bass.play(a.saturating_sub(24), beat * 6.0);
+                add(&mut mix, beat * 0.5, &note, 0.3);
+                // Early, so the echoes have died when the break ends.
+                add(&mut mix, beat * 1.37, &distant(&bomb(u64::from(a))), 0.14);
+                add(
+                    &mut mix,
+                    beat * 3.3,
+                    &distant(&far_call(u64::from(b))),
+                    0.14,
+                );
+                add(&mut mix, beat * 6.6, &distant(&bomb(u64::from(d))), 0.12);
+            }
             Link::Rolls => {
                 let picked = [a, c, d, a + 12, c, d, a, c, d, a + 12];
                 for (i, midi) in picked.into_iter().enumerate() {
@@ -690,6 +820,15 @@ impl Link {
                         add(&mut mix, start + beat * 3.0, &snare, 0.65);
                     }
                 }
+            }
+        }
+        if kit.space == Space::Far {
+            // The record crackles through every break of the far space,
+            // and a long one has room for a bomb and its echo.
+            let seed = u64::from(a) + u64::from(d);
+            add(&mut mix, 0.0, &crackle(self.seconds(next), seed), CRACKLE);
+            if self.bars() >= 3.0 && self != Link::Battlefield {
+                add(&mut mix, beat * 1.37, &distant(&bomb(seed)), 0.14);
             }
         }
         finish(&mut mix);
@@ -897,6 +1036,7 @@ pub const JAPAN: Style = Style {
         pad: Voice::Pad,
         bass: Voice::Bass,
         drums: Drums::Soft,
+        space: Space::Dry,
     },
     songs: [
         Song {
@@ -980,6 +1120,7 @@ pub const RETRO: Style = Style {
         pad: Voice::ChipPad,
         bass: Voice::Triangle,
         drums: Drums::Chip,
+        space: Space::Dry,
     },
     songs: [
         Song {
@@ -1065,6 +1206,7 @@ pub const METAL: Style = Style {
         pad: Voice::Chords,
         bass: Voice::Growl,
         drums: Drums::Metal,
+        space: Space::Dry,
     },
     songs: [
         Song {
@@ -1152,6 +1294,7 @@ pub const CAJUN: Style = Style {
         pad: Voice::Fiddle,
         bass: Voice::Washtub,
         drums: Drums::Porch,
+        space: Space::Dry,
     },
     songs: [
         Song {
@@ -1233,7 +1376,93 @@ pub const CAJUN: Style = Style {
     ],
 };
 
-pub static STYLES: [Style; 4] = [JAPAN, RETRO, METAL, CAJUN];
+/// Trip-hop lofi: a theremin over a slow, heavy beat, a sub bass and dark
+/// keys, on a crackling record, with a war far off.
+pub const TRIPHOP: Style = Style {
+    name: "Trip-hop lofi",
+    label: "Trip-hop",
+    kit: Kit {
+        first: Voice::Theremin,
+        second: Voice::DarkKeys,
+        long: Voice::Theremin,
+        pad: Voice::DarkKeys,
+        bass: Voice::Sub,
+        drums: Drums::Dusty,
+        space: Space::Far,
+    },
+    songs: [
+        Song {
+            bpm: 80,
+            motif: [50, 53, 57, 60],
+            parts: &[
+                part(2, 0, Tacet, Under::Pad, Groove::None),
+                part(4, 0, First, Under::Pad, Half),
+                part(4, 0, First, FORWARDS, Full),
+                part(4, 5, Second, Under::Pad, Full),
+                part(2, -2, Tacet, BACKWARDS, Half),
+                part(4, 0, Both, FORWARDS, Busy),
+            ],
+        },
+        Song {
+            bpm: 76,
+            motif: [52, 55, 59, 62],
+            parts: &[
+                part(4, 0, First, Under::None, Half),
+                part(4, 0, Second, Under::Pad, Full),
+                part(4, -5, First, FORWARDS, Full),
+                part(2, 3, Tacet, Under::Pad, Groove::None),
+                part(4, 0, Both, BACKWARDS, Full),
+            ],
+        },
+        Song {
+            bpm: 84,
+            motif: [59, 62, 66, 69],
+            parts: &[
+                part(2, 0, First, Under::None, Groove::None),
+                part(4, 0, First, Under::Pad, Full),
+                part(4, -4, Both, BACKWARDS, Busy),
+                part(4, 0, Second, FORWARDS, Full),
+                part(2, 5, Tacet, Under::Pad, Half),
+                part(4, 0, First, FORWARDS, Busy),
+                part(2, 0, Second, Under::None, Half),
+            ],
+        },
+        Song {
+            bpm: 78,
+            motif: [54, 57, 61, 64],
+            parts: &[
+                part(4, 0, Second, Under::Pad, Groove::None),
+                part(4, 0, First, FORWARDS, Half),
+                part(4, 7, First, Under::Pad, Full),
+                part(2, 5, Tacet, Under::None, Full),
+                part(4, 0, Both, BACKWARDS, Full),
+                part(2, 0, First, Under::Pad, Half),
+            ],
+        },
+        Song {
+            bpm: 82,
+            motif: [53, 56, 60, 63],
+            parts: &[
+                part(2, 0, Tacet, FORWARDS, Groove::None),
+                part(4, 0, First, Under::None, Half),
+                part(4, 3, Second, Under::Pad, Full),
+                part(4, -2, First, BACKWARDS, Full),
+                part(4, 0, Both, Under::Pad, Busy),
+                part(2, 0, First, Under::None, Half),
+            ],
+        },
+    ],
+    breaks: [
+        Link::Glide,
+        Link::Needle,
+        Link::Notes(true),
+        Link::Stab,
+        Link::Solo,
+        Link::Battlefield,
+    ],
+};
+
+pub static STYLES: [Style; 5] = [JAPAN, RETRO, METAL, CAJUN, TRIPHOP];
 
 /// After a song the music leaves its style one time in this many.
 pub const CHANGE_ONE_IN: usize = 4;
@@ -1780,6 +2009,93 @@ mod tests {
         let song = next.render(&CAJUN.kit, 3);
         check("cajun song", &song);
         assert_eq!(song.len(), samples(next.seconds()));
+    }
+
+    #[test]
+    fn far_events_are_few_off_the_beat_and_early_enough_for_their_echo() {
+        let (seconds, beat) = (60.0, 0.75);
+        let mut counts = [0; 4];
+        let mut calls = 0;
+        let mut places = Vec::new();
+        for seed in 0..300 {
+            let events = far_events(seed, seconds, beat);
+            assert_eq!(events, far_events(seed, seconds, beat));
+            counts[events.bombs.len()] += 1;
+            calls += usize::from(events.call.is_some());
+            for at in events.bombs.iter().chain(&events.call) {
+                assert!((1.5..=51.0).contains(at), "seed {seed}: at {at}");
+                let within = (at / beat).fract();
+                assert!((0.29..=0.71).contains(&within), "seed {seed}: {within}");
+                places.push((at * 100.0) as u32);
+            }
+        }
+        // No bomb, one, two and three all happen; the call in one of three.
+        assert!(counts.iter().all(|c| *c > 30), "{counts:?}");
+        assert!((60..=140).contains(&calls), "{calls} calls");
+        // Never at the same places: nearly every place is its own.
+        let all = places.len();
+        places.sort_unstable();
+        places.dedup();
+        assert!(places.len() > all * 8 / 10, "{} of {all}", places.len());
+    }
+
+    #[test]
+    fn the_trip_hop_style_has_a_theremin_an_echo_and_a_war_far_off() {
+        assert_eq!(STYLES[4], TRIPHOP);
+        assert_eq!(TRIPHOP.label, "Trip-hop");
+        assert_eq!(TRIPHOP.kit.first, Voice::Theremin, "the theremin leads");
+        assert_eq!(TRIPHOP.kit.space, Space::Far);
+        // It alone is in the far space: the others sound as they did.
+        let far: Vec<_> = STYLES
+            .iter()
+            .filter(|s| s.kit.space == Space::Far)
+            .map(|s| s.label)
+            .collect();
+        assert_eq!(far, ["Trip-hop"]);
+        for song in &TRIPHOP.songs {
+            assert!((74..=86).contains(&song.bpm), "slow: {}", song.bpm);
+            // Dark: every motif starts with a minor third.
+            assert_eq!(song.motif[1] - song.motif[0], 3);
+        }
+        let song = &TRIPHOP.songs[0];
+        // What is far is very quiet against the music, and is there: the
+        // crackle all through, and for some seed a bomb with its echo.
+        let seed = (0..50)
+            .find(|s| !far_events(*s, song.seconds(), song.beat()).bombs.is_empty())
+            .unwrap();
+        let far_off = song.far_off(seed);
+        assert_eq!(far_off.len(), samples(song.seconds()));
+        let bomb_at = far_events(seed, song.seconds(), song.beat()).bombs[0];
+        let around = &far_off[samples(bomb_at)..samples(bomb_at + 3.0)];
+        assert!(peak(around) > 0.005, "{}", peak(around));
+        assert!(peak(&far_off) < 0.15, "{}", peak(&far_off));
+        let rendered = song.render(&TRIPHOP.kit, seed);
+        check("trip-hop song", &rendered);
+        assert_eq!(rendered.len(), samples(song.seconds()));
+        assert!(
+            peak(&rendered) > 4.0 * peak(&far_off),
+            "far below the music"
+        );
+        assert_ne!(rendered, song.render(&TRIPHOP.kit, seed + 1));
+        // The echo: the melody instruments ring on in a bar without notes,
+        // which they do not in a dry kit.
+        let dry = Kit {
+            space: Space::Dry,
+            ..TRIPHOP.kit
+        };
+        let variation = plain();
+        assert_ne!(
+            song.instruments(&TRIPHOP.kit, &variation),
+            song.instruments(&dry, &variation)
+        );
+        // The theremin slides: a melody is not the same notes played apart.
+        let glide = Link::Glide.render(&TRIPHOP.kit, song);
+        check("glide", &glide);
+        // The battlefield break is long and has more in it than the chord.
+        let field = Link::Battlefield.render(&TRIPHOP.kit, song);
+        check("battlefield", &field);
+        assert!((8.0..=15.0).contains(&Link::Battlefield.seconds(song)));
+        assert!(field.last().unwrap().abs() < 0.01);
     }
 
     #[test]

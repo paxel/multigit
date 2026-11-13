@@ -297,6 +297,195 @@ pub fn jaw_harp(frequency: f32, seconds: f32, wahs: f32) -> Vec<f32> {
     out
 }
 
+/// A theremin: nearly a pure tone that slides to its note from `from`,
+/// the pitch the hand was at, and wavers widely and slowly once it is there.
+fn theremin(from: f32, frequency: f32, seconds: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut phase = 0.0_f32;
+    let interval = (from / frequency).max(0.01);
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let slide = interval.powf((-t / 0.07).exp());
+            let vibrato =
+                1.0 + 0.013 * ((t - 0.15).max(0.0) * 3.0).min(1.0) * (t * 5.0 * TAU).sin();
+            phase = (phase + frequency * slide * vibrato / RATE).fract();
+            let p = phase * TAU;
+            let tone = p.sin() + 0.12 * (2.0 * p).sin() + 0.04 * (3.0 * p).sin();
+            let attack = (t / 0.09).min(1.0);
+            let release = ((seconds - t) / 0.18).clamp(0.0, 1.0);
+            tone * 0.55 * attack * release
+        })
+        .collect()
+}
+
+/// Dark keys: an electric piano with its highs taken off and a slow
+/// tremolo.
+fn dark_keys(frequency: f32, seconds: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut soft = 0.0_f32;
+    let mut out: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let body = (t * frequency * TAU).sin() * (-t * 0.9).exp();
+            let warm = (t * frequency * 2.0 * TAU).sin() * 0.3 * (-t * 3.0).exp();
+            let tremolo = 1.0 + 0.18 * (t * 3.2 * TAU).sin();
+            soft += 0.3 * ((body + warm) * tremolo - soft);
+            soft * (t / 0.02).min(1.0) * 0.6
+        })
+        .collect();
+    fade_out(&mut out, 0.15);
+    out
+}
+
+/// A sub bass: deep, long, with just enough above it to be heard on small
+/// speakers.
+fn sub(frequency: f32, seconds: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut out: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let p = t * frequency * TAU;
+            let tone = p.sin() + 0.35 * (2.0 * p).sin() + 0.1 * (3.0 * p).sin();
+            tone * 0.62 * (t / 0.03).min(1.0) * (-t * 0.9).exp()
+        })
+        .collect();
+    fade_out(&mut out, 0.12);
+    out
+}
+
+/// A room: `dry` with its echo, which dies away over about `decay`
+/// seconds. `wet` from 0 (the sound alone) to 1 (its echo alone, as from
+/// far away). As long as `dry`: a tail needs silence at the end of `dry`.
+pub fn reverb(dry: &[f32], decay: f32, wet: f32) -> Vec<f32> {
+    struct Line {
+        held: Vec<f32>,
+        feedback: f32,
+        dull: f32,
+    }
+    let line = |seconds: f32, feedback: f32| Line {
+        held: vec![0.0; samples(seconds).max(1)],
+        feedback,
+        dull: 0.0,
+    };
+    // Four echoes of different lengths side by side, then two short ones
+    // that smear them (Schroeder's reverberator).
+    let mut combs: Vec<Line> = [0.0297_f32, 0.0371, 0.0411, 0.0437]
+        .into_iter()
+        .map(|seconds| line(seconds, 10f32.powf(-3.0 * seconds / decay.max(0.05))))
+        .collect();
+    let mut smears = [line(0.005, 0.7), line(0.0017, 0.7)];
+    dry.iter()
+        .enumerate()
+        .map(|(i, x)| {
+            let mut sum = 0.0;
+            for comb in &mut combs {
+                let at = i % comb.held.len();
+                if let Some(slot) = comb.held.get_mut(at) {
+                    let out = *slot;
+                    // Every round loses a little of its highs, as in air.
+                    comb.dull += 0.45 * (out - comb.dull);
+                    *slot = x + comb.dull * comb.feedback;
+                    sum += out;
+                }
+            }
+            let mut y = sum / 4.0;
+            for smear in &mut smears {
+                let at = i % smear.held.len();
+                if let Some(slot) = smear.held.get_mut(at) {
+                    let out = *slot - smear.feedback * y;
+                    *slot = y + smear.feedback * out;
+                    y = out;
+                }
+            }
+            x * (1.0 - wet) + y * wet
+        })
+        .collect()
+}
+
+/// `sound` as heard from far away: its echo alone, with five seconds for
+/// it to die.
+pub fn distant(sound: &[f32]) -> Vec<f32> {
+    let mut long = sound.to_vec();
+    long.resize(sound.len() + samples(5.0), 0.0);
+    let mut far = reverb(&long, 5.0, 1.0);
+    fade_out(&mut far, 1.0);
+    far
+}
+
+/// The crackle of a record: clicks at no fixed time, about fourteen a
+/// second, over a faint hiss. `seed` decides where they fall.
+pub fn crackle(seconds: f32, seed: u64) -> Vec<f32> {
+    let mut noise = Noise((seed as u32) | 1);
+    let (mut click, mut hiss) = (0.0_f32, 0.0_f32);
+    let chance = 1.0 - 2.0 * 14.0 / RATE;
+    (0..samples(seconds))
+        .map(|i| {
+            let t = i as f32 / RATE;
+            if noise.sample() > chance {
+                click = 0.3 + 0.7 * noise.sample();
+            }
+            click *= 0.7;
+            hiss += 0.2 * (noise.sample() - hiss);
+            (click + hiss * 0.1) * (t / 0.05).min(1.0)
+        })
+        .collect()
+}
+
+/// A bomb, close by: a deep thump and a rumble that rolls on. `distant`
+/// puts it where it belongs. `seed` makes each one its own.
+pub fn bomb(seed: u64) -> Vec<f32> {
+    let n = samples(2.6);
+    let mut noise = Noise((seed as u32) | 1);
+    let (mut one, mut two) = (0.0_f32, 0.0_f32);
+    let mut phase = 0.0_f32;
+    let depth = 30.0 + (seed % 9) as f32;
+    let mut out: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            phase += (depth + 40.0 * (-t * 5.0).exp()) / RATE;
+            let thump = (phase * TAU).sin() * (-t * 2.0).exp() * (t / 0.02).min(1.0);
+            one += 0.03 * (noise.sample() - one);
+            two += 0.03 * (one - two);
+            let rumble = two * 9.0 * (-t * 1.3).exp();
+            let both = thump * 0.8 + rumble;
+            both / (1.0 + both.abs()) * 1.3
+        })
+        .collect();
+    fade_out(&mut out, 0.3);
+    out
+}
+
+/// The call of something big and far off: a low moan like a horn that
+/// rises, breaks and sinks below where it began. `distant` puts it where
+/// it belongs.
+pub fn far_call(seed: u64) -> Vec<f32> {
+    let seconds = 3.8;
+    let n = samples(seconds);
+    let base = 78.0 + (seed % 5) as f32 * 4.0;
+    let mut formants = [Formant::new(310.0, 4.0), Formant::new(720.0, 5.0)];
+    let mut phases = [0.0_f32; 2];
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let u = t / seconds;
+            let rise = (u * std::f32::consts::PI).sin().max(0.0).powf(1.5);
+            let frequency = base * (1.0 + 0.55 * rise) * (1.0 - 0.22 * u);
+            let mut buzz = 0.0;
+            for (phase, (ratio, level)) in phases.iter_mut().zip([(1.0, 1.0), (1.498, 0.4)]) {
+                *phase = (*phase + frequency * ratio / RATE).fract();
+                buzz += (*phase * 2.0 - 1.0) * level;
+            }
+            let shaped: f32 = formants.iter_mut().map(|f| f.run(buzz)).sum();
+            let flutter = 1.0 + 0.25 * (t * 7.5 * TAU).sin();
+            let attack = (t / 0.6).min(1.0);
+            let release = ((seconds - t) / 1.2).clamp(0.0, 1.0);
+            let moan = shaped * flutter * 1.8;
+            moan / (1.0 + moan.abs()) * attack * release
+        })
+        .collect()
+}
+
 /// An instrument that plays one note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Voice {
@@ -335,11 +524,25 @@ pub enum Voice {
     Fiddle,
     /// A washtub bass: every note a boing.
     Washtub,
+    /// A theremin: it slides from note to note.
+    Theremin,
+    /// A dark electric piano.
+    DarkKeys,
+    /// A sub bass.
+    Sub,
 }
 
 impl Voice {
     /// The MIDI note `midi` for `seconds`.
     pub fn play(self, midi: u8, seconds: f32) -> Vec<f32> {
+        self.play_after(None, midi, seconds)
+    }
+
+    /// The note `midi` for `seconds`, played right after the note
+    /// `before`. Only an instrument that slides from note to note plays it
+    /// differently then: without a note before, it comes up from two
+    /// semitones below.
+    pub fn play_after(self, before: Option<u8>, midi: u8, seconds: f32) -> Vec<f32> {
         let frequency = pitch(midi);
         match self {
             Voice::Pluck => pluck(frequency, seconds),
@@ -362,6 +565,12 @@ impl Voice {
             Voice::Banjo => banjo(frequency, seconds),
             Voice::Fiddle => fiddle(frequency, seconds),
             Voice::Washtub => washtub(frequency, seconds),
+            Voice::Theremin => {
+                let from = before.map_or(frequency * 0.89, pitch);
+                theremin(from, frequency, seconds)
+            }
+            Voice::DarkKeys => dark_keys(frequency, seconds),
+            Voice::Sub => sub(frequency, seconds),
         }
     }
 }
@@ -385,6 +594,8 @@ pub enum Drums {
     Metal,
     /// No drums at all: a foot on the porch and a washboard.
     Porch,
+    /// A slow, heavy beat off an old record: a dull bass drum, a rim shot.
+    Dusty,
 }
 
 impl Drums {
@@ -394,6 +605,7 @@ impl Drums {
             Drums::Chip => chip_kick(),
             Drums::Metal => tight_kick(),
             Drums::Porch => stomp(),
+            Drums::Dusty => dusty_kick(),
         }
     }
 
@@ -403,6 +615,7 @@ impl Drums {
             Drums::Chip => coarse_noise(0.14, 8, 26.0, 0.6),
             Drums::Metal => hard_snare(),
             Drums::Porch => washboard(0.16, 0.62),
+            Drums::Dusty => rim_shot(),
         }
     }
 
@@ -412,6 +625,7 @@ impl Drums {
             Drums::Chip => coarse_noise(0.03, 2, 110.0, 0.22),
             Drums::Metal => hat(),
             Drums::Porch => washboard(0.05, 0.3),
+            Drums::Dusty => dull_hat(),
         }
     }
 }
@@ -447,6 +661,50 @@ fn washboard(seconds: f32, level: f32) -> Vec<f32> {
             low += 0.35 * (raw - low);
             let ridges = 0.35 + 0.65 * (t * 70.0 * TAU).sin().max(0.0);
             (raw - low) * ridges * (-t * 3.0 / seconds).exp() * level
+        })
+        .collect()
+}
+
+/// A bass drum off an old record: deep, long and dull.
+fn dusty_kick() -> Vec<f32> {
+    let n = samples(0.36);
+    let mut noise = Noise(1994);
+    let mut dust = 0.0_f32;
+    let mut phase = 0.0_f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let frequency = 42.0 + 70.0 * (-t * 22.0).exp();
+            phase += frequency / RATE;
+            dust += 0.2 * (noise.sample() - dust);
+            (phase * TAU).sin() * (-t * 8.0).exp() * 0.92 + dust * (-t * 20.0).exp() * 0.08
+        })
+        .collect()
+}
+
+/// A rim shot: the stick on the drum's edge, a short woody click.
+fn rim_shot() -> Vec<f32> {
+    let n = samples(0.1);
+    let mut noise = Noise(1998);
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let wood = (t * 1650.0 * TAU).sin() * 0.5 + (t * 410.0 * TAU).sin() * 0.35;
+            wood * (-t * 70.0).exp() + noise.sample() * 0.25 * (-t * 110.0).exp()
+        })
+        .collect()
+}
+
+/// A hi-hat with a cloth over it.
+fn dull_hat() -> Vec<f32> {
+    let n = samples(0.035);
+    let mut noise = Noise(1991);
+    let mut soft = 0.0_f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            soft += 0.5 * (noise.sample() - soft);
+            soft * (-t * 90.0).exp() * 0.16
         })
         .collect()
 }
@@ -692,7 +950,13 @@ mod tests {
             assert!(early < later / 3.0, "{early} {later}");
             assert!(slow.last().unwrap().abs() < 0.01, "lets go at the end");
         }
-        for drums in [Drums::Soft, Drums::Chip, Drums::Metal, Drums::Porch] {
+        for drums in [
+            Drums::Soft,
+            Drums::Chip,
+            Drums::Metal,
+            Drums::Porch,
+            Drums::Dusty,
+        ] {
             check(&format!("{drums:?} kick"), &drums.kick());
             check(&format!("{drums:?} snare"), &drums.snare());
             let hat = drums.hat();
@@ -812,6 +1076,103 @@ mod tests {
         let (stomp, board) = (Drums::Porch.kick(), Drums::Porch.snare());
         assert!(tone(&stomp, 60.0) > 5.0 * tone(&board, 60.0));
         assert!(tone(&board, 4000.0) > tone(&stomp, 4000.0));
+    }
+
+    #[test]
+    fn the_theremin_slides_to_its_note_and_the_band_under_it_is_dark_and_deep() {
+        for voice in [Voice::Theremin, Voice::DarkKeys, Voice::Sub] {
+            let sound = voice.play(57, 1.5);
+            check(&format!("{voice:?}"), &sound);
+            assert!(loudest(&sound) <= 0.9, "{voice:?}: {}", loudest(&sound));
+            assert_eq!(sound.len(), samples(1.5));
+            assert!(sound.last().unwrap().abs() < 0.02, "{voice:?} lets go");
+        }
+        // After a note a fifth above, the theremin starts up there and
+        // comes down; once it stands it is on its own note either way.
+        let slid = Voice::Theremin.play_after(Some(64), 57, 1.5);
+        let start = &slid[..samples(0.03)];
+        assert!(
+            tone(start, pitch(64)) > tone(start, pitch(57)),
+            "starts above"
+        );
+        let stands = &slid[samples(0.5)..samples(1.2)];
+        assert!(tone(stands, pitch(57)) > 3.0 * tone(stands, pitch(64)));
+        // Alone it comes up from below.
+        let alone = Voice::Theremin.play(57, 1.5);
+        assert_ne!(alone, slid);
+        let start = &alone[..samples(0.03)];
+        assert!(
+            tone(start, pitch(55)) > tone(start, pitch(59)),
+            "from below"
+        );
+        // Nearly a pure tone: little of the second overtone.
+        assert!(tone(stands, 2.0 * pitch(57)) < 0.25 * tone(stands, pitch(57)));
+        // Nothing else slides.
+        assert_eq!(
+            Voice::DarkKeys.play_after(Some(64), 57, 0.5),
+            Voice::DarkKeys.play(57, 0.5)
+        );
+        assert_eq!(
+            Voice::Pluck.play_after(Some(64), 57, 0.5),
+            Voice::Pluck.play(57, 0.5)
+        );
+        // The rim shot is short and woody, the bass drum long and deep.
+        let (kick, rim) = (Drums::Dusty.kick(), Drums::Dusty.snare());
+        assert!(kick.len() > 3 * rim.len());
+        assert!(tone(&kick, 50.0) > 5.0 * tone(&rim, 50.0));
+        assert!(tone(&rim, 1650.0) > 5.0 * tone(&kick, 1650.0));
+    }
+
+    #[test]
+    fn a_reverb_rings_on_and_far_sounds_are_only_their_echo() {
+        // One click, then silence: the room goes on ringing and dies away.
+        let mut click = vec![0.0_f32; samples(4.0)];
+        click[0] = 1.0;
+        let room = reverb(&click, 2.0, 1.0);
+        assert_eq!(room.len(), click.len());
+        assert!(room.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+        assert_eq!(room[0], 0.0, "the echo alone: the click itself is gone");
+        let early = loudest(&room[samples(0.1)..samples(0.5)]);
+        let late = loudest(&room[samples(2.5)..samples(3.0)]);
+        assert!(early > 0.01, "{early}");
+        assert!(late > 0.0 && late < early * 0.1, "{early} then {late}");
+        // A longer decay rings longer.
+        let hall = reverb(&click, 5.0, 1.0);
+        assert!(loudest(&hall[samples(2.5)..samples(3.0)]) > 2.0 * late);
+        // Dry is the sound itself; half and half keeps the click.
+        assert_eq!(reverb(&click, 2.0, 0.0), click);
+        assert_eq!(reverb(&click, 2.0, 0.5)[0], 0.5);
+
+        let near = bomb(1);
+        check("bomb", &near);
+        assert_ne!(near, bomb(2));
+        assert!(tone(&near, 45.0) > 4.0 * tone(&near, 2000.0), "deep");
+        let far = distant(&near);
+        assert_eq!(far.len(), near.len() + samples(5.0));
+        assert!(far.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+        // It rings on after the bomb itself is over, and ends in silence.
+        assert!(loudest(&far[near.len()..near.len() + samples(1.0)]) > 0.005);
+        assert!(far.last().unwrap().abs() < 0.001);
+
+        // The call rises and sinks below where it began.
+        let call = far_call(0);
+        check("call", &call);
+        let (first, middle, last) = (
+            &call[samples(0.3)..samples(0.8)],
+            &call[samples(1.6)..samples(2.1)],
+            &call[samples(3.2)..samples(3.7)],
+        );
+        assert!(tone(middle, 110.0) > tone(first, 110.0), "it rises");
+        assert!(tone(last, 66.0) > tone(middle, 66.0), "and sinks");
+
+        // Crackle: clicks now and then, not a tone, different for a seed.
+        let dust = crackle(2.0, 5);
+        assert_eq!(dust.len(), samples(2.0));
+        assert!(dust.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
+        let clicks = dust.windows(2).filter(|w| w[1] - w[0] > 0.25).count();
+        assert!((10..=60).contains(&clicks), "{clicks} clicks in 2 s");
+        assert!(dust[0].abs() < 0.01, "comes in softly");
+        assert_ne!(dust, crackle(2.0, 6));
     }
 
     #[test]

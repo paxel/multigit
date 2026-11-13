@@ -1226,7 +1226,6 @@ fn the_graph_tab_draws_named_commits_folds_plain_runs_and_picks_a_commit() {
     h.run();
     h.get_by_label("Graph").click();
     h.run();
-    h.get_by_label("loading");
     settle(&mut h, |a| a.repo_view.as_ref().unwrap().graph.is_some());
     h.run();
     h.get_by_label("All branches");

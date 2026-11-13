@@ -110,9 +110,77 @@ pub fn spark(t: f32, index: usize, count: usize) -> (f32, f32) {
     (angle.cos() * radius, angle.sin() * radius)
 }
 
+/// Hearts and stars in a burst of confetti, and how long it lasts.
+pub const CONFETTI: usize = 14;
+pub const CONFETTI_SECS: f64 = 1.1;
+
+/// A heart or star of a burst of confetti.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Confetto {
+    /// Offset from where the burst started: right and down, in points.
+    pub dx: f32,
+    pub dy: f32,
+    pub heart: bool,
+    /// Font size in points.
+    pub size: f32,
+    /// 1 at the start, 0 at the end.
+    pub alpha: f32,
+}
+
+/// How far a burst that started at clock time `started` has come, 0 to 1;
+/// `None` when it is over.
+pub fn burst(clock: f64, started: f64) -> Option<f32> {
+    let t = ((clock - started) / CONFETTI_SECS) as f32;
+    (0.0..1.0).contains(&t).then_some(t)
+}
+
+/// The piece `index` of a burst after the fraction `t` of its time: thrown
+/// up and outwards in a fan, each at its own speed, then falling.
+pub fn confetto(t: f32, index: usize) -> Confetto {
+    // A fan over the upper half: from the left over the top to the right.
+    let angle = (0.1 + 0.8 * (index as f32 + 0.5) / CONFETTI as f32) * TAU / 2.0;
+    let speed = 70.0 + 60.0 * scatter(index * 11 + 4);
+    Confetto {
+        dx: -angle.cos() * speed * t,
+        dy: -angle.sin() * speed * t + 150.0 * t * t,
+        heart: index.is_multiple_of(2),
+        size: 10.0 + 8.0 * scatter(index * 3 + 1),
+        alpha: (1.0 - t * t).clamp(0.0, 1.0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confetti_flies_up_and_apart_then_falls_and_fades() {
+        assert_eq!(burst(10.0, 10.0), Some(0.0));
+        assert!((burst(10.55, 10.0).unwrap() - 0.5).abs() < 0.01);
+        assert_eq!(burst(10.0 + CONFETTI_SECS, 10.0), None);
+        assert_eq!(burst(9.0, 10.0), None, "not before it started");
+        let pieces = |t: f32| -> Vec<Confetto> { (0..CONFETTI).map(|i| confetto(t, i)).collect() };
+        assert!(
+            pieces(0.0)
+                .iter()
+                .all(|p| p.dx == 0.0 && p.dy == 0.0 && p.alpha == 1.0)
+        );
+        // Early on every piece is above the start; they go left and right.
+        let early = pieces(0.2);
+        assert!(early.iter().all(|p| p.dy < 0.0), "{early:?}");
+        assert!(early.iter().any(|p| p.dx < -5.0) && early.iter().any(|p| p.dx > 5.0));
+        // Each falls again: lower at the end than at its highest.
+        for index in 0..CONFETTI {
+            let highest = (0..=20)
+                .map(|i| confetto(i as f32 / 20.0, index).dy)
+                .fold(f32::MAX, f32::min);
+            assert!(confetto(1.0, index).dy > highest + 5.0, "piece {index}");
+        }
+        let late = pieces(0.95);
+        assert!(late.iter().all(|p| p.alpha < 0.15 && p.alpha >= 0.0));
+        assert!(early.iter().any(|p| p.heart) && early.iter().any(|p| !p.heart));
+        assert!(early.iter().all(|p| (10.0..=18.0).contains(&p.size)));
+    }
 
     #[test]
     fn clock_runs_only_with_focus_and_never_jumps() {

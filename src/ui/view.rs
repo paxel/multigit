@@ -541,6 +541,7 @@ impl App {
                         &places,
                         &mut actions,
                     );
+                    confetti(ui, &self.bursts, self.kawaii_clock, &places);
                 }
             });
         for action in actions {
@@ -818,6 +819,33 @@ fn kawaii_background(ui: &Ui, clock: f64) {
             egui::FontId::proportional(p.size),
             color.gamma_multiply(0.8 * p.alpha),
         );
+    }
+}
+
+/// The bursts of confetti: hearts and stars out of the top of their cards.
+fn confetti(ui: &Ui, bursts: &[(PathBuf, f64)], clock: f64, places: &[(PathBuf, egui::Rect)]) {
+    for (card, started) in bursts {
+        let Some(t) = kawaii::burst(clock, *started) else {
+            continue;
+        };
+        let Some((_, rect)) = places.iter().find(|(path, _)| path == card) else {
+            continue;
+        };
+        for index in 0..kawaii::CONFETTI {
+            let piece = kawaii::confetto(t, index);
+            let (glyph, color) = if piece.heart {
+                (HEART, KAWAII_PINK)
+            } else {
+                (STAR, KAWAII_YELLOW)
+            };
+            ui.painter().text(
+                rect.center_top() + egui::vec2(piece.dx, piece.dy),
+                egui::Align2::CENTER_CENTER,
+                glyph,
+                egui::FontId::proportional(piece.size),
+                color.gamma_multiply(piece.alpha),
+            );
+        }
     }
 }
 

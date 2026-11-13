@@ -237,6 +237,9 @@ pub struct App {
     pub kawaii_clock: f64,
     /// The bunnies and cats of the Kawaii theme.
     pub critters: Troupe,
+    /// Bursts of confetti that are in the air: the card each comes out of
+    /// and the clock time it started at.
+    pub bursts: Vec<(PathBuf, f64)>,
     /// Seconds a change in a repository still keeps the Kawaii theme moving
     /// in a window without focus.
     kawaii_awake: f32,
@@ -318,6 +321,7 @@ impl App {
             copy_flash: None,
             kawaii_clock: 0.0,
             critters: Troupe::default(),
+            bursts: Vec::new(),
             kawaii_awake: 0.0,
             wobbles: HashMap::new(),
             confirm: None,
@@ -858,6 +862,7 @@ impl App {
         if !self.is_kawaii() {
             self.wobbles.clear();
             self.critters = Troupe::default();
+            self.bursts.clear();
             self.kawaii_awake = 0.0;
             return false;
         }
@@ -867,6 +872,8 @@ impl App {
         let clock = self.kawaii_clock;
         self.wobbles
             .retain(|_, marked_at| kawaii::wobble(clock, *marked_at).is_some());
+        self.bursts
+            .retain(|(_, started)| kawaii::burst(clock, *started).is_some());
         running
     }
 
@@ -1268,6 +1275,11 @@ impl App {
                     && let Some(card) = self.card_mut(&repo)
                 {
                     card.last_command = Some(outcome);
+                    // A command that ended well is worth confetti.
+                    if outcome && self.is_kawaii() {
+                        self.bursts.push((repo.clone(), self.kawaii_clock));
+                        self.wake_kawaii();
+                    }
                 }
                 self.log.update(run, &repo, state);
             }
@@ -2164,6 +2176,55 @@ pub(crate) mod tests {
         app.config.theme = Theme::Dark;
         app.advance_kawaii(0.033, true);
         assert!(app.critters.critters.is_empty());
+    }
+
+    #[test]
+    fn a_command_that_ends_well_throws_confetti_in_the_kawaii_theme() {
+        use crate::domain::output::SectionState;
+        let mut app = app_with(Arc::default(), None);
+        app.cards = vec![Card::new("/x/a".into()), Card::new("/x/b".into())];
+        let ended = |repo: &str, exit_code| Event::Section {
+            run: 1,
+            repo: repo.into(),
+            state: SectionState::Done(ProcessOutput {
+                exit_code: Some(exit_code),
+                stdout: String::new(),
+                stderr: String::new(),
+            }),
+        };
+        app.handle_event(ended("/x/a", 0));
+        assert!(app.bursts.is_empty(), "not in a plain theme");
+
+        app.config.theme = Theme::Kawaii;
+        app.handle_event(Event::Section {
+            run: 1,
+            repo: "/x/a".into(),
+            state: SectionState::Running,
+        });
+        app.handle_event(ended("/x/a", 1));
+        app.handle_event(Event::Section {
+            run: 1,
+            repo: "/x/a".into(),
+            state: SectionState::SpawnFailed("no git".into()),
+        });
+        app.handle_event(ended("/x/gone", 0));
+        assert!(app.bursts.is_empty(), "nothing to celebrate");
+        app.handle_event(ended("/x/b", 0));
+        assert_eq!(app.bursts, [(PathBuf::from("/x/b"), app.kawaii_clock)]);
+        // It flies also in a window without focus, and is over after a
+        // good second.
+        let mut frames = 0;
+        while !app.bursts.is_empty() {
+            assert!(app.advance_kawaii(0.033, false));
+            frames += 1;
+        }
+        assert!((30..=36).contains(&frames), "{frames}");
+        // A failed fetch in the background throws none; another theme
+        // sweeps up.
+        app.handle_event(ended("/x/a", 0));
+        app.config.theme = Theme::Light;
+        app.advance_kawaii(0.033, true);
+        assert!(app.bursts.is_empty());
     }
 
     #[test]

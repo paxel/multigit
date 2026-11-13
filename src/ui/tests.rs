@@ -1699,6 +1699,15 @@ fn bunnies_and_cats_sit_on_the_cards_and_a_click_pets_one_without_marking() {
     h.step();
     assert_eq!(h.state().critters.critters[0].mood, Mood::Pet);
     assert!(h.state().marked.is_empty(), "{:?}", h.state().marked);
+    // Confetti out of a card flies for a good second and is gone.
+    let clock = h.state().kawaii_clock;
+    h.state_mut().bursts.push((home.clone(), clock));
+    h.step();
+    assert_eq!(h.state().bursts.len(), 1);
+    for _ in 0..10 {
+        h.step();
+    }
+    assert!(h.state().bursts.is_empty());
     // Without focus and with nothing happening the picture stands still,
     // critters and all.
     h.input_mut().focused = false;

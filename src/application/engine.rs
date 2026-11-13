@@ -10,7 +10,7 @@
 
 use crate::application::semaphore::Semaphore;
 use crate::domain::command::Job;
-use crate::domain::details::{Details, DiffTarget};
+use crate::domain::details::{Details, DiffTarget, LOG_PAGE, LogEntry};
 use crate::domain::output::{ProcessOutput, SectionState};
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use std::collections::HashMap;
@@ -42,7 +42,10 @@ pub trait Backend: Send + Sync + 'static {
     fn options(&self, dir: &Path, command: &str) -> Vec<String>;
     /// The lists of the repository view. Read-only, and like the automatic
     /// calls it must not run programs the repository's own config names.
-    fn details(&self, dir: &Path) -> Result<Details, String>;
+    /// `commits` is how many commits the list should hold at least.
+    fn details(&self, dir: &Path, commits: usize) -> Result<Details, String>;
+    /// The next page of the commit list after the first `skip`; same rule.
+    fn log(&self, dir: &Path, skip: usize) -> Result<Vec<LogEntry>, String>;
     /// The diff of a file or commit for the repository view; same rule.
     fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String>;
 }
@@ -89,6 +92,14 @@ pub enum Event {
     Details {
         repo: PathBuf,
         result: Result<Details, String>,
+    },
+    /// A further page of the commit list was read: what follows the first
+    /// `skip` commits, and whether the history goes on after it.
+    Log {
+        repo: PathBuf,
+        skip: usize,
+        result: Result<Vec<LogEntry>, String>,
+        more: bool,
     },
     /// A diff for the repository view was read.
     Diff {
@@ -289,12 +300,29 @@ impl Engine {
         });
     }
 
-    /// Read the lists of the repository view (sends [`Event::Details`]).
-    pub fn load_details(&self, repo: PathBuf) {
+    /// Read the lists of the repository view, with at least `commits`
+    /// commits (sends [`Event::Details`]).
+    pub fn load_details(&self, repo: PathBuf, commits: usize) {
         let shared = self.shared.clone();
         thread::spawn(move || {
-            let result = shared.backend.details(&repo);
+            let result = shared.backend.details(&repo, commits);
             shared.send(Event::Details { repo, result });
+        });
+    }
+
+    /// Read the page of the commit list after the first `skip` commits
+    /// (sends [`Event::Log`]).
+    pub fn load_log(&self, repo: PathBuf, skip: usize) {
+        let shared = self.shared.clone();
+        thread::spawn(move || {
+            let result = shared.backend.log(&repo, skip);
+            let more = result.as_ref().is_ok_and(|page| page.len() >= LOG_PAGE);
+            shared.send(Event::Log {
+                repo,
+                skip,
+                result,
+                more,
+            });
         });
     }
 
@@ -408,8 +436,20 @@ mod tests {
         fn options(&self, _dir: &Path, command: &str) -> Vec<String> {
             vec![format!("--{command}-opt")]
         }
-        fn details(&self, dir: &Path) -> Result<Details, String> {
-            Err(format!("details {}", dir.display()))
+        fn details(&self, dir: &Path, commits: usize) -> Result<Details, String> {
+            Err(format!("details {} {commits}", dir.display()))
+        }
+        fn log(&self, _dir: &Path, skip: usize) -> Result<Vec<LogEntry>, String> {
+            let entry = |i: usize| LogEntry {
+                hash: format!("{i:x}"),
+                short: String::new(),
+                author: String::new(),
+                time: 0,
+                date: String::new(),
+                subject: String::new(),
+            };
+            // A history of 150 commits.
+            Ok((skip..150.min(skip + LOG_PAGE)).map(entry).collect())
         }
         fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String> {
             Ok(format!("diff {} {target:?}", dir.display()))
@@ -603,14 +643,30 @@ mod tests {
                 builtins: vec!["pull".into()]
             }
         );
-        engine.load_details("/r".into());
+        engine.load_details("/r".into(), 200);
         assert_eq!(
             recv(&rx),
             Event::Details {
                 repo: "/r".into(),
-                result: Err("details /r".into())
+                result: Err("details /r 200".into())
             }
         );
+        // A full page says the history goes on; a short one ends it.
+        for (skip, length, goes_on) in [(0, 100, true), (100, 50, false), (150, 0, false)] {
+            engine.load_log("/r".into(), skip);
+            match recv(&rx) {
+                Event::Log {
+                    repo,
+                    skip: at,
+                    result: Ok(page),
+                    more,
+                } => {
+                    assert_eq!((repo, at), (PathBuf::from("/r"), skip));
+                    assert_eq!((page.len(), more), (length, goes_on));
+                }
+                other => panic!("{other:?}"),
+            }
+        }
         let target = DiffTarget::Commit("abc".into());
         engine.load_diff("/r".into(), target.clone());
         assert_eq!(

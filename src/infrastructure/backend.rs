@@ -1,7 +1,7 @@
 //! The engine's [`Backend`] port implemented over the system git.
 
 use crate::application::engine::Backend;
-use crate::domain::details::{Details, DiffTarget};
+use crate::domain::details::{Details, DiffTarget, LOG_PAGE, LogEntry};
 use crate::domain::output::ProcessOutput;
 use crate::domain::repo::{ProbeError, Snapshot};
 use crate::infrastructure::details;
@@ -120,8 +120,12 @@ impl Backend for GitBackend {
         self.words(dir, &[command, "--git-completion-helper"])
     }
 
-    fn details(&self, dir: &Path) -> Result<Details, String> {
-        details::details(&self.runner, dir)
+    fn details(&self, dir: &Path, commits: usize) -> Result<Details, String> {
+        details::details(&self.runner, dir, commits)
+    }
+
+    fn log(&self, dir: &Path, skip: usize) -> Result<Vec<LogEntry>, String> {
+        details::log(&self.runner, dir, skip, LOG_PAGE)
     }
 
     fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String> {

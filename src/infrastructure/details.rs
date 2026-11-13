@@ -4,8 +4,8 @@
 //! is run for a diff or a signature.
 
 use crate::domain::details::{
-    ChangeKind, Details, DiffTarget, LOG_FORMAT, LOG_LIMIT, cut_diff, parse_branches,
-    parse_changes, parse_log,
+    COMMIT_FORMAT, ChangeKind, Details, DiffTarget, LOG_DATE, LOG_FORMAT, LOG_PAGE, LogEntry,
+    cut_diff, parse_branches, parse_changes, parse_log,
 };
 use crate::domain::output::ProcessOutput;
 use crate::domain::status::{Head, parse_porcelain_v2};
@@ -37,8 +37,29 @@ fn stdout(runner: &GitRunner, dir: &Path, args: &[&str]) -> Result<String, Strin
     }
 }
 
-/// The lists of the view for the repository at `dir`.
-pub fn details(runner: &GitRunner, dir: &Path) -> Result<Details, String> {
+/// Commits of the checked-out branch, newest first: `count` of them after
+/// the first `skip`.
+pub fn log(
+    runner: &GitRunner,
+    dir: &Path,
+    skip: usize,
+    count: usize,
+) -> Result<Vec<LogEntry>, String> {
+    let (skip, count) = (format!("--skip={skip}"), format!("-{count}"));
+    let args = [
+        "log",
+        &count,
+        &skip,
+        "--no-show-signature",
+        LOG_DATE,
+        LOG_FORMAT,
+    ];
+    stdout(runner, dir, &args).map(|out| parse_log(&out))
+}
+
+/// The lists of the view for the repository at `dir`, with at least the
+/// first `commits` commits.
+pub fn details(runner: &GitRunner, dir: &Path, commits: usize) -> Result<Details, String> {
     // Every untracked file by itself, not a new folder as one entry: the
     // tree shows files.
     let status = stdout(
@@ -56,13 +77,7 @@ pub fn details(runner: &GitRunner, dir: &Path) -> Result<Details, String> {
         _ => None,
     };
     // Fails before the first commit: no commits then.
-    let limit = format!("-{LOG_LIMIT}");
-    let log = stdout(
-        runner,
-        dir,
-        &["log", &limit, "--no-show-signature", LOG_FORMAT],
-    )
-    .unwrap_or_default();
+    let commits = log(runner, dir, 0, commits.max(LOG_PAGE)).unwrap_or_default();
     let branches = stdout(
         runner,
         dir,
@@ -75,7 +90,7 @@ pub fn details(runner: &GitRunner, dir: &Path) -> Result<Details, String> {
     )?;
     Ok(Details {
         files: parse_changes(&status),
-        commits: parse_log(&log),
+        commits,
         branches: parse_branches(&branches, current.as_deref()),
     })
 }
@@ -92,6 +107,19 @@ fn untracked_diff(runner: &GitRunner, dir: &Path, path: &str) -> Result<String, 
     } else {
         Err(error_of(&out))
     }
+}
+
+/// What a commit changed is what differs from its first parent, for a merge
+/// too; a renamed file is one that went and one that came, as in the tree.
+const COMMIT_CHANGES: [&str; 2] = ["--diff-merges=first-parent", "--no-renames"];
+
+/// `hash`, when it is one: nothing else may stand where git expects a
+/// commit.
+fn a_hash(hash: &str) -> Result<&str, String> {
+    if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("not a commit hash: {hash}"));
+    }
+    Ok(hash)
 }
 
 /// How the file differs from the last commit, staged or not. A file git
@@ -121,13 +149,18 @@ fn file_diff(
 pub fn diff(runner: &GitRunner, dir: &Path, target: &DiffTarget) -> Result<String, String> {
     let shown = match target {
         DiffTarget::File(file) => file_diff(runner, dir, &file.path, file.kind)?,
+        // The commit and the names of its files, for `parse_commit`.
         DiffTarget::Commit(hash) => {
-            if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Err(format!("not a commit hash: {hash}"));
-            }
-            let mut args = vec!["show", "--no-show-signature", "--stat", "--patch"];
+            let mut args = vec!["show", "--no-show-signature", "-z", "--name-status"];
+            args.extend(COMMIT_CHANGES);
+            args.extend([LOG_DATE, COMMIT_FORMAT, a_hash(hash)?]);
+            return stdout(runner, dir, &args);
+        }
+        DiffTarget::CommitFile { hash, path } => {
+            let mut args = vec!["show", "--no-show-signature", "--format=", "--patch"];
+            args.extend(COMMIT_CHANGES);
             args.extend(PLAIN_DIFF);
-            args.push(hash);
+            args.extend([a_hash(hash)?, "--", path]);
             stdout(runner, dir, &args)?
         }
     };
@@ -153,7 +186,7 @@ mod tests {
         let runner = isolated_runner();
         // Before the first commit: files, no commits, no branches yet.
         repo.write("a.txt", "one\n");
-        let fresh = details(&runner, repo.path()).unwrap();
+        let fresh = details(&runner, repo.path(), 0).unwrap();
         assert_eq!(fresh.files.len(), 1);
         assert!(fresh.commits.is_empty() && fresh.branches.is_empty());
 
@@ -167,7 +200,7 @@ mod tests {
         // A new folder is listed by its files.
         std::fs::create_dir_all(repo.path().join("dir/sub")).unwrap();
         repo.write("dir/sub/one.txt", "first\n");
-        let d = details(&runner, repo.path()).unwrap();
+        let d = details(&runner, repo.path(), 0).unwrap();
         let files: Vec<_> = d.files.iter().map(|f| (f.path.as_str(), f.kind)).collect();
         assert_eq!(
             files,
@@ -191,7 +224,67 @@ mod tests {
         assert_eq!(branches, [("main", true), ("side", false)]);
 
         let dir = tempfile::tempdir().unwrap();
-        assert!(details(&runner, dir.path()).is_err(), "not a repository");
+        assert!(details(&runner, dir.path(), 0).is_err(), "not a repository");
+    }
+
+    #[test]
+    fn the_log_is_read_in_pages_and_a_merge_shows_what_it_brought() {
+        let repo = TestRepo::new();
+        let runner = isolated_runner();
+        for i in 0..5 {
+            repo.commit(&format!("f{i}.txt"), "x\n");
+        }
+        let subjects = |entries: Vec<LogEntry>| -> Vec<String> {
+            entries.into_iter().map(|e| e.subject).collect()
+        };
+        let all = log(&runner, repo.path(), 0, 100).unwrap();
+        assert_eq!(all.len(), 5);
+        assert!(all[0].time > 1_600_000_000, "{}", all[0].time);
+        assert_eq!(
+            all[0].date.len(),
+            "2026-11-12 20:03".len(),
+            "{}",
+            all[0].date
+        );
+        assert_eq!(
+            subjects(log(&runner, repo.path(), 0, 2).unwrap()),
+            ["f4.txt", "f3.txt"]
+        );
+        assert_eq!(
+            subjects(log(&runner, repo.path(), 2, 2).unwrap()),
+            ["f2.txt", "f1.txt"]
+        );
+        assert_eq!(
+            subjects(log(&runner, repo.path(), 4, 2).unwrap()),
+            ["f0.txt"]
+        );
+        assert!(log(&runner, repo.path(), 9, 2).unwrap().is_empty());
+        // The lists hold as many commits as were asked for, a page at least.
+        assert_eq!(details(&runner, repo.path(), 3).unwrap().commits.len(), 5);
+
+        // A merge shows what it brought into the branch it was made on.
+        repo.git(&["checkout", "-q", "-b", "side"]);
+        repo.commit("side.txt", "from the side\n");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.commit("main.txt", "on main\n");
+        repo.git(&["merge", "-q", "--no-ff", "-m", "Merge side", "side"]);
+        let head = repo.git(&["rev-parse", "HEAD"]);
+        let raw = diff(
+            &runner,
+            repo.path(),
+            &DiffTarget::Commit(head.trim().into()),
+        )
+        .unwrap();
+        let merge = crate::domain::details::parse_commit(&raw).unwrap();
+        assert_eq!(merge.message, "Merge side");
+        let paths: Vec<_> = merge.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["side.txt"]);
+        let inside = DiffTarget::CommitFile {
+            hash: head.trim().into(),
+            path: "side.txt".into(),
+        };
+        let brought = diff(&runner, repo.path(), &inside).unwrap();
+        assert!(brought.contains("+from the side"), "{brought}");
     }
 
     #[test]
@@ -239,17 +332,38 @@ mod tests {
         repo.write("a.txt", "one\nchanged\n");
 
         let head = repo.git(&["rev-parse", "HEAD"]);
-        let commit = diff(
-            &runner,
-            repo.path(),
-            &DiffTarget::Commit(head.trim().into()),
-        )
-        .unwrap();
-        assert!(
-            commit.contains("b.txt") && commit.contains("+two"),
-            "{commit}"
+        let head = head.trim();
+        let raw = diff(&runner, repo.path(), &DiffTarget::Commit(head.into())).unwrap();
+        let commit = crate::domain::details::parse_commit(&raw).unwrap();
+        assert_eq!(commit.hash, head);
+        assert_eq!(commit.author, "Test");
+        assert_eq!(commit.message, "b.txt");
+        assert_eq!(commit.refs, ["main"]);
+        assert_eq!(
+            commit.date.len(),
+            "2026-11-12 20:03".len(),
+            "{}",
+            commit.date
         );
-        assert!(commit.contains("Author: Test"), "{commit}");
+        assert_eq!(
+            commit.files,
+            [FileChange {
+                path: "b.txt".into(),
+                kind: ChangeKind::Added
+            }]
+        );
+        let inside = |path: &str| DiffTarget::CommitFile {
+            hash: head.into(),
+            path: path.into(),
+        };
+        let one = diff(&runner, repo.path(), &inside("b.txt")).unwrap();
+        assert!(one.contains("+two") && !one.contains("Author"), "{one}");
+        assert_eq!(diff(&runner, repo.path(), &inside("a.txt")).unwrap(), "");
+        let bad = DiffTarget::CommitFile {
+            hash: "--output=/tmp/x".into(),
+            path: "b.txt".into(),
+        };
+        assert!(diff(&runner, repo.path(), &bad).is_err());
 
         // Before the first commit there is nothing to compare with: a new
         // file shows whole.
@@ -316,6 +430,15 @@ mod tests {
             &DiffTarget::Commit(head.trim().into()),
         )
         .unwrap();
+        let inside = DiffTarget::CommitFile {
+            hash: head.trim().into(),
+            path: "a.bin".into(),
+        };
+        assert!(
+            diff(&runner, repo.path(), &inside)
+                .unwrap()
+                .contains("+one")
+        );
         assert!(
             !marker.exists(),
             "the view ran the repository's diff driver"
@@ -390,7 +513,7 @@ mod tests {
             std::fs::remove_file(marker).unwrap();
         }
 
-        let d = details(&runner, repo.path()).unwrap();
+        let d = details(&runner, repo.path(), 0).unwrap();
         assert_eq!(d.commits[0].hash, hash);
         let modified = diff(&runner, repo.path(), &file("a.bin", ChangeKind::Modified)).unwrap();
         assert!(modified.contains("+two"), "{modified}");
@@ -398,8 +521,18 @@ mod tests {
         diff(&runner, repo.path(), &file("a.bin", ChangeKind::Modified)).unwrap();
         repo.write("new.bin", "x\n");
         diff(&runner, repo.path(), &file("new.bin", ChangeKind::Added)).unwrap();
-        let shown = diff(&runner, repo.path(), &DiffTarget::Commit(hash)).unwrap();
+        let shown = diff(&runner, repo.path(), &DiffTarget::Commit(hash.clone())).unwrap();
         assert!(shown.contains("a.bin"), "{shown}");
+        let inside = DiffTarget::CommitFile {
+            hash,
+            path: "a.bin".into(),
+        };
+        assert!(
+            diff(&runner, repo.path(), &inside)
+                .unwrap()
+                .contains("+one")
+        );
+        log(&runner, repo.path(), 0, 5).unwrap();
         for (name, marker) in [
             ("diff.external", &external_ran),
             ("textconv", &textconv_ran),

@@ -3,7 +3,8 @@
 //! the right, and Back and Forward through what was looked at.
 
 use crate::domain::details::{
-    ChangeKind, Details, DiffTarget, LineKind, RepoTab, file_lines, line_kind, tree_rows,
+    ChangeKind, Details, DiffTarget, FileChange, LineKind, LogEntry, RepoTab, author_hue,
+    file_lines, initials, parse_commit, short_age, tree_rows,
 };
 use crate::domain::naming::title;
 use crate::ui::app::{App, RepoView};
@@ -19,6 +20,10 @@ enum Act {
     Tab(RepoTab),
     /// Fold or unfold the folder with this path.
     Fold(String),
+    /// Unfold or fold the diff of this file of the picked commit.
+    Unfold(String),
+    /// The end of the commit list came into view.
+    More,
     Select(DiffTarget),
 }
 
@@ -66,7 +71,7 @@ impl App {
                             RepoTab::Commits => commit_list(ui, details, view, &mut act),
                             RepoTab::Graph => branch_list(ui, details),
                         });
-                    egui::CentralPanel::default().show(ui, |ui| diff_pane(ui, view));
+                    egui::CentralPanel::default().show(ui, |ui| diff_pane(ui, view, &mut act));
                 }
             }
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -80,6 +85,8 @@ impl App {
             Some(Act::Forward) => self.repo_view_forward(),
             Some(Act::Tab(tab)) => self.switch_repo_tab(tab),
             Some(Act::Fold(path)) => self.toggle_repo_folder(&path),
+            Some(Act::Unfold(path)) => self.toggle_commit_file(&path),
+            Some(Act::More) => self.load_more_commits(),
             Some(Act::Select(target)) => self.select_in_repo_view(target),
             None => {}
         }
@@ -126,12 +133,12 @@ fn row(
     ui: &mut Ui,
     view: &RepoView,
     target: DiffTarget,
-    text: RichText,
+    text: impl Into<egui::WidgetText>,
     hover: &str,
     act: &mut Option<Act>,
 ) {
     let picked = view.selected.as_ref() == Some(&target);
-    let entry = egui::Button::selectable(picked, text).truncate();
+    let entry = egui::Button::selectable(picked, text.into()).truncate();
     if ui.add(entry).on_hover_text(hover).clicked() {
         *act = Some(Act::Select(target));
     }
@@ -190,24 +197,64 @@ fn file_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<A
     });
 }
 
-/// The Commits tab: the history of the checked-out branch.
+/// The color of an author: the same for the same name everywhere.
+fn author_color(ui: &Ui, author: &str) -> Color32 {
+    let value = if ui.visuals().dark_mode { 0.95 } else { 0.6 };
+    egui::ecolor::Hsva::new(author_hue(author), 0.6, value, 1.0).into()
+}
+
+/// Seconds since 1970, for the ages in the commit list.
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// A row of the commit list: the author's initials in the author's color,
+/// the short hash and the title, and the age at the right edge.
+fn commit_row(ui: &mut Ui, view: &RepoView, commit: &LogEntry, now: i64, act: &mut Option<Act>) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.weak(short_age(now, commit.time))
+            .on_hover_text(&commit.date);
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let mono = egui::TextStyle::Monospace.resolve(ui.style());
+            let body = egui::TextStyle::Body.resolve(ui.style());
+            let part = |font: &egui::FontId, color| egui::TextFormat {
+                font_id: font.clone(),
+                color,
+                ..Default::default()
+            };
+            let mut text = egui::text::LayoutJob::default();
+            let author = part(&mono, author_color(ui, &commit.author));
+            text.append(&format!("{:<2} ", initials(&commit.author)), 0.0, author);
+            let hash = part(&mono, ui.visuals().weak_text_color());
+            text.append(&format!("{} ", commit.short), 0.0, hash);
+            let title = part(&body, ui.visuals().text_color());
+            text.append(&commit.subject, 0.0, title);
+            let hover = format!("{}, {}\n{}", commit.author, commit.date, commit.subject);
+            let target = DiffTarget::Commit(commit.hash.clone());
+            row(ui, view, target, text, &hover, act);
+        });
+    });
+}
+
+/// The Commits tab: the history of the checked-out branch. The next page
+/// is read when the end of the list comes into view.
 fn commit_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<Act>) {
     list(ui, "Commits", RepoTab::Commits, |ui| {
         if details.commits.is_empty() {
             ui.weak("no commits yet");
+            return;
         }
+        let now = now();
         for commit in &details.commits {
-            let text = format!("{}  {}", commit.short, commit.subject);
-            let hover = format!("{}, {}\n{}", commit.author, commit.age, commit.subject);
-            let target = DiffTarget::Commit(commit.hash.clone());
-            row(
-                ui,
-                view,
-                target,
-                RichText::new(text).monospace(),
-                &hover,
-                act,
-            );
+            commit_row(ui, view, commit, now, act);
+        }
+        if view.more_commits {
+            let end = ui.weak("more commits are read\u{2026}");
+            if act.is_none() && ui.is_rect_visible(end.rect) {
+                *act = Some(Act::More);
+            }
         }
     });
 }
@@ -226,9 +273,9 @@ fn branch_list(ui: &mut Ui, details: &Details) {
     });
 }
 
-/// What is picked, on the right: the content of an added file, what is
-/// gone of a deleted one, and the diff of any other file or of a commit.
-fn diff_pane(ui: &mut Ui, view: &RepoView) {
+/// What is picked, on the right: a commit, or a file with the content of
+/// an added one, what is gone of a deleted one, and the diff of any other.
+fn diff_pane(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
     let (target, diff) = match (&view.selected, &view.diff) {
         (None, _) => {
             ui.weak(match view.tab {
@@ -247,26 +294,143 @@ fn diff_pane(ui: &mut Ui, view: &RepoView) {
         }
         (Some(target), Some(Ok(diff))) => (target, diff),
     };
-    let lines = match target {
-        DiffTarget::File(file) => {
-            ui.horizontal(|ui| {
-                let color = change_color(ui, file.kind);
-                ui.label(RichText::new(file.kind.label()).color(color));
-                ui.label(RichText::new(&file.path).monospace().strong());
-            });
-            ui.separator();
-            file_lines(file.kind, diff)
-        }
-        DiffTarget::Commit(_) => diff.lines().map(|l| (line_kind(l), l)).collect(),
+    let file = match target {
+        DiffTarget::File(file) => file,
+        DiffTarget::Commit(_) => return commit_pane(ui, view, diff, act),
+        // Shown inside its commit, never picked.
+        DiffTarget::CommitFile { .. } => return,
     };
+    ui.horizontal(|ui| {
+        let color = change_color(ui, file.kind);
+        ui.label(RichText::new(file.kind.label()).color(color));
+        ui.label(RichText::new(&file.path).monospace().strong());
+    });
+    ui.separator();
+    let lines = file_lines(file.kind, diff);
     if lines.is_empty() {
-        ui.weak(match target {
-            DiffTarget::File(file) if file.kind == ChangeKind::Added => "empty file",
-            _ => "no difference",
+        ui.weak(if file.kind == ChangeKind::Added {
+            "empty file"
+        } else {
+            "no difference"
         });
         return;
     }
     diff_lines(ui, "repo-view-diff", &lines);
+}
+
+/// A row under the header of a commit.
+enum CommitRow<'a> {
+    File(&'a FileChange, bool),
+    Line(LineKind, &'a str),
+    Note(&'a str),
+}
+
+/// The picked commit: its header, which stays in place, and under it the
+/// files it changed. A click on a file unfolds its diff in place.
+fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
+    let Some(commit) = parse_commit(raw) else {
+        ui.weak("this commit cannot be read");
+        return;
+    };
+    ui.horizontal_wrapped(|ui| {
+        let short: String = commit.hash.chars().take(10).collect();
+        ui.label(RichText::new(short).monospace().strong())
+            .on_hover_text(&commit.hash);
+        for name in &commit.refs {
+            ui.label(
+                RichText::new(format!(" {name} "))
+                    .monospace()
+                    .background_color(ui.visuals().faint_bg_color)
+                    .color(ui.visuals().strong_text_color()),
+            );
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        let color = author_color(ui, &commit.author);
+        ui.label(
+            RichText::new(initials(&commit.author))
+                .monospace()
+                .color(color),
+        );
+        ui.label(format!("{} <{}>", commit.author, commit.email));
+        ui.weak(&commit.date);
+    });
+    egui::ScrollArea::vertical()
+        .id_salt("repo-view-message")
+        .max_height(140.0)
+        .show(ui, |ui| {
+            ui.label(&commit.message);
+        });
+    ui.separator();
+    let count = commit.files.len();
+    ui.strong(if count == 1 {
+        "1 file changed".to_owned()
+    } else {
+        format!("{count} files changed")
+    });
+    let mut rows = Vec::new();
+    for file in &commit.files {
+        let diff = view.unfolded.get(&file.path);
+        rows.push(CommitRow::File(file, diff.is_some()));
+        match diff {
+            None => {}
+            Some(None) => rows.push(CommitRow::Note("loading")),
+            Some(Some(Err(error))) => rows.push(CommitRow::Note(error)),
+            Some(Some(Ok(diff))) => {
+                let lines = file_lines(file.kind, diff);
+                if lines.is_empty() {
+                    rows.push(CommitRow::Note("nothing to show"));
+                }
+                rows.extend(
+                    lines
+                        .into_iter()
+                        .map(|(kind, line)| CommitRow::Line(kind, line)),
+                );
+            }
+        }
+    }
+    let row_height = ui.spacing().interact_size.y;
+    let (added, removed) = (ok_color(ui), ui.visuals().error_fg_color);
+    egui::ScrollArea::both()
+        .id_salt("repo-view-commit")
+        .auto_shrink([false, false])
+        .show_rows(ui, row_height, rows.len(), |ui, shown| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            for entry in rows.get(shown).unwrap_or_default() {
+                ui.horizontal(|ui| {
+                    ui.set_height(row_height);
+                    match entry {
+                        CommitRow::File(file, open) => {
+                            let size = egui::vec2(INDENT, row_height);
+                            let (_, icon) = ui.allocate_exact_size(size, egui::Sense::click());
+                            let openness = if *open { 1.0 } else { 0.0 };
+                            egui::collapsing_header::paint_default_icon(ui, openness, &icon);
+                            let text = format!("{} {}", file.kind.letter(), file.path);
+                            let text = RichText::new(text).color(change_color(ui, file.kind));
+                            let name = egui::Button::new(text).frame(false);
+                            let hover = if *open { "Fold" } else { "Show what changed" };
+                            if ui.add(name).on_hover_text(hover).clicked() || icon.clicked() {
+                                *act = Some(Act::Unfold(file.path.clone()));
+                            }
+                        }
+                        CommitRow::Line(kind, line) => {
+                            ui.add_space(INDENT);
+                            let text = RichText::new(*line).monospace();
+                            ui.label(match kind {
+                                LineKind::Added => text.color(added),
+                                LineKind::Removed => text.color(removed),
+                                LineKind::Header => text.strong(),
+                                LineKind::Plain => text,
+                            });
+                        }
+                        CommitRow::Note(note) => {
+                            ui.add_space(INDENT);
+                            ui.weak(*note);
+                        }
+                    }
+                });
+            }
+        });
 }
 
 /// Lines of a diff or of a file, colored by kind, scrolling both ways.

@@ -997,7 +997,9 @@ fn repo_view_app() -> Harness<'static, App> {
                 kind: ChangeKind::Added,
             },
         ],
-        commits: parse_log("aaaabbbb\taaaabbb\tAda\t3 days ago\tFix the thing\n"),
+        commits: parse_log(
+            "aaaabbbb\taaaabbb\tAda Lovelace\t1700000000\t2023-11-14 22:13\tFix the thing\n",
+        ),
         branches: vec![
             BranchEntry {
                 name: "main".into(),
@@ -1047,14 +1049,36 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     assert_eq!(tab(&h), RepoTab::Commits);
     h.get_by_label("Pick a commit to see it.");
     assert!(h.query_by_label("Changed files (2)").is_none());
-    h.get_by_label("aaaabbb  Fix the thing").click();
+    // A row: initials, short hash, title; the age stands at the right.
+    h.get_by_label("AL aaaabbb Fix the thing").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.run();
+    // The header of the commit: hash, names on it, author, date, message.
+    h.get_by_label("aaaabbbb");
+    h.get_by_label(" main ");
+    h.get_by_label(" v9 ");
+    h.get_by_label("Ada Lovelace <ada@example.org>");
+    h.get_by_label("2026-11-12 20:03");
+    h.get_by_label("Fix the thing\n\nBecause it was broken.");
+    // Its files, folded; a click unfolds the diff of one in place.
+    h.get_by_label("2 files changed");
+    h.get_by_label("A docs/new.md");
+    assert!(h.query_by_label("+after in src/main.rs").is_none());
+    h.get_by_label("M src/main.rs").click();
     h.run();
     settle(&mut h, |a| {
         let view = a.repo_view.as_ref().unwrap();
-        matches!(&view.diff, Some(Ok(diff)) if diff.contains("commit aaaabbbb"))
+        matches!(view.unfolded.get("src/main.rs"), Some(Some(_)))
     });
     h.run();
-    h.get_by_label("commit aaaabbbb");
+    h.get_by_label("+after in src/main.rs");
+    h.get_by_label("-before");
+    h.get_by_label("A docs/new.md");
+    h.get_by_label("Ada Lovelace <ada@example.org>");
+    h.get_by_label("M src/main.rs").click();
+    h.run();
+    assert!(h.query_by_label("+after in src/main.rs").is_none());
 
     // The Files tab has the changed files; a file shows its diff.
     h.get_by_label("Files").click();
@@ -1062,7 +1086,7 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     assert_eq!(tab(&h), RepoTab::Files);
     h.get_by_label("Changed files (4)");
     h.get_by_label("Pick a file to see its changes.");
-    assert!(h.query_by_label("aaaabbb  Fix the thing").is_none());
+    assert!(h.query_by_label("AL aaaabbb Fix the thing").is_none());
     // A tree: folders first, a chain of single folders as one row, every
     // file with the letter of its change.
     h.get_by_label("src/");
@@ -1127,7 +1151,7 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     assert_eq!(tab(&h), RepoTab::Commits);
     settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
     h.run();
-    h.get_by_label("commit aaaabbbb");
+    h.get_by_label("2 files changed");
     h.get_by_label("Forward").click();
     h.run();
     assert_eq!(tab(&h), RepoTab::Files);
@@ -1158,6 +1182,71 @@ fn open_in_the_card_menu_and_the_buttons_of_the_view() {
     h.get_by_label("Close").click();
     h.run();
     assert!(h.state().repo_view.is_none());
+}
+
+#[test]
+fn the_commit_list_reads_its_next_page_when_its_end_comes_into_view() {
+    use crate::domain::details::Details;
+    let backend = Arc::new(FakeBackend::default());
+    *backend.details.lock().unwrap() = Some(Details::default());
+    // A history of 130 commits: the first page holds 100.
+    *backend.log_length.lock().unwrap() = 130;
+    let mut h = harness(marked_app(backend, &[]));
+    h.run();
+    let commits = |h: &Harness<'static, App>| {
+        let view = h.state().repo_view.as_ref().unwrap();
+        view.details
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .commits
+            .len()
+    };
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.run();
+    assert_eq!(commits(&h), 100);
+    assert!(h.state().repo_view.as_ref().unwrap().more_commits);
+    h.get_by_label("AL 0000000 Commit number 0");
+    // The end of the list is far below: nothing more is read.
+    for _ in 0..5 {
+        h.step();
+    }
+    assert_eq!(commits(&h), 100);
+    // Scrolled to its end, the list reads the rest, once.
+    let list = h.get_by_label("AL 0000000 Commit number 0").rect().center();
+    h.event(egui::Event::PointerMoved(list));
+    for _ in 0..40 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, -40.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+    }
+    settle(&mut h, |a| {
+        let view = a.repo_view.as_ref().unwrap();
+        view.details
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .commits
+            .len()
+            == 130
+    });
+    h.run();
+    assert!(!h.state().repo_view.as_ref().unwrap().more_commits);
+    assert!(h.query_by_label_contains("more commits are read").is_none());
+    // A reload keeps the list as long as it was.
+    h.state_mut().refresh_repo_view();
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(5));
+        h.step();
+    }
+    assert_eq!(commits(&h), 130);
 }
 
 #[test]

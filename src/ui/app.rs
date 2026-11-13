@@ -10,7 +10,7 @@ use crate::domain::command::{Job, display, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::{Config, Theme};
 use crate::domain::destructive::is_destructive;
-use crate::domain::details::{Details, DiffTarget, Place, RepoTab, Trail};
+use crate::domain::details::{Details, DiffTarget, LogEntry, Place, RepoTab, Trail};
 use crate::domain::favorites::{FavoriteDraft, active_after_delete, forget};
 use crate::domain::history::History;
 use crate::domain::kawaii;
@@ -112,6 +112,13 @@ pub struct RepoView {
     pub trail: Trail<Place>,
     /// The folders of the file tree that are folded, by path.
     pub closed: HashSet<String>,
+    /// The files of the picked commit that are unfolded, by path, each
+    /// with its diff; `None` while it is read.
+    pub unfolded: HashMap<String, Option<Result<String, String>>>,
+    /// The history goes on after the commits the list holds.
+    pub more_commits: bool,
+    /// The next page of commits is being read.
+    pub loading_commits: bool,
     /// The diff of `selected`; `None` while it is read.
     pub diff: Option<Result<String, String>>,
 }
@@ -569,9 +576,12 @@ impl App {
             kept: HashMap::new(),
             trail: Trail::new((tab, None)),
             closed: HashSet::new(),
+            unfolded: HashMap::new(),
+            more_commits: true,
+            loading_commits: false,
             diff: None,
         });
-        self.engine.load_details(repo.to_path_buf());
+        self.engine.load_details(repo.to_path_buf(), 0);
     }
 
     pub fn close_repo_view(&mut self) {
@@ -581,7 +591,13 @@ impl App {
     /// Read the lists of the open view again.
     pub fn refresh_repo_view(&mut self) {
         if let Some(view) = &self.repo_view {
-            self.engine.load_details(view.repo.clone());
+            // As many commits as the list holds, so it does not shrink.
+            let commits = view
+                .details
+                .as_ref()
+                .and_then(|d| d.as_ref().ok())
+                .map_or(0, |d| d.commits.len());
+            self.engine.load_details(view.repo.clone(), commits);
         }
     }
 
@@ -602,6 +618,7 @@ impl App {
         view.tab = tab;
         view.selected = held.clone();
         view.diff = None;
+        view.unfolded.clear();
         if let Some(target) = held {
             self.engine.load_diff(view.repo.clone(), target);
         }
@@ -614,7 +631,73 @@ impl App {
             view.trail.visit(place);
             view.selected = Some(target.clone());
             view.diff = None;
+            view.unfolded.clear();
             self.engine.load_diff(view.repo.clone(), target);
+        }
+    }
+
+    /// A click on a file of the picked commit: unfold its diff, or fold it.
+    pub fn toggle_commit_file(&mut self, path: &str) {
+        let Some(view) = &mut self.repo_view else {
+            return;
+        };
+        let Some(DiffTarget::Commit(hash)) = &view.selected else {
+            return;
+        };
+        if view.unfolded.remove(path).is_some() {
+            return;
+        }
+        view.unfolded.insert(path.to_owned(), None);
+        let target = DiffTarget::CommitFile {
+            hash: hash.clone(),
+            path: path.to_owned(),
+        };
+        self.engine.load_diff(view.repo.clone(), target);
+    }
+
+    /// The commit list was scrolled to its end: read the next page, once.
+    pub fn load_more_commits(&mut self) {
+        let Some(view) = &mut self.repo_view else {
+            return;
+        };
+        let Some(Ok(details)) = &view.details else {
+            return;
+        };
+        if view.more_commits && !view.loading_commits {
+            view.loading_commits = true;
+            self.engine
+                .load_log(view.repo.clone(), details.commits.len());
+        }
+    }
+
+    /// A page of commits was read: it goes to the end of the list when it
+    /// is the page that follows it.
+    fn commits_loaded(
+        &mut self,
+        repo: &Path,
+        skip: usize,
+        result: Result<Vec<LogEntry>, String>,
+        more: bool,
+    ) {
+        let Some(view) = self.repo_view.as_mut().filter(|v| v.repo == repo) else {
+            return;
+        };
+        let Some(Ok(details)) = &mut view.details else {
+            return;
+        };
+        if details.commits.len() != skip {
+            return;
+        }
+        view.loading_commits = false;
+        match result {
+            Ok(page) => {
+                details.commits.extend(page);
+                view.more_commits = more;
+            }
+            Err(error) => {
+                view.more_commits = false;
+                self.toast(format!("Cannot read more commits: {error}"));
+            }
         }
     }
 
@@ -676,6 +759,13 @@ impl App {
         if !held {
             view.selected = None;
             view.diff = None;
+            view.unfolded.clear();
+        }
+        // A page asked for before this reload no longer fits the list.
+        view.loading_commits = false;
+        if let Ok(details) = &result {
+            let page = crate::domain::details::LOG_PAGE;
+            view.more_commits = details.commits.len() >= page && details.commits.len() % page == 0;
         }
         if let Ok(details) = &result {
             view.kept.retain(|_, target| details.holds(target));
@@ -1087,17 +1177,28 @@ impl App {
                 self.vocab.options.insert(command, options);
             }
             Event::Details { repo, result } => self.repo_view_loaded(&repo, result),
+            Event::Log {
+                repo,
+                skip,
+                result,
+                more,
+            } => self.commits_loaded(&repo, skip, result, more),
             Event::Diff {
                 repo,
                 target,
                 result,
             } => {
                 // A diff that is no longer asked for is dropped.
-                if let Some(view) = &mut self.repo_view
-                    && view.repo == repo
-                    && view.selected.as_ref() == Some(&target)
-                {
+                let Some(view) = self.repo_view.as_mut().filter(|v| v.repo == repo) else {
+                    return;
+                };
+                if view.selected.as_ref() == Some(&target) {
                     view.diff = Some(result);
+                } else if let DiffTarget::CommitFile { hash, path } = target
+                    && view.selected == Some(DiffTarget::Commit(hash))
+                    && let Some(slot) = view.unfolded.get_mut(&path)
+                {
+                    *slot = Some(result);
                 }
             }
         }
@@ -1220,6 +1321,9 @@ pub(crate) mod tests {
         pub details: Mutex<Option<Details>>,
         /// How often the lists were read.
         pub details_read: Mutex<usize>,
+        /// How many commits the history has; 0 leaves the commits of
+        /// `details` as they are, `usize::MAX` makes reading a page fail.
+        pub log_length: Mutex<usize>,
         pub snapshot: Mutex<Option<Snapshot>>,
     }
 
@@ -1242,6 +1346,18 @@ pub(crate) mod tests {
             })
             .collect();
         snap
+    }
+
+    /// Commit number `i` of a made-up history, newest first.
+    pub fn fake_commit(i: usize) -> LogEntry {
+        LogEntry {
+            hash: format!("{i:040x}"),
+            short: format!("{i:07x}"),
+            author: "Ada Lovelace".into(),
+            time: 1_700_000_000 - i as i64 * 3600,
+            date: "2023-11-14 22:13".into(),
+            subject: format!("Commit number {i}"),
+        }
     }
 
     impl Backend for FakeBackend {
@@ -1287,10 +1403,26 @@ pub(crate) mod tests {
         fn options(&self, _dir: &Path, _command: &str) -> Vec<String> {
             vec!["--rebase".into()]
         }
-        fn details(&self, _dir: &Path) -> Result<Details, String> {
+        fn details(&self, _dir: &Path, commits: usize) -> Result<Details, String> {
             *self.details_read.lock().unwrap() += 1;
-            let details = self.details.lock().unwrap().clone();
+            let mut details = self.details.lock().unwrap().clone();
+            // A history as long as `log_length`, when that is set.
+            if let Some(details) = &mut details
+                && let length = *self.log_length.lock().unwrap()
+                && length > 0
+            {
+                let count = commits.max(crate::domain::details::LOG_PAGE).min(length);
+                details.commits = (0..count).map(fake_commit).collect();
+            }
             details.ok_or_else(|| "not a git repository".to_owned())
+        }
+        fn log(&self, _dir: &Path, skip: usize) -> Result<Vec<LogEntry>, String> {
+            let length = *self.log_length.lock().unwrap();
+            if length == usize::MAX {
+                return Err("history unreadable".to_owned());
+            }
+            let end = length.min(skip + crate::domain::details::LOG_PAGE);
+            Ok((skip..end).map(fake_commit).collect())
         }
         fn diff(&self, _dir: &Path, target: &DiffTarget) -> Result<String, String> {
             Ok(match target {
@@ -1303,7 +1435,12 @@ pub(crate) mod tests {
                     }
                     _ => format!("--- a/{0}\n+++ b/{0}\n-old\n+new", file.path),
                 },
-                DiffTarget::Commit(hash) => format!("commit {hash}\n\n    subject\n"),
+                DiffTarget::Commit(hash) => format!(
+                    "{hash}\0Ada Lovelace\0ada@example.org\x002026-11-12 20:03\0HEAD -> main, tag: v9\0Fix the thing\n\nBecause it was broken.\n\0\nM\0src/main.rs\0A\0docs/new.md\0"
+                ),
+                DiffTarget::CommitFile { path, .. } => {
+                    format!("--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-before\n+after in {path}")
+                }
             })
         }
     }
@@ -1893,7 +2030,7 @@ pub(crate) mod tests {
         };
         let lists = |files: &[&str]| Details {
             files: files.iter().map(|f| file(f)).collect(),
-            commits: parse_log("aaaa\taa\tAda\tnow\tone\n"),
+            commits: parse_log("aaaa\taa\tAda\t1\tthen\tone\n"),
             branches: vec![],
         };
         let view = |app: &App| app.repo_view.clone().unwrap();
@@ -2049,6 +2186,108 @@ pub(crate) mod tests {
             result: Err("closed".into()),
         });
         assert!(app.repo_view.is_none());
+    }
+
+    #[test]
+    fn commits_come_in_pages_and_a_commit_unfolds_its_files() {
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details::default());
+        *backend.log_length.lock().unwrap() = 230;
+        let mut app = app_with(backend.clone(), None);
+        let view = |app: &App| app.repo_view.clone().unwrap();
+        let commits = |app: &App| view(app).details.unwrap().unwrap().commits.len();
+        app.load_more_commits();
+        app.toggle_commit_file("a.rs");
+        app.open_repo_view(Path::new("/x/a"));
+        app.load_more_commits();
+        assert!(!view(&app).loading_commits, "nothing to add to yet");
+        settle(&mut app, |a| view(a).details.is_some());
+        assert_eq!(commits(&app), 100);
+        assert!(view(&app).more_commits);
+
+        // The next page is asked for once, however often the end shows.
+        app.load_more_commits();
+        app.load_more_commits();
+        assert!(view(&app).loading_commits);
+        settle(&mut app, |a| !view(a).loading_commits);
+        assert_eq!(commits(&app), 200);
+        // A page that does not follow the list is dropped.
+        app.handle_event(Event::Log {
+            repo: "/x/a".into(),
+            skip: 100,
+            result: Ok(vec![fake_commit(1)]),
+            more: true,
+        });
+        app.handle_event(Event::Log {
+            repo: "/x/other".into(),
+            skip: 200,
+            result: Ok(vec![fake_commit(1)]),
+            more: true,
+        });
+        assert_eq!(commits(&app), 200);
+        app.load_more_commits();
+        settle(&mut app, |a| !view(a).loading_commits);
+        assert_eq!(commits(&app), 230);
+        assert!(!view(&app).more_commits, "a short page ends the history");
+        app.load_more_commits();
+        assert!(!view(&app).loading_commits);
+        // A reload reads as many as the list held.
+        app.refresh_repo_view();
+        let read = *backend.details_read.lock().unwrap();
+        settle(&mut app, |_| *backend.details_read.lock().unwrap() > read);
+        app.handle_events();
+        assert_eq!(commits(&app), 230);
+        assert!(!view(&app).more_commits);
+
+        // A file of the picked commit unfolds with its diff and folds.
+        let hash = fake_commit(3).hash;
+        app.toggle_commit_file("src/main.rs");
+        assert!(view(&app).unfolded.is_empty(), "no commit picked");
+        app.select_in_repo_view(DiffTarget::Commit(hash.clone()));
+        settle(&mut app, |a| view(a).diff.is_some());
+        app.toggle_commit_file("src/main.rs");
+        assert_eq!(view(&app).unfolded.get("src/main.rs"), Some(&None));
+        settle(&mut app, |a| view(a).unfolded["src/main.rs"].is_some());
+        let diff = view(&app).unfolded["src/main.rs"].clone().unwrap().unwrap();
+        assert!(diff.contains("+after in src/main.rs"), "{diff}");
+        assert!(view(&app).diff.unwrap().unwrap().contains("Ada Lovelace"));
+        // The diff of a file of another commit, or of a folded file, is
+        // dropped.
+        for (hash, path) in [("ffff", "src/main.rs"), (hash.as_str(), "other.rs")] {
+            app.handle_event(Event::Diff {
+                repo: "/x/a".into(),
+                target: DiffTarget::CommitFile {
+                    hash: hash.into(),
+                    path: path.into(),
+                },
+                result: Ok("stale".into()),
+            });
+        }
+        assert_eq!(view(&app).unfolded.len(), 1);
+        assert!(
+            !view(&app).unfolded["src/main.rs"]
+                .clone()
+                .unwrap()
+                .unwrap()
+                .contains("stale")
+        );
+        app.toggle_commit_file("src/main.rs");
+        assert!(view(&app).unfolded.is_empty());
+        // Another pick folds everything.
+        app.toggle_commit_file("docs/new.md");
+        app.select_in_repo_view(DiffTarget::Commit(fake_commit(4).hash));
+        assert!(view(&app).unfolded.is_empty());
+
+        // A page that cannot be read ends the list with a word about it.
+        *backend.log_length.lock().unwrap() = 100;
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| view(a).details.is_some());
+        *backend.log_length.lock().unwrap() = usize::MAX;
+        app.load_more_commits();
+        settle(&mut app, |a| !view(a).loading_commits);
+        assert!(!view(&app).more_commits);
+        assert_eq!(app.toasts.len(), 1);
+        assert!(app.toasts[0].text.contains("history unreadable"));
     }
 
     /// An app with sounds on, one card, and what its fake player was given.

@@ -128,9 +128,120 @@ pub struct LogEntry {
     pub hash: String,
     pub short: String,
     pub author: String,
-    /// How long ago, as git words it ("3 days ago").
-    pub age: String,
+    /// When it was written, in seconds since 1970.
+    pub time: i64,
+    /// The same as a date with the time of day.
+    pub date: String,
     pub subject: String,
+}
+
+/// How long ago `time` was at `now`, in a few characters: "now", "12m",
+/// "3h", "5d", "2mo", "4y".
+pub fn short_age(now: i64, time: i64) -> String {
+    let seconds = now.saturating_sub(time).max(0);
+    let (minutes, hours, days) = (seconds / 60, seconds / 3600, seconds / 86_400);
+    match () {
+        () if minutes < 1 => "now".to_owned(),
+        () if hours < 1 => format!("{minutes}m"),
+        () if days < 1 => format!("{hours}h"),
+        () if days < 60 => format!("{days}d"),
+        () if days < 730 => format!("{}mo", days / 30),
+        () => format!("{}y", days / 365),
+    }
+}
+
+/// An author in two letters: the first of the first and of the last word of
+/// the name, or the first two of a single word.
+pub fn initials(author: &str) -> String {
+    let words: Vec<&str> = author
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let letters: Vec<char> = match (words.first(), words.last()) {
+        (Some(first), Some(last)) if words.len() > 1 => {
+            first.chars().take(1).chain(last.chars().take(1)).collect()
+        }
+        (Some(only), _) => only.chars().take(2).collect(),
+        _ => vec!['?'],
+    };
+    letters.into_iter().flat_map(char::to_uppercase).collect()
+}
+
+/// The place of an author's color on the color wheel, 0 to 1: the same for
+/// the same name everywhere, and far apart for most pairs of names.
+pub fn author_hue(author: &str) -> f32 {
+    // FNV-1a.
+    let hash = author.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    (hash % 360) as f32 / 360.0
+}
+
+/// A commit as the right pane shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitDetail {
+    pub hash: String,
+    pub author: String,
+    pub email: String,
+    pub date: String,
+    /// The branches and tags on it.
+    pub refs: Vec<String>,
+    /// The whole message.
+    pub message: String,
+    /// What it changed, against its first parent.
+    pub files: Vec<FileChange>,
+}
+
+/// The `--format` a commit is read with for the right pane: hash, author,
+/// mail address, date, the names on it and the message, each ended by a
+/// NUL. With `-z --name-status` the changed files follow in the same way.
+pub const COMMIT_FORMAT: &str = "--format=%H%x00%an%x00%ae%x00%ad%x00%D%x00%B%x00";
+
+/// The commit in the output of `git show -z --name-status` with
+/// [`COMMIT_FORMAT`].
+pub fn parse_commit(raw: &str) -> Option<CommitDetail> {
+    let mut fields = raw.split('\0');
+    let hash = fields.next()?.trim().to_owned();
+    if hash.is_empty() {
+        return None;
+    }
+    let author = fields.next()?.to_owned();
+    let email = fields.next()?.to_owned();
+    let date = fields.next()?.to_owned();
+    let refs = fields
+        .next()?
+        .split(", ")
+        .map(|name| {
+            name.trim_start_matches("HEAD -> ")
+                .trim_start_matches("tag: ")
+        })
+        .filter(|name| !name.is_empty() && *name != "HEAD")
+        .map(str::to_owned)
+        .collect();
+    let message = fields.next()?.trim_end().to_owned();
+    let mut files = Vec::new();
+    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
+        let kind = match status.trim().chars().next() {
+            Some('A') => ChangeKind::Added,
+            Some('D') => ChangeKind::Deleted,
+            Some('U') => ChangeKind::Conflict,
+            Some(_) => ChangeKind::Modified,
+            None => continue,
+        };
+        files.push(FileChange {
+            path: path.to_owned(),
+            kind,
+        });
+    }
+    Some(CommitDetail {
+        hash,
+        author,
+        email,
+        date,
+        refs,
+        message,
+        files,
+    })
 }
 
 /// A branch in the list.
@@ -243,6 +354,11 @@ pub enum DiffTarget {
     File(FileChange),
     /// A commit by its full hash.
     Commit(String),
+    /// What a commit did to one file.
+    CommitFile {
+        hash: String,
+        path: String,
+    },
 }
 
 impl Details {
@@ -252,15 +368,19 @@ impl Details {
         match target {
             DiffTarget::File(file) => self.files.contains(file),
             DiffTarget::Commit(hash) => self.commits.iter().any(|c| &c.hash == hash),
+            // Never picked by itself: it is shown inside its commit.
+            DiffTarget::CommitFile { .. } => false,
         }
     }
 }
 
-/// How many commits the list shows.
-pub const LOG_LIMIT: usize = 100;
-/// The `--format` of the commit list: hash, short hash, author, age and
-/// subject, tab separated.
-pub const LOG_FORMAT: &str = "--format=%H%x09%h%x09%an%x09%ar%x09%s";
+/// How many commits the list reads at a time.
+pub const LOG_PAGE: usize = 100;
+/// The `--format` of the commit list: hash, short hash, author, time, date
+/// and subject, tab separated.
+pub const LOG_FORMAT: &str = "--format=%H%x09%h%x09%an%x09%at%x09%ad%x09%s";
+/// How the list's and the pane's dates are written.
+pub const LOG_DATE: &str = "--date=format:%Y-%m-%d %H:%M";
 /// Lines of a diff the pane shows; longer ones are cut.
 pub const DIFF_LINE_LIMIT: usize = 5000;
 
@@ -335,12 +455,13 @@ pub fn parse_log(output: &str) -> Vec<LogEntry> {
     output
         .lines()
         .filter_map(|line| {
-            let mut fields = line.splitn(5, '\t');
+            let mut fields = line.splitn(6, '\t');
             Some(LogEntry {
                 hash: fields.next().filter(|h| !h.is_empty())?.to_owned(),
                 short: fields.next()?.to_owned(),
                 author: fields.next()?.to_owned(),
-                age: fields.next()?.to_owned(),
+                time: fields.next()?.parse().ok()?,
+                date: fields.next()?.to_owned(),
                 subject: fields.next().unwrap_or_default().to_owned(),
             })
         })
@@ -585,13 +706,16 @@ mod tests {
 
     #[test]
     fn commits_and_branches_are_read_from_git_output() {
-        let log = "aaaa\taa\tAda\t3 days ago\tFix a\tb\nbbbb\tbb\tBob\t2 weeks ago\t\n\nbroken\n";
+        let log = "aaaa\taa\tAda\t1700000000\t2023-11-14 22:13\tFix a\tb\n\
+                   bbbb\tbb\tBob\t1600000000\t2020-09-13 12:26\t\n\nbroken\n\
+                   cccc\tcc\tCy\tnot a time\tdate\tsubject\n";
         let commits = parse_log(log);
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].subject, "Fix a\tb");
+        assert_eq!(commits[0].time, 1_700_000_000);
         assert_eq!(
-            (commits[1].author.as_str(), commits[1].age.as_str()),
-            ("Bob", "2 weeks ago")
+            (commits[1].author.as_str(), commits[1].date.as_str()),
+            ("Bob", "2020-09-13 12:26")
         );
         assert_eq!(commits[1].subject, "");
 
@@ -634,12 +758,89 @@ mod tests {
     }
 
     #[test]
+    fn ages_are_short_and_authors_have_initials_and_a_color_of_their_own() {
+        let age = |seconds: i64| short_age(1_000_000_000, 1_000_000_000 - seconds);
+        assert_eq!(age(0), "now");
+        assert_eq!(age(59), "now");
+        assert_eq!(age(60), "1m");
+        assert_eq!(age(3599), "59m");
+        assert_eq!(age(3 * 3600 + 5), "3h");
+        assert_eq!(age(5 * 86_400), "5d");
+        assert_eq!(age(59 * 86_400), "59d");
+        assert_eq!(age(61 * 86_400), "2mo");
+        assert_eq!(age(700 * 86_400), "23mo");
+        assert_eq!(age(4 * 365 * 86_400 + 86_400), "4y");
+        assert_eq!(age(-500), "now", "a clock that is behind");
+
+        assert_eq!(initials("Ada Lovelace"), "AL");
+        assert_eq!(initials("patrick"), "PA");
+        assert_eq!(initials("Jean-Luc van der Berg"), "JB");
+        assert_eq!(initials("dependabot[bot]"), "DB");
+        assert_eq!(initials("x"), "X");
+        assert_eq!(initials("  "), "?");
+        assert_eq!(initials("émile zola"), "ÉZ");
+
+        let hue = author_hue("Ada Lovelace");
+        assert_eq!(hue, author_hue("Ada Lovelace"));
+        assert!((0.0..1.0).contains(&hue));
+        let names = ["Ada", "Bob", "Cy", "Dee", "Eve", "Fay", "Gus", "Hal"];
+        let mut hues: Vec<u32> = names
+            .iter()
+            .map(|n| (author_hue(n) * 360.0) as u32)
+            .collect();
+        hues.sort_unstable();
+        hues.dedup();
+        assert!(hues.len() >= 7, "{hues:?}");
+    }
+
+    #[test]
+    fn a_commit_is_read_with_its_names_message_and_files() {
+        let raw = "abcd1234\0Ada L\0ada@example.org\x002026-11-12 20:03\0HEAD -> main, tag: v1.0, origin/main\0Fix it\n\nA longer\nexplanation.\n\0\nM\0src/a b.rs\0A\0new.rs\0D\0old.rs\0T\0link\0";
+        let commit = parse_commit(raw).unwrap();
+        assert_eq!(commit.hash, "abcd1234");
+        assert_eq!(
+            (commit.author.as_str(), commit.email.as_str()),
+            ("Ada L", "ada@example.org")
+        );
+        assert_eq!(commit.date, "2026-11-12 20:03");
+        assert_eq!(commit.refs, ["main", "v1.0", "origin/main"]);
+        assert_eq!(commit.message, "Fix it\n\nA longer\nexplanation.");
+        let files: Vec<_> = commit
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.kind))
+            .collect();
+        use ChangeKind::{Added, Deleted, Modified};
+        assert_eq!(
+            files,
+            [
+                ("src/a b.rs", Modified),
+                ("new.rs", Added),
+                ("old.rs", Deleted),
+                ("link", Modified)
+            ]
+        );
+        // No names, no files: a commit that changed nothing, with HEAD
+        // detached on it.
+        let bare = parse_commit("abcd\0A\0a@b\0d\0HEAD\0msg\n\0").unwrap();
+        assert!(bare.refs.is_empty() && bare.files.is_empty());
+        assert_eq!(bare.message, "msg");
+        assert_eq!(parse_commit(""), None);
+        assert_eq!(parse_commit("abcd\0only an author"), None);
+    }
+
+    #[test]
     fn a_selection_outlives_a_reload_only_while_the_lists_hold_it() {
         let details = Details {
             files: vec![file("a.rs", ChangeKind::Modified)],
-            commits: parse_log("aaaa\taa\tAda\tnow\tone\n"),
+            commits: parse_log("aaaa\taa\tAda\t1\tthen\tone\n"),
             branches: vec![],
         };
+        let inside = DiffTarget::CommitFile {
+            hash: "aaaa".into(),
+            path: "a.rs".into(),
+        };
+        assert!(!details.holds(&inside));
         assert!(details.holds(&DiffTarget::File(file("a.rs", ChangeKind::Modified))));
         assert!(!details.holds(&DiffTarget::File(file("a.rs", ChangeKind::Deleted))));
         assert!(details.holds(&DiffTarget::Commit("aaaa".into())));

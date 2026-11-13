@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/github/languages/top/paxel/multigit" alt="Top language"/>
   <img src="https://img.shields.io/github/last-commit/paxel/multigit/summer" alt="Last commit"/>
 </p>
-
+<img src="assets/kawaii.png" alt="you want it" align="center">
 <img src="assets/multigit.svg" alt="multigit icon" width="96" align="right">
 
 A desktop dashboard for many git repositories, for Linux and macOS. Every
@@ -297,7 +297,13 @@ harp in the breaks) and trip-hop lofi (a theremin that slides from note to
 note over a slow heavy beat, a sub bass and dark keys with an echo, on a
 crackling record; by chance up to three bombs fall far away during a song,
 very quiet and all echo, and now and then something calls out there). Each theme has five
-songs of about a minute, which vary a little every time they play, and short
+songs of about a minute, which vary a little every time they play. A song
+has two themes of four notes: most of its parts are made from the first, two
+or three from the second, with melody, chords and bass. Each of the five
+themes also has a motto, one phrase of two bars that is always the same notes
+in the key of the song: it comes in about every second song, where the melody
+rests or at the song's end, played by the lead, the long instrument or the
+bass, and always in one of the theme's long breaks. Between songs come short
 and long breaks between them. After each song chance decides: three times in
 four the music stays in the theme, one time in four a longer break leads
 into another theme: a radio being tuned, a tape that stops, a modem

@@ -1,6 +1,7 @@
 //! What the read-only repository view shows: changed files, the last
 //! commits, the branches, and the diff of the file or commit picked.
 
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 
 /// How a file differs from the last commit. Staging plays no part: a file
@@ -183,8 +184,13 @@ pub fn author_hue(author: &str) -> f32 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitDetail {
     pub hash: String,
+    /// The commits it was made on: none for the first one, two or more for
+    /// a merge.
+    pub parents: Vec<String>,
     pub author: String,
     pub email: String,
+    /// Who committed it, name and mail address, when that is not the author.
+    pub committer: Option<(String, String)>,
     pub date: String,
     /// The branches and tags on it.
     pub refs: Vec<String>,
@@ -192,14 +198,30 @@ pub struct CommitDetail {
     pub message: String,
     /// What it changed, against its first parent.
     pub files: Vec<FileChange>,
+    /// The lines it added to each file and took from it, by path. A binary
+    /// file has no lines and is not in here.
+    pub lines: BTreeMap<String, (u32, u32)>,
 }
 
-/// The `--format` a commit is read with for the right pane: hash, author,
-/// mail address, date, the names on it and the message, each ended by a
-/// NUL. With `-z --name-status` the changed files follow in the same way.
-pub const COMMIT_FORMAT: &str = "--format=%H%x00%an%x00%ae%x00%ad%x00%D%x00%B%x00";
+impl CommitDetail {
+    /// The lines the commit added and took away in all its files.
+    pub fn total_lines(&self) -> (u32, u32) {
+        self.lines
+            .values()
+            .fold((0, 0), |(added, removed), (a, r)| {
+                (added.saturating_add(*a), removed.saturating_add(*r))
+            })
+    }
+}
 
-/// The commit in the output of `git show -z --name-status` with
+/// The `--format` a commit is read with for the right pane: hash, parents,
+/// author and committer, each with the mail address, date, the names on it
+/// and the message, each ended by a NUL. With `-z --raw --numstat` the
+/// changed files and their line counts follow in the same way.
+pub const COMMIT_FORMAT: &str =
+    "--format=%H%x00%P%x00%an%x00%ae%x00%cn%x00%ce%x00%ad%x00%D%x00%B%x00";
+
+/// The commit in the output of `git show -z --raw --numstat` with
 /// [`COMMIT_FORMAT`].
 pub fn parse_commit(raw: &str) -> Option<CommitDetail> {
     let mut fields = raw.split('\0');
@@ -207,8 +229,15 @@ pub fn parse_commit(raw: &str) -> Option<CommitDetail> {
     if hash.is_empty() {
         return None;
     }
+    let parents = fields
+        .next()?
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
     let author = fields.next()?.to_owned();
     let email = fields.next()?.to_owned();
+    let committer = (fields.next()?.to_owned(), fields.next()?.to_owned());
+    let committer = (committer != (author.clone(), email.clone())).then_some(committer);
     let date = fields.next()?.to_owned();
     let refs = fields
         .next()?
@@ -221,30 +250,51 @@ pub fn parse_commit(raw: &str) -> Option<CommitDetail> {
         .map(str::to_owned)
         .collect();
     let message = fields.next()?.trim_end().to_owned();
-    let mut files = Vec::new();
-    // git puts a NUL of its own between the message and the files, so an
-    // empty field comes first; no status and no path is ever empty.
-    let mut fields = fields.filter(|field| !field.trim().is_empty());
-    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
-        let kind = match status.trim().chars().next() {
-            Some('A') => ChangeKind::Added,
-            Some('D') => ChangeKind::Deleted,
-            Some('U') => ChangeKind::Conflict,
-            _ => ChangeKind::Modified,
+    let (mut files, mut lines) = (Vec::new(), BTreeMap::new());
+    // git puts a NUL of its own between the message and the files, and a
+    // line break before the first of them. A changed file is a field that
+    // starts with a colon and ends with what happened, and its path in the
+    // next field; a line count is "added, removed, path" with tabs between.
+    while let Some(field) = fields.next() {
+        let field = field.trim_start_matches('\n');
+        if let Some(change) = field.strip_prefix(':') {
+            let Some(path) = fields.next() else {
+                break;
+            };
+            let status = change.rsplit(' ').next().unwrap_or_default();
+            let kind = match status.chars().next() {
+                Some('A') => ChangeKind::Added,
+                Some('D') => ChangeKind::Deleted,
+                Some('U') => ChangeKind::Conflict,
+                _ => ChangeKind::Modified,
+            };
+            files.push(FileChange {
+                path: path.to_owned(),
+                kind,
+            });
+            continue;
+        }
+        let mut parts = field.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
         };
-        files.push(FileChange {
-            path: path.to_owned(),
-            kind,
-        });
+        // A binary file has "-" for both.
+        if let (Ok(added), Ok(removed)) = (added.parse(), removed.parse()) {
+            lines.insert(path.to_owned(), (added, removed));
+        }
     }
     Some(CommitDetail {
         hash,
+        parents,
         author,
         email,
+        committer,
         date,
         refs,
         message,
         files,
+        lines,
     })
 }
 
@@ -812,12 +862,17 @@ mod tests {
 
     #[test]
     fn a_commit_is_read_with_its_names_message_and_files() {
-        let raw = "abcd1234\0Ada L\0ada@example.org\x002026-11-12 20:03\0HEAD -> main, tag: v1.0, origin/main\0Fix it\n\nA longer\nexplanation.\n\0\nM\0src/a b.rs\0A\0new.rs\0D\0old.rs\0T\0link\0";
+        let raw = "abcd1234\0aaaa1111 bbbb2222\0Ada L\0ada@example.org\0Bob\0bob@example.org\x002026-11-12 20:03\0HEAD -> main, tag: v1.0, origin/main\0Fix it\n\nA longer\nexplanation.\n\0\0\n:100644 100644 1111111 2222222 M\0src/a b.rs\0:000000 100644 0000000 3333333 A\0new.rs\0:100644 000000 4444444 0000000 D\0old.rs\0:120000 100644 5555555 6666666 T\0link\0:000000 100644 0000000 7777777 A\0pic.png\x003\t1\tsrc/a b.rs\x0012\t0\tnew.rs\x000\t7\told.rs\x001\t1\tlink\0-\t-\tpic.png\0";
         let commit = parse_commit(raw).unwrap();
         assert_eq!(commit.hash, "abcd1234");
+        assert_eq!(commit.parents, ["aaaa1111", "bbbb2222"]);
         assert_eq!(
             (commit.author.as_str(), commit.email.as_str()),
             ("Ada L", "ada@example.org")
+        );
+        assert_eq!(
+            commit.committer,
+            Some(("Bob".to_owned(), "bob@example.org".to_owned()))
         );
         assert_eq!(commit.date, "2026-11-12 20:03");
         assert_eq!(commit.refs, ["main", "v1.0", "origin/main"]);
@@ -834,19 +889,21 @@ mod tests {
                 ("src/a b.rs", Modified),
                 ("new.rs", Added),
                 ("old.rs", Deleted),
-                ("link", Modified)
+                ("link", Modified),
+                ("pic.png", Added)
             ]
         );
-        // As git writes it: a NUL of its own before the files.
-        let real = parse_commit("abcd\0A\0a@b\0d\0\0msg\n\0\0A\0b.txt\0M\0c d.txt\0").unwrap();
-        assert_eq!(
-            real.files,
-            [file("b.txt", Added), file("c d.txt", Modified)]
-        );
-        // No names, no files: a commit that changed nothing, with HEAD
-        // detached on it.
-        let bare = parse_commit("abcd\0A\0a@b\0d\0HEAD\0msg\n\0").unwrap();
+        // The lines of each file, and of all; a binary file has none.
+        assert_eq!(commit.lines.get("src/a b.rs"), Some(&(3, 1)));
+        assert_eq!(commit.lines.get("old.rs"), Some(&(0, 7)));
+        assert_eq!(commit.lines.get("pic.png"), None);
+        assert_eq!(commit.total_lines(), (16, 9));
+        // The first commit has no parent; the author committed it.
+        let bare = parse_commit("abcd\0\0A\0a@b\0A\0a@b\0d\0HEAD\0msg\n\0").unwrap();
         assert!(bare.refs.is_empty() && bare.files.is_empty());
+        assert!(bare.parents.is_empty() && bare.lines.is_empty());
+        assert_eq!(bare.committer, None);
+        assert_eq!(bare.total_lines(), (0, 0));
         assert_eq!(bare.message, "msg");
         assert_eq!(parse_commit(""), None);
         assert_eq!(parse_commit("abcd\0only an author"), None);

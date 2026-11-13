@@ -210,9 +210,9 @@ fn file_diff(
 pub fn diff(runner: &GitRunner, dir: &Path, target: &DiffTarget) -> Result<String, String> {
     let shown = match target {
         DiffTarget::File(file) => file_diff(runner, dir, &file.path, file.kind)?,
-        // The commit and the names of its files, for `parse_commit`.
+        // The commit, its files and their line counts, for `parse_commit`.
         DiffTarget::Commit(hash) => {
-            let mut args = vec!["show", "--no-show-signature", "-z", "--name-status"];
+            let mut args = vec!["show", "--no-show-signature", "-z", "--raw", "--numstat"];
             args.extend(COMMIT_CHANGES);
             args.extend([LOG_DATE, COMMIT_FORMAT, a_hash(hash)?]);
             return stdout(runner, dir, &args);
@@ -352,6 +352,11 @@ mod tests {
         assert_eq!(merge.message, "Merge side");
         let paths: Vec<_> = merge.files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, ["side.txt"]);
+        // Both parents, the first one the commit it was made on.
+        assert_eq!(merge.parents.len(), 2);
+        assert_eq!(merge.parents[0], repo.git(&["rev-parse", "HEAD~1"]).trim());
+        assert_eq!(merge.lines.get("side.txt"), Some(&(1, 0)));
+        assert_eq!(merge.total_lines(), (1, 0));
         let inside = DiffTarget::CommitFile {
             hash: head.trim().into(),
             path: "side.txt".into(),
@@ -508,6 +513,9 @@ mod tests {
                 kind: ChangeKind::Added
             }]
         );
+        assert_eq!(commit.lines.get("b.txt"), Some(&(1, 0)));
+        assert_eq!(commit.parents.len(), 1);
+        assert_eq!(commit.committer, None, "the author committed it");
         let inside = |path: &str| DiffTarget::CommitFile {
             hash: head.into(),
             path: path.into(),
@@ -549,6 +557,41 @@ mod tests {
         }
         let missing = "0123456789abcdef0123456789abcdef01234567";
         assert!(diff(&runner, repo.path(), &DiffTarget::Commit(missing.into())).is_err());
+
+        // A first commit, committed by somebody else than its author, with
+        // a binary file.
+        let other = TestRepo::new();
+        other.write("pic.bin", "a\0b\n");
+        other.write("text.txt", "x\ny\n");
+        other.git(&["add", "."]);
+        other.git(&[
+            "commit",
+            "-q",
+            "--author=Ada <ada@example.org>",
+            "-m",
+            "by ada",
+        ]);
+        let head = other.git(&["rev-parse", "HEAD"]);
+        let raw = diff(
+            &runner,
+            other.path(),
+            &DiffTarget::Commit(head.trim().into()),
+        )
+        .unwrap();
+        let commit = crate::domain::details::parse_commit(&raw).unwrap();
+        assert_eq!(commit.author, "Ada");
+        assert!(
+            commit
+                .committer
+                .as_ref()
+                .is_some_and(|(name, _)| name == "Test"),
+            "{:?}",
+            commit.committer
+        );
+        assert!(commit.parents.is_empty());
+        assert_eq!(commit.files.len(), 2);
+        assert_eq!(commit.lines.get("text.txt"), Some(&(2, 0)));
+        assert_eq!(commit.lines.get("pic.bin"), None);
     }
 
     /// A diff driver with a command, set for a file type by an attribute: a

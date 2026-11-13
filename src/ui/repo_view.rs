@@ -500,13 +500,13 @@ fn diff_pane(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
 
 /// A row under the header of a commit.
 enum CommitRow<'a> {
-    File(&'a FileChange, bool),
+    /// A file, whether its diff is unfolded, and its lines added and taken
+    /// away (a binary file has none).
+    File(&'a FileChange, bool, Option<(u32, u32)>),
     Line(LineKind, &'a str),
     Note(&'a str),
 }
 
-/// The picked commit: its header, which stays in place, and under it the
-/// files it changed. A click on a file unfolds its diff in place.
 /// A value of the commit pane that goes to the clipboard on a click, like
 /// the values of a card; `hover` says what is copied.
 fn copy_value(ui: &mut Ui, text: RichText, copy: &str, hover: &str, act: &mut Option<Act>) {
@@ -522,6 +522,17 @@ fn copy_value(ui: &mut Ui, text: RichText, copy: &str, hover: &str, act: &mut Op
     }
 }
 
+/// The lines added and taken away, each in its color.
+fn line_counts(ui: &mut Ui, (added, removed): (u32, u32)) {
+    ui.label(RichText::new(format!("+{added}")).color(ok_color(ui)));
+    ui.label(RichText::new(format!("{MINUS}{removed}")).color(ui.visuals().error_fg_color));
+}
+
+/// The sign before the lines a commit took away.
+pub(super) const MINUS: char = '\u{2212}';
+
+/// The picked commit: its header, which stays in place, and under it the
+/// files it changed. A click on a file unfolds its diff in place.
 fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
     let Some(commit) = parse_commit(raw) else {
         ui.weak("this commit cannot be read");
@@ -554,6 +565,27 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
         let date = RichText::new(&commit.date).weak();
         copy_value(ui, date, &commit.date, "A click copies the date", act);
     });
+    if let Some((name, mail)) = &commit.committer {
+        ui.weak(format!("committed by {name} <{mail}>"));
+    }
+    if !commit.parents.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.weak(if commit.parents.len() == 1 {
+                "parent"
+            } else {
+                "parents"
+            });
+            for parent in &commit.parents {
+                let short: String = parent.chars().take(10).collect();
+                let go = ui
+                    .link(RichText::new(short).monospace())
+                    .on_hover_text("Go to this commit");
+                if go.clicked() {
+                    *act = Some(Act::Select(DiffTarget::Commit(parent.clone())));
+                }
+            }
+        });
+    }
     egui::ScrollArea::vertical()
         .id_salt("repo-view-message")
         .max_height(140.0)
@@ -562,15 +594,21 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
         });
     ui.separator();
     let count = commit.files.len();
-    ui.strong(if count == 1 {
-        "1 file changed".to_owned()
-    } else {
-        format!("{count} files changed")
+    ui.horizontal(|ui| {
+        ui.strong(if count == 1 {
+            "1 file changed".to_owned()
+        } else {
+            format!("{count} files changed")
+        });
+        if count > 0 {
+            line_counts(ui, commit.total_lines());
+        }
     });
     let mut rows = Vec::new();
     for file in &commit.files {
         let diff = view.unfolded.get(&file.path);
-        rows.push(CommitRow::File(file, diff.is_some()));
+        let lines = commit.lines.get(&file.path).copied();
+        rows.push(CommitRow::File(file, diff.is_some(), lines));
         match diff {
             None => {}
             Some(None) => rows.push(CommitRow::Note("loading")),
@@ -599,7 +637,7 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
                 ui.horizontal(|ui| {
                     ui.set_height(row_height);
                     match entry {
-                        CommitRow::File(file, open) => {
+                        CommitRow::File(file, open, lines) => {
                             let size = egui::vec2(INDENT, row_height);
                             let (_, icon) = ui.allocate_exact_size(size, egui::Sense::click());
                             let openness = if *open { 1.0 } else { 0.0 };
@@ -610,6 +648,12 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
                             let hover = if *open { "Fold" } else { "Show what changed" };
                             if ui.add(name).on_hover_text(hover).clicked() || icon.clicked() {
                                 *act = Some(Act::Unfold(file.path.clone()));
+                            }
+                            match lines {
+                                Some(lines) => line_counts(ui, *lines),
+                                None => {
+                                    ui.weak("binary");
+                                }
                             }
                         }
                         CommitRow::Line(kind, line) => {

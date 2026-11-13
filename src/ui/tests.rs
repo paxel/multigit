@@ -1116,8 +1116,38 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     assert!(copied(&h).is_empty());
     h.event(egui::Event::PointerGone);
     h.run();
+    // Its parent is one click away, and Back returns from it.
+    h.get_by_label("parent");
+    h.get_by_label("bbbbcccc").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.run();
+    assert_eq!(
+        h.state().repo_view.as_ref().unwrap().selected,
+        Some(crate::domain::details::DiffTarget::Commit(
+            "bbbbcccc".into()
+        ))
+    );
+    h.get_by_label("committed by Grace Hopper <grace@example.org>");
+    h.event(egui::Event::PointerGone);
+    h.get_by_label("Back").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.event(egui::Event::PointerGone);
+    h.run();
+    assert!(h.query_by_label_contains("committed by").is_none());
     // Its files, folded; a click unfolds the diff of one in place.
     h.get_by_label("2 files changed");
+    // The lines added and taken away, in all and for each file.
+    let minus = crate::ui::repo_view::MINUS;
+    h.get_by_label("+15");
+    h.get_by_label("+12");
+    h.get_by_label("+3");
+    assert_eq!(h.get_all_by_label(&format!("{minus}1")).count(), 2);
+    h.get_by_label(&format!("{minus}0"));
+    assert!(bundled_fonts_draw(minus));
+    // The author committed it: no committer is named.
+    assert!(h.query_by_label_contains("committed by").is_none());
     h.get_by_label("A docs/new.md");
     assert!(h.query_by_label("+after in src/main.rs").is_none());
     h.get_by_label("M src/main.rs").click();

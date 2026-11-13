@@ -1578,9 +1578,17 @@ pub(crate) mod tests {
                     }
                     _ => format!("--- a/{0}\n+++ b/{0}\n-old\n+new", file.path),
                 },
-                DiffTarget::Commit(hash) => format!(
-                    "{hash}\0Ada Lovelace\0ada@example.org\x002026-11-12 20:03\0HEAD -> main, tag: v9\0Fix the thing\n\nBecause it was broken.\n\0\nM\0src/main.rs\0A\0docs/new.md\0"
-                ),
+                // The commit `bbbbcccc` was committed by somebody else.
+                DiffTarget::Commit(hash) => {
+                    let committer = if hash == "bbbbcccc" {
+                        "Grace Hopper\0grace@example.org"
+                    } else {
+                        "Ada Lovelace\0ada@example.org"
+                    };
+                    format!(
+                        "{hash}\0bbbbcccc\0Ada Lovelace\0ada@example.org\0{committer}\x002026-11-12 20:03\0HEAD -> main, tag: v9\0Fix the thing\n\nBecause it was broken.\n\0\0\n:100644 100644 1111111 2222222 M\0src/main.rs\0:000000 100644 0000000 3333333 A\0docs/new.md\x003\t1\tsrc/main.rs\x0012\t0\tdocs/new.md\0"
+                    )
+                }
                 DiffTarget::CommitFile { path, .. } => {
                     format!("--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-before\n+after in {path}")
                 }

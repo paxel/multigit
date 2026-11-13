@@ -249,7 +249,10 @@ impl Voice {
             Voice::Guitar => overdriven(frequency, seconds, &[1.0], 5.0, 1.2),
             Voice::Chords => overdriven(frequency, seconds, &[1.0, 1.5, 2.0], 7.0, 2.5),
             Voice::Growl => overdriven(frequency, seconds, &[1.0, 2.0], 3.0, 0.7),
-            Voice::Idol => quieter(voice(frequency, seconds, Vowel::Aah)),
+            // The melody voice sings an octave above what is written: a
+            // high voice. The "ooh" of the long tunes stays where it is; that
+            // high it would have no body left.
+            Voice::Idol => quieter(voice(frequency * 2.0, seconds, Vowel::Aah)),
             Voice::IdolOoh => quieter(voice(frequency, seconds, Vowel::Ooh)),
         }
     }

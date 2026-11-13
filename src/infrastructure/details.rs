@@ -39,7 +39,18 @@ fn stdout(runner: &GitRunner, dir: &Path, args: &[&str]) -> Result<String, Strin
 
 /// The lists of the view for the repository at `dir`.
 pub fn details(runner: &GitRunner, dir: &Path) -> Result<Details, String> {
-    let status = stdout(runner, dir, &["status", "--porcelain=v2", "--branch"])?;
+    // Every untracked file by itself, not a new folder as one entry: the
+    // tree shows files.
+    let status = stdout(
+        runner,
+        dir,
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=all",
+        ],
+    )?;
     let current = match parse_porcelain_v2(&status).map(|s| s.head) {
         Ok(Head::Branch(name) | Head::Unborn(name)) => Some(name),
         _ => None,
@@ -83,65 +94,44 @@ fn untracked_diff(runner: &GitRunner, dir: &Path, path: &str) -> Result<String, 
     }
 }
 
+/// How the file differs from the last commit, staged or not. A file git
+/// does not track yet, and any new file before the first commit, is
+/// compared with nothing.
+fn file_diff(
+    runner: &GitRunner,
+    dir: &Path,
+    path: &str,
+    kind: ChangeKind,
+) -> Result<String, String> {
+    let mut args = vec!["diff"];
+    args.extend(PLAIN_DIFF);
+    args.extend(["HEAD", "--", path]);
+    let out = query(runner, dir, &args)?;
+    let new = kind == ChangeKind::Added;
+    match (out.success(), new) {
+        (true, false) => Ok(out.stdout),
+        (true, true) if !out.stdout.is_empty() => Ok(out.stdout),
+        (_, true) => untracked_diff(runner, dir, path),
+        (false, false) => Err(error_of(&out)),
+    }
+}
+
 /// The diff of `target` in the repository at `dir`, cut to what the pane
 /// shows.
 pub fn diff(runner: &GitRunner, dir: &Path, target: &DiffTarget) -> Result<String, String> {
-    // Status names a new folder as one entry, `dir/`: show its files.
-    if let DiffTarget::File(file) = target
-        && file.kind == ChangeKind::Untracked
-    {
-        if !file.path.ends_with('/') {
-            return untracked_diff(runner, dir, &file.path).map(|d| cut_diff(&d));
-        }
-        let listed = stdout(
-            runner,
-            dir,
-            &[
-                "ls-files",
-                "--others",
-                "--exclude-standard",
-                "--",
-                &file.path,
-            ],
-        )?;
-        let mut all = String::new();
-        for path in listed.lines() {
-            all.push_str(&untracked_diff(runner, dir, path)?);
-            // Enough is read once the pane is full.
-            if all.lines().count() > crate::domain::details::DIFF_LINE_LIMIT {
-                break;
-            }
-        }
-        return Ok(cut_diff(&all));
-    }
-    let mut args: Vec<&str> = Vec::new();
-    match target {
+    let shown = match target {
+        DiffTarget::File(file) => file_diff(runner, dir, &file.path, file.kind)?,
         DiffTarget::Commit(hash) => {
             if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
                 return Err(format!("not a commit hash: {hash}"));
             }
-            args.extend(["show", "--no-show-signature", "--stat", "--patch"]);
+            let mut args = vec!["show", "--no-show-signature", "--stat", "--patch"];
             args.extend(PLAIN_DIFF);
             args.push(hash);
+            stdout(runner, dir, &args)?
         }
-        DiffTarget::File(file) => {
-            args.push("diff");
-            args.extend(PLAIN_DIFF);
-            match file.kind {
-                ChangeKind::Staged => args.push("--cached"),
-                ChangeKind::Modified | ChangeKind::Conflict => {}
-                // Handled above.
-                ChangeKind::Untracked => {}
-            }
-            args.extend(["--", &file.path]);
-        }
-    }
-    let out = query(runner, dir, &args)?;
-    if out.success() {
-        Ok(cut_diff(&out.stdout))
-    } else {
-        Err(error_of(&out))
-    }
+    };
+    Ok(cut_diff(&shown))
 }
 
 #[cfg(test)]
@@ -174,14 +164,18 @@ mod tests {
         repo.write("b.txt", "staged\n");
         repo.git(&["add", "b.txt"]);
         repo.write("new file.txt", "new\n");
+        // A new folder is listed by its files.
+        std::fs::create_dir_all(repo.path().join("dir/sub")).unwrap();
+        repo.write("dir/sub/one.txt", "first\n");
         let d = details(&runner, repo.path()).unwrap();
         let files: Vec<_> = d.files.iter().map(|f| (f.path.as_str(), f.kind)).collect();
         assert_eq!(
             files,
             [
-                ("b.txt", ChangeKind::Staged),
                 ("a.txt", ChangeKind::Modified),
-                ("new file.txt", ChangeKind::Untracked)
+                ("b.txt", ChangeKind::Modified),
+                ("dir/sub/one.txt", ChangeKind::Added),
+                ("new file.txt", ChangeKind::Added)
             ]
         );
         let subjects: Vec<_> = d.commits.iter().map(|c| c.subject.as_str()).collect();
@@ -216,19 +210,33 @@ mod tests {
             modified.contains("+changed") && !modified.contains("staged"),
             "{modified}"
         );
-        let staged = diff(&runner, repo.path(), &file("b.txt", ChangeKind::Staged)).unwrap();
+        // Staged or not, a file is compared with the last commit.
+        let staged = diff(&runner, repo.path(), &file("b.txt", ChangeKind::Modified)).unwrap();
         assert!(
             staged.contains("-two") && staged.contains("+staged"),
             "{staged}"
         );
+        repo.write("b.txt", "staged\nand more\n");
+        let both = diff(&runner, repo.path(), &file("b.txt", ChangeKind::Modified)).unwrap();
+        assert!(
+            both.contains("-two") && both.contains("+staged") && both.contains("+and more"),
+            "{both}"
+        );
         // A name like an option is still a file.
-        let untracked = diff(
-            &runner,
-            repo.path(),
-            &file("-new.txt", ChangeKind::Untracked),
-        )
-        .unwrap();
+        let untracked = diff(&runner, repo.path(), &file("-new.txt", ChangeKind::Added)).unwrap();
         assert!(untracked.contains("+brand new"), "{untracked}");
+        // A new file that is staged, and a deleted one.
+        repo.write("added.txt", "staged new\n");
+        repo.git(&["add", "added.txt"]);
+        let added = diff(&runner, repo.path(), &file("added.txt", ChangeKind::Added)).unwrap();
+        assert!(added.contains("+staged new"), "{added}");
+        std::fs::remove_file(repo.path().join("a.txt")).unwrap();
+        let deleted = diff(&runner, repo.path(), &file("a.txt", ChangeKind::Deleted)).unwrap();
+        assert!(
+            deleted.contains("-one") && deleted.contains("deleted file"),
+            "{deleted}"
+        );
+        repo.write("a.txt", "one\nchanged\n");
 
         let head = repo.git(&["rev-parse", "HEAD"]);
         let commit = diff(
@@ -243,16 +251,24 @@ mod tests {
         );
         assert!(commit.contains("Author: Test"), "{commit}");
 
-        // A new folder is one untracked entry; its files show as one diff.
-        std::fs::create_dir(repo.path().join("dir")).unwrap();
-        repo.write("dir/one.txt", "first\n");
-        repo.write("dir/two.txt", "second\n");
-        let d = details(&runner, repo.path()).unwrap();
-        let folder = d.files.iter().find(|f| f.path == "dir/").unwrap();
-        let both = diff(&runner, repo.path(), &DiffTarget::File(folder.clone())).unwrap();
+        // Before the first commit there is nothing to compare with: a new
+        // file shows whole.
+        let unborn = TestRepo::new();
+        unborn.write("first.txt", "hello\n");
+        let first = diff(
+            &runner,
+            unborn.path(),
+            &file("first.txt", ChangeKind::Added),
+        )
+        .unwrap();
+        assert!(first.contains("+hello"), "{first}");
         assert!(
-            both.contains("+first") && both.contains("+second"),
-            "{both}"
+            diff(
+                &runner,
+                unborn.path(),
+                &file("first.txt", ChangeKind::Modified)
+            )
+            .is_err()
         );
 
         for bad in ["", "--output=/tmp/x", "HEAD"] {
@@ -291,14 +307,9 @@ mod tests {
         let head = repo.git(&["rev-parse", "HEAD"]);
         diff(&runner, repo.path(), &file("a.bin", ChangeKind::Modified)).unwrap();
         repo.git(&["add", "a.bin"]);
-        diff(&runner, repo.path(), &file("a.bin", ChangeKind::Staged)).unwrap();
+        diff(&runner, repo.path(), &file("a.bin", ChangeKind::Modified)).unwrap();
         repo.write("new.bin", "x\n");
-        diff(
-            &runner,
-            repo.path(),
-            &file("new.bin", ChangeKind::Untracked),
-        )
-        .unwrap();
+        diff(&runner, repo.path(), &file("new.bin", ChangeKind::Added)).unwrap();
         diff(
             &runner,
             repo.path(),
@@ -384,14 +395,9 @@ mod tests {
         let modified = diff(&runner, repo.path(), &file("a.bin", ChangeKind::Modified)).unwrap();
         assert!(modified.contains("+two"), "{modified}");
         repo.git(&["add", "a.bin"]);
-        diff(&runner, repo.path(), &file("a.bin", ChangeKind::Staged)).unwrap();
+        diff(&runner, repo.path(), &file("a.bin", ChangeKind::Modified)).unwrap();
         repo.write("new.bin", "x\n");
-        diff(
-            &runner,
-            repo.path(),
-            &file("new.bin", ChangeKind::Untracked),
-        )
-        .unwrap();
+        diff(&runner, repo.path(), &file("new.bin", ChangeKind::Added)).unwrap();
         let shown = diff(&runner, repo.path(), &DiffTarget::Commit(hash)).unwrap();
         assert!(shown.contains("a.bin"), "{shown}");
         for (name, marker) in [

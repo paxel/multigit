@@ -110,6 +110,8 @@ pub struct RepoView {
     pub kept: HashMap<RepoTab, DiffTarget>,
     /// What Back and Forward step through.
     pub trail: Trail<Place>,
+    /// The folders of the file tree that are folded, by path.
+    pub closed: HashSet<String>,
     /// The diff of `selected`; `None` while it is read.
     pub diff: Option<Result<String, String>>,
 }
@@ -566,6 +568,7 @@ impl App {
             selected: None,
             kept: HashMap::new(),
             trail: Trail::new((tab, None)),
+            closed: HashSet::new(),
             diff: None,
         });
         self.engine.load_details(repo.to_path_buf());
@@ -612,6 +615,15 @@ impl App {
             view.selected = Some(target.clone());
             view.diff = None;
             self.engine.load_diff(view.repo.clone(), target);
+        }
+    }
+
+    /// A click on a folder of the file tree: fold it, or unfold it.
+    pub fn toggle_repo_folder(&mut self, path: &str) {
+        if let Some(view) = &mut self.repo_view
+            && !view.closed.remove(path)
+        {
+            view.closed.insert(path.to_owned());
         }
     }
 
@@ -1282,7 +1294,15 @@ pub(crate) mod tests {
         }
         fn diff(&self, _dir: &Path, target: &DiffTarget) -> Result<String, String> {
             Ok(match target {
-                DiffTarget::File(file) => format!("--- a/{0}\n+++ b/{0}\n-old\n+new", file.path),
+                DiffTarget::File(file) => match file.kind {
+                    crate::domain::details::ChangeKind::Added => {
+                        "+++ b/new\n@@ -0,0 +1 @@\n+fresh line".to_owned()
+                    }
+                    crate::domain::details::ChangeKind::Deleted => {
+                        "--- a/old\n@@ -1 +0,0 @@\n-gone line".to_owned()
+                    }
+                    _ => format!("--- a/{0}\n+++ b/{0}\n-old\n+new", file.path),
+                },
                 DiffTarget::Commit(hash) => format!("commit {hash}\n\n    subject\n"),
             })
         }
@@ -1998,6 +2018,12 @@ pub(crate) mod tests {
         assert!(!view(&app).trail.can_back());
         app.repo_view_forward();
 
+        // Folders of the tree fold and unfold.
+        app.toggle_repo_folder("src/");
+        assert!(view(&app).closed.contains("src/"));
+        app.toggle_repo_folder("src/");
+        assert!(view(&app).closed.is_empty());
+
         // A repository with changes opens on them.
         app.handle_event(probed("/x/b", 2));
         app.open_repo_view(Path::new("/x/b"));
@@ -2015,6 +2041,7 @@ pub(crate) mod tests {
         app.refresh_repo_view();
         app.select_in_repo_view(DiffTarget::Commit("aaaa".into()));
         app.switch_repo_tab(RepoTab::Graph);
+        app.toggle_repo_folder("src/");
         app.repo_view_back();
         app.repo_view_forward();
         app.handle_event(Event::Details {

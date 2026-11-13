@@ -982,11 +982,19 @@ fn repo_view_app() -> Harness<'static, App> {
         files: vec![
             FileChange {
                 path: "src/main.rs".into(),
-                kind: ChangeKind::Staged,
+                kind: ChangeKind::Modified,
+            },
+            FileChange {
+                path: "src/ui/deep/new.rs".into(),
+                kind: ChangeKind::Added,
+            },
+            FileChange {
+                path: "src/old.rs".into(),
+                kind: ChangeKind::Deleted,
             },
             FileChange {
                 path: "notes.txt".into(),
-                kind: ChangeKind::Untracked,
+                kind: ChangeKind::Added,
             },
         ],
         commits: parse_log("aaaabbbb\taaaabbb\tAda\t3 days ago\tFix the thing\n"),
@@ -1052,13 +1060,47 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     h.get_by_label("Files").click();
     h.run();
     assert_eq!(tab(&h), RepoTab::Files);
-    h.get_by_label("Changed files (2)");
+    h.get_by_label("Changed files (4)");
     h.get_by_label("Pick a file to see its changes.");
     assert!(h.query_by_label("aaaabbb  Fix the thing").is_none());
-    h.get_by_label("staged  src/main.rs").click();
+    // A tree: folders first, a chain of single folders as one row, every
+    // file with the letter of its change.
+    h.get_by_label("src/");
+    h.get_by_label("ui/deep/");
+    h.get_by_label("A new.rs");
+    h.get_by_label("D old.rs");
+    h.get_by_label("A notes.txt");
+    // A folder folds away what is in it, and unfolds again.
+    h.get_by_label("ui/deep/").click();
     h.run();
-    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    assert!(h.query_by_label("A new.rs").is_none());
+    h.get_by_label("M main.rs");
+    h.get_by_label("src/").click();
     h.run();
+    assert!(h.query_by_label("M main.rs").is_none());
+    assert!(h.query_by_label("ui/deep/").is_none());
+    h.get_by_label("A notes.txt");
+    h.get_by_label("src/").click();
+    h.get_by_label("ui/deep/").click();
+    h.run();
+    let pick = |h: &mut Harness<'static, App>, label: &str| {
+        h.get_by_label(label).click();
+        h.run();
+        settle(h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+        h.run();
+    };
+    // An added file shows its content, a deleted one what is gone, a
+    // modified one its diff.
+    pick(&mut h, "A new.rs");
+    h.get_by_label("added");
+    h.get_by_label("src/ui/deep/new.rs");
+    h.get_by_label("fresh line");
+    assert!(h.query_by_label("+fresh line").is_none());
+    pick(&mut h, "D old.rs");
+    h.get_by_label("deleted");
+    h.get_by_label("gone line");
+    pick(&mut h, "M main.rs");
+    h.get_by_label("modified");
     h.get_by_label("+++ b/src/main.rs");
     h.get_by_label("+new");
 
@@ -1067,16 +1109,18 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     h.run();
     h.get_by_label("side-branch");
 
-    // Back goes to the file, then to the Files tab without it, then to the
-    // commit; Forward returns.
+    // Back goes to the file, on through the files picked before it to the
+    // Files tab without a pick, then to the commit; Forward returns.
     h.get_by_label("Back").click();
     h.run();
     assert_eq!(tab(&h), RepoTab::Files);
     settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
     h.run();
     h.get_by_label("+new");
-    h.get_by_label("Back").click();
-    h.run();
+    for _ in 0..3 {
+        h.get_by_label("Back").click();
+        h.run();
+    }
     h.get_by_label("Pick a file to see its changes.");
     h.get_by_label("Back").click();
     h.run();
@@ -1107,7 +1151,7 @@ fn open_in_the_card_menu_and_the_buttons_of_the_view() {
     h.run();
     h.get_by_label("Files").click();
     h.run();
-    h.get_by_label("untracked  notes.txt");
+    h.get_by_label("A notes.txt");
     h.get_by_label("Refresh").click();
     h.run();
     assert!(h.state().repo_view.is_some());

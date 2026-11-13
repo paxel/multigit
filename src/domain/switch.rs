@@ -102,7 +102,7 @@ pub fn remote_choices(
                 current,
                 command: there
                     .filter(|_| !current)
-                    .map(|name| format!("branch {}", quote(&format!("--set-upstream-to={name}")))),
+                    .map(|name| format!("branch --set-upstream-to={}", quote(&name))),
             }
         })
         .collect()
@@ -190,7 +190,7 @@ mod tests {
         // A name with a blank is one argument.
         assert_eq!(
             rows(Some("my topic"), None)[1].2.as_deref(),
-            Some("branch '--set-upstream-to=fork/my topic'")
+            Some("branch --set-upstream-to='fork/my topic'")
         );
         // No branch checked out: nothing to move.
         assert!(rows(None, None).iter().all(|row| row.2.is_none()));

@@ -311,6 +311,8 @@ fn right_click_on_the_remote_moves_the_upstream_to_another_remote() {
     ];
     snap.dated.remote_branches = vec![dated("origin/main"), dated("fork/main")];
     snap.status.tracking = Some("origin/main".into());
+    // What the next probe reads is the same.
+    *backend.snapshot.lock().unwrap() = Some(snap.clone());
     let mut h = harness(app);
     h.run();
     assert!(h.query_by_label("Remote of main").is_none());

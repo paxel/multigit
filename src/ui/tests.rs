@@ -1033,19 +1033,12 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     );
     settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
     h.run();
-    h.get_by_label("Changed files (2)");
-    h.get_by_label("Commits");
-    h.get_by_label("Branches");
-    h.get_by_label("side-branch");
-    h.get_by_label("Pick a file or a commit to see its diff.");
-
-    // A file, then a commit: each shows its diff.
-    h.get_by_label("staged  src/main.rs").click();
-    h.run();
-    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
-    h.run();
-    h.get_by_label("+++ b/src/main.rs");
-    h.get_by_label("+new");
+    // A clean repository opens on its history.
+    use crate::domain::details::RepoTab;
+    let tab = |h: &Harness<'static, App>| h.state().repo_view.as_ref().unwrap().tab;
+    assert_eq!(tab(&h), RepoTab::Commits);
+    h.get_by_label("Pick a commit to see it.");
+    assert!(h.query_by_label("Changed files (2)").is_none());
     h.get_by_label("aaaabbb  Fix the thing").click();
     h.run();
     settle(&mut h, |a| {
@@ -1054,6 +1047,46 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     });
     h.run();
     h.get_by_label("commit aaaabbbb");
+
+    // The Files tab has the changed files; a file shows its diff.
+    h.get_by_label("Files").click();
+    h.run();
+    assert_eq!(tab(&h), RepoTab::Files);
+    h.get_by_label("Changed files (2)");
+    h.get_by_label("Pick a file to see its changes.");
+    assert!(h.query_by_label("aaaabbb  Fix the thing").is_none());
+    h.get_by_label("staged  src/main.rs").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.run();
+    h.get_by_label("+++ b/src/main.rs");
+    h.get_by_label("+new");
+
+    // The Graph tab has the branches.
+    h.get_by_label("Graph").click();
+    h.run();
+    h.get_by_label("side-branch");
+
+    // Back goes to the file, then to the Files tab without it, then to the
+    // commit; Forward returns.
+    h.get_by_label("Back").click();
+    h.run();
+    assert_eq!(tab(&h), RepoTab::Files);
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.run();
+    h.get_by_label("+new");
+    h.get_by_label("Back").click();
+    h.run();
+    h.get_by_label("Pick a file to see its changes.");
+    h.get_by_label("Back").click();
+    h.run();
+    assert_eq!(tab(&h), RepoTab::Commits);
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.run();
+    h.get_by_label("commit aaaabbbb");
+    h.get_by_label("Forward").click();
+    h.run();
+    assert_eq!(tab(&h), RepoTab::Files);
 
     // The board is out of reach while the view is open; Esc returns to it.
     key(&mut h, Key::Escape);
@@ -1071,6 +1104,8 @@ fn open_in_the_card_menu_and_the_buttons_of_the_view() {
     settle(&mut h, |a| {
         a.repo_view.as_ref().is_some_and(|v| v.details.is_some())
     });
+    h.run();
+    h.get_by_label("Files").click();
     h.run();
     h.get_by_label("untracked  notes.txt");
     h.get_by_label("Refresh").click();

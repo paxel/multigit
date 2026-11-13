@@ -2,7 +2,6 @@
 
 use crate::domain::board::SortKey;
 use crate::domain::command::{Job, display, shell_name, shell_program};
-use crate::domain::details::{Details, DiffTarget, LineKind, line_kind};
 use crate::domain::favorites::{EMOJIS, Favorite, PALETTE, color_rgb, dark_text_on, favorites_of};
 use crate::domain::kawaii;
 use crate::domain::naming::{parent_line, title};
@@ -10,7 +9,7 @@ use crate::domain::output::{Run, SectionState};
 use crate::domain::repo::Snapshot;
 use crate::domain::status::{Head, RepoState, Upstream};
 use crate::domain::switch::{Choice, branch_choices, matching, new_branch_command, tag_choices};
-use crate::ui::app::{App, Card, CopyFlash, RepoView};
+use crate::ui::app::{App, Card, CopyFlash};
 use crate::ui::cli::{CliAction, CliContext};
 use crate::ui::settings;
 use crate::ui::style::{KAWAII_PINK, KAWAII_YELLOW};
@@ -154,7 +153,7 @@ fn repositories(count: usize) -> String {
     }
 }
 
-fn ok_color(ui: &Ui) -> Color32 {
+pub(super) fn ok_color(ui: &Ui) -> Color32 {
     if ui.visuals().dark_mode {
         Color32::from_rgb(0x6c, 0xc6, 0x6c)
     } else {
@@ -330,61 +329,6 @@ impl App {
             Some(Change::Add(i)) => self.add_to_favorite(i, &marked),
             Some(Change::Remove(i)) => self.remove_from_favorite(i, &marked),
             Some(Change::Delete(i)) => self.delete_favorite(i),
-            None => {}
-        }
-    }
-
-    /// The read-only view of one repository, over the board: its changed
-    /// files, last commits and branches, and the diff of what is picked.
-    fn repo_view_dialog(&mut self, ui: &Ui) {
-        let Some(view) = &self.repo_view else {
-            return;
-        };
-        let mut act = None;
-        let screen = ui.ctx().content_rect();
-        egui::Modal::new(egui::Id::new("repo-view")).show(ui.ctx(), |ui| {
-            ui.set_width((screen.width() - 80.0).max(400.0));
-            ui.set_height((screen.height() - 80.0).max(300.0));
-            ui.horizontal(|ui| {
-                ui.heading(title(&view.repo));
-                ui.weak(view.repo.display().to_string());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        act = Some(RepoViewAct::Close);
-                    }
-                    if ui
-                        .button("Refresh")
-                        .on_hover_text("Read the repository again now")
-                        .clicked()
-                    {
-                        act = Some(RepoViewAct::Refresh);
-                    }
-                });
-            });
-            ui.separator();
-            match &view.details {
-                None => {
-                    ui.weak("loading");
-                }
-                Some(Err(error)) => {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
-                }
-                Some(Ok(details)) => {
-                    egui::Panel::left("repo-view-lists")
-                        .resizable(true)
-                        .default_size(380.0)
-                        .show(ui, |ui| repo_lists(ui, details, view, &mut act));
-                    egui::CentralPanel::default().show(ui, |ui| diff_pane(ui, view));
-                }
-            }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                act = Some(RepoViewAct::Close);
-            }
-        });
-        match act {
-            Some(RepoViewAct::Close) => self.close_repo_view(),
-            Some(RepoViewAct::Refresh) => self.refresh_repo_view(),
-            Some(RepoViewAct::Select(target)) => self.select_in_repo_view(target),
             None => {}
         }
     }
@@ -807,115 +751,6 @@ fn output_toggle(ui: &mut Ui, hidden: &mut bool, unseen: Option<Option<bool>>) {
     {
         *hidden = !*hidden;
     }
-}
-
-/// What was clicked in the repository view.
-enum RepoViewAct {
-    Close,
-    Refresh,
-    Select(DiffTarget),
-}
-
-/// One of the three lists of the repository view, scrolling on its own in
-/// `height`.
-fn repo_list(ui: &mut Ui, heading: &str, height: f32, rows: impl FnOnce(&mut Ui)) {
-    ui.strong(heading);
-    egui::ScrollArea::vertical()
-        .id_salt(heading)
-        .max_height(height)
-        .auto_shrink([false, true])
-        .show(ui, rows);
-    ui.add_space(4.0);
-}
-
-/// Changed files, commits and branches; a click on a file or commit picks
-/// it for the diff pane.
-fn repo_lists(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<RepoViewAct>) {
-    let room = (ui.available_height() - 110.0).max(150.0);
-    let mut row = |ui: &mut Ui, target: DiffTarget, text: RichText, hover: &str| {
-        let picked = view.selected.as_ref() == Some(&target);
-        let entry = egui::Button::selectable(picked, text).truncate();
-        if ui.add(entry).on_hover_text(hover).clicked() {
-            *act = Some(RepoViewAct::Select(target));
-        }
-    };
-    let files = format!("Changed files ({})", details.files.len());
-    repo_list(ui, &files, room * 0.3, |ui| {
-        if details.files.is_empty() {
-            ui.weak("none: the working tree is clean");
-        }
-        for file in &details.files {
-            let text = format!("{}  {}", file.kind.label(), file.path);
-            row(
-                ui,
-                DiffTarget::File(file.clone()),
-                RichText::new(text),
-                &file.path,
-            );
-        }
-    });
-    repo_list(ui, "Commits", room * 0.45, |ui| {
-        if details.commits.is_empty() {
-            ui.weak("no commits yet");
-        }
-        for commit in &details.commits {
-            let text = format!("{}  {}", commit.short, commit.subject);
-            let hover = format!("{}, {}\n{}", commit.author, commit.age, commit.subject);
-            let target = DiffTarget::Commit(commit.hash.clone());
-            row(ui, target, RichText::new(text).monospace(), &hover);
-        }
-    });
-    repo_list(ui, "Branches", room * 0.25, |ui| {
-        for branch in &details.branches {
-            let name = RichText::new(&branch.name).monospace();
-            if branch.current {
-                ui.label(name.strong()).on_hover_text("checked out");
-            } else {
-                ui.label(name);
-            }
-        }
-    });
-}
-
-/// The diff of the picked file or commit, colored by line.
-fn diff_pane(ui: &mut Ui, view: &RepoView) {
-    let diff = match (&view.selected, &view.diff) {
-        (None, _) => {
-            ui.weak("Pick a file or a commit to see its diff.");
-            return;
-        }
-        (Some(_), None) => {
-            ui.weak("loading");
-            return;
-        }
-        (Some(_), Some(Err(error))) => {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-            return;
-        }
-        (Some(_), Some(Ok(diff))) => diff,
-    };
-    if diff.trim().is_empty() {
-        ui.weak("no difference");
-        return;
-    }
-    let lines: Vec<&str> = diff.lines().collect();
-    let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
-    let (added, removed) = (ok_color(ui), ui.visuals().error_fg_color);
-    egui::ScrollArea::both()
-        .auto_shrink([false, false])
-        .show_rows(ui, row_height, lines.len(), |ui, rows| {
-            // Rows keep their width: a long line must not wrap.
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-            for line in lines.get(rows).unwrap_or_default() {
-                let text = RichText::new(*line).monospace();
-                ui.label(match line_kind(line) {
-                    LineKind::Added => text.color(added),
-                    LineKind::Removed => text.color(removed),
-                    LineKind::Header => text.strong(),
-                    LineKind::Plain => text,
-                });
-            }
-        });
 }
 
 /// Heart and star of the Kawaii theme.

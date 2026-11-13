@@ -10,7 +10,7 @@ use crate::domain::command::{Job, display, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::{Config, Theme};
 use crate::domain::destructive::is_destructive;
-use crate::domain::details::{Details, DiffTarget};
+use crate::domain::details::{Details, DiffTarget, Place, RepoTab, Trail};
 use crate::domain::favorites::{FavoriteDraft, active_after_delete, forget};
 use crate::domain::history::History;
 use crate::domain::kawaii;
@@ -100,10 +100,16 @@ pub struct PendingRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoView {
     pub repo: PathBuf,
+    /// The tab that is shown.
+    pub tab: RepoTab,
     /// The lists; `None` until they were read the first time.
     pub details: Option<Result<Details, String>>,
-    /// The file or commit whose diff is shown.
+    /// The file or commit picked in the shown tab; its diff is shown.
     pub selected: Option<DiffTarget>,
+    /// What is picked in the tabs that are not shown.
+    pub kept: HashMap<RepoTab, DiffTarget>,
+    /// What Back and Forward step through.
+    pub trail: Trail<Place>,
     /// The diff of `selected`; `None` while it is read.
     pub diff: Option<Result<String, String>>,
 }
@@ -543,12 +549,23 @@ impl App {
         self.sync_repos_to_config();
     }
 
-    /// Open the read-only view of `repo` and read its lists.
+    /// Open the read-only view of `repo` and read its lists. It opens on
+    /// the changes of a repository that has some, else on its history.
     pub fn open_repo_view(&mut self, repo: &Path) {
+        let dirty = self
+            .cards
+            .iter()
+            .find(|c| c.path == repo)
+            .and_then(Card::snapshot)
+            .is_some_and(|s| !s.status.counts.is_clean());
+        let tab = RepoTab::opening(dirty);
         self.repo_view = Some(RepoView {
             repo: repo.to_path_buf(),
+            tab,
             details: None,
             selected: None,
+            kept: HashMap::new(),
+            trail: Trail::new((tab, None)),
             diff: None,
         });
         self.engine.load_details(repo.to_path_buf());
@@ -565,12 +582,71 @@ impl App {
         }
     }
 
+    /// Show `place` in the open view: its tab, and its pick with the diff.
+    /// A pick the lists no longer hold is left out.
+    fn show_place(&mut self, (tab, target): Place) {
+        let Some(view) = &mut self.repo_view else {
+            return;
+        };
+        if let Some(old) = view.selected.take() {
+            view.kept.insert(view.tab, old);
+        }
+        view.kept.remove(&tab);
+        let held = match &view.details {
+            Some(Ok(details)) => target.filter(|t| details.holds(t)),
+            _ => None,
+        };
+        view.tab = tab;
+        view.selected = held.clone();
+        view.diff = None;
+        if let Some(target) = held {
+            self.engine.load_diff(view.repo.clone(), target);
+        }
+    }
+
     /// A click on a file or commit in the view: show its diff.
     pub fn select_in_repo_view(&mut self, target: DiffTarget) {
         if let Some(view) = &mut self.repo_view {
+            let place = (view.tab, Some(target.clone()));
+            view.trail.visit(place);
             view.selected = Some(target.clone());
             view.diff = None;
             self.engine.load_diff(view.repo.clone(), target);
+        }
+    }
+
+    /// A click on a tab of the view: show it, with what was picked in it.
+    pub fn switch_repo_tab(&mut self, tab: RepoTab) {
+        let Some(view) = &mut self.repo_view else {
+            return;
+        };
+        if view.tab == tab {
+            return;
+        }
+        let place = (tab, view.kept.get(&tab).cloned());
+        view.trail.visit(place.clone());
+        self.show_place(place);
+    }
+
+    /// Back in the view: the place looked at before this one.
+    pub fn repo_view_back(&mut self) {
+        let place = self
+            .repo_view
+            .as_mut()
+            .and_then(|v| v.trail.back().cloned());
+        if let Some(place) = place {
+            self.show_place(place);
+        }
+    }
+
+    /// Forward in the view: the place Back was pressed on.
+    pub fn repo_view_forward(&mut self) {
+        let place = self
+            .repo_view
+            .as_mut()
+            .and_then(|v| v.trail.forward().cloned());
+        if let Some(place) = place {
+            self.show_place(place);
         }
     }
 
@@ -588,6 +664,9 @@ impl App {
         if !held {
             view.selected = None;
             view.diff = None;
+        }
+        if let Ok(details) = &result {
+            view.kept.retain(|_, target| details.holds(target));
         }
         view.details = Some(result);
         if let Some(target) = view.selected.clone() {
@@ -1863,6 +1942,69 @@ pub(crate) mod tests {
         settle(&mut app, |a| view(a).selected.is_none());
         assert_eq!(view(&app).diff, None);
 
+        // Tabs keep what was picked in them; Back and Forward step
+        // through tabs and picks.
+        assert_eq!(
+            view(&app).tab,
+            RepoTab::Commits,
+            "no changes known: history"
+        );
+        let commit = DiffTarget::Commit("aaaa".into());
+        let one = DiffTarget::File(file("one.rs"));
+        app.select_in_repo_view(commit.clone());
+        app.switch_repo_tab(RepoTab::Files);
+        assert_eq!(
+            (view(&app).tab, view(&app).selected),
+            (RepoTab::Files, None)
+        );
+        app.switch_repo_tab(RepoTab::Files);
+        app.select_in_repo_view(one.clone());
+        app.switch_repo_tab(RepoTab::Commits);
+        assert_eq!(view(&app).selected, Some(commit.clone()), "kept in its tab");
+        assert_eq!(view(&app).diff, None);
+        settle(&mut app, |a| view(a).diff.is_some());
+        app.switch_repo_tab(RepoTab::Files);
+        assert_eq!(view(&app).selected, Some(one.clone()));
+        // Commits+aaaa, Files, Files+one, Commits+aaaa, Files+one.
+        assert!(!view(&app).trail.can_forward());
+        app.repo_view_back();
+        assert_eq!(
+            (view(&app).tab, view(&app).selected),
+            (RepoTab::Commits, Some(commit.clone()))
+        );
+        app.repo_view_back();
+        assert_eq!(view(&app).selected, Some(one.clone()));
+        app.repo_view_back();
+        assert_eq!(
+            (view(&app).tab, view(&app).selected),
+            (RepoTab::Files, None)
+        );
+        app.repo_view_forward();
+        assert_eq!(view(&app).selected, Some(one.clone()));
+        // A place whose pick is gone shows its tab without a pick.
+        *backend.details.lock().unwrap() = Some(lists(&[]));
+        app.refresh_repo_view();
+        settle(&mut app, |a| view(a).selected.is_none());
+        app.repo_view_back();
+        app.repo_view_forward();
+        assert_eq!(
+            (view(&app).tab, view(&app).selected),
+            (RepoTab::Files, None)
+        );
+        for _ in 0..9 {
+            app.repo_view_back();
+        }
+        assert_eq!(view(&app).tab, RepoTab::Commits);
+        assert!(!view(&app).trail.can_back());
+        app.repo_view_forward();
+
+        // A repository with changes opens on them.
+        app.handle_event(probed("/x/b", 2));
+        app.open_repo_view(Path::new("/x/b"));
+        assert_eq!(view(&app).tab, RepoTab::Files);
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| view(a).details.is_some());
+
         // Lists of a repository whose view is not open are dropped.
         app.handle_event(Event::Details {
             repo: "/x/b".into(),
@@ -1872,6 +2014,9 @@ pub(crate) mod tests {
         app.close_repo_view();
         app.refresh_repo_view();
         app.select_in_repo_view(DiffTarget::Commit("aaaa".into()));
+        app.switch_repo_tab(RepoTab::Graph);
+        app.repo_view_back();
+        app.repo_view_forward();
         app.handle_event(Event::Details {
             repo: "/x/a".into(),
             result: Err("closed".into()),

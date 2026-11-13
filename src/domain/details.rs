@@ -48,6 +48,94 @@ pub struct BranchEntry {
     pub current: bool,
 }
 
+/// The three views of the repository view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RepoTab {
+    /// The local changes.
+    Files,
+    /// The history of the checked-out branch.
+    Commits,
+    /// All branches.
+    Graph,
+}
+
+impl RepoTab {
+    pub const ALL: [Self; 3] = [Self::Files, Self::Commits, Self::Graph];
+
+    /// As its tab names it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Files => "Files",
+            Self::Commits => "Commits",
+            Self::Graph => "Graph",
+        }
+    }
+
+    /// The tab a repository opens on: its changes when it has some, its
+    /// history when it is clean.
+    pub fn opening(dirty: bool) -> Self {
+        if dirty { Self::Files } else { Self::Commits }
+    }
+}
+
+/// Where the user was in the repository view: a tab and what was picked in
+/// it.
+pub type Place = (RepoTab, Option<DiffTarget>);
+
+/// The places looked at, in order, with the one shown now: what Back and
+/// Forward step through, as in a browser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Trail<T> {
+    steps: Vec<T>,
+    at: usize,
+}
+
+impl<T: PartialEq> Trail<T> {
+    pub fn new(first: T) -> Self {
+        Self {
+            steps: vec![first],
+            at: 0,
+        }
+    }
+
+    /// Go to a new place: what Forward led to is forgotten. Going to where
+    /// one already is, is no step.
+    pub fn visit(&mut self, step: T) {
+        if self.steps.get(self.at) == Some(&step) {
+            return;
+        }
+        self.steps.truncate(self.at + 1);
+        self.steps.push(step);
+        self.at = self.steps.len() - 1;
+    }
+
+    pub fn can_back(&self) -> bool {
+        self.at > 0
+    }
+
+    pub fn can_forward(&self) -> bool {
+        self.at + 1 < self.steps.len()
+    }
+
+    /// Step back; the place now shown, or `None` at the first one.
+    pub fn back(&mut self) -> Option<&T> {
+        if !self.can_back() {
+            return None;
+        }
+        self.at -= 1;
+        self.steps.get(self.at)
+    }
+
+    /// Step forward; the place now shown, or `None` at the last one.
+    pub fn forward(&mut self) -> Option<&T> {
+        if !self.can_forward() {
+            return None;
+        }
+        self.at += 1;
+        self.steps.get(self.at)
+    }
+}
+
 /// Everything the lists of the view hold.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Details {
@@ -252,6 +340,38 @@ mod tests {
         assert_eq!(branches.len(), 2);
         assert!(!branches[0].current && branches[1].current);
         assert!(parse_branches("main\n", None).iter().all(|b| !b.current));
+    }
+
+    #[test]
+    fn tabs_are_named_and_a_repository_opens_on_its_changes_or_its_history() {
+        assert_eq!(
+            RepoTab::ALL.map(RepoTab::label),
+            ["Files", "Commits", "Graph"]
+        );
+        assert_eq!(RepoTab::opening(true), RepoTab::Files);
+        assert_eq!(RepoTab::opening(false), RepoTab::Commits);
+    }
+
+    #[test]
+    fn back_and_forward_step_through_the_places_like_a_browser() {
+        let mut trail = Trail::new(1);
+        assert!(!trail.can_back() && !trail.can_forward());
+        assert_eq!(trail.back(), None);
+        assert_eq!(trail.forward(), None);
+        trail.visit(1);
+        assert!(!trail.can_back(), "the same place again is no step");
+        trail.visit(2);
+        trail.visit(3);
+        assert!(trail.can_back() && !trail.can_forward());
+        assert_eq!(trail.back(), Some(&2));
+        assert_eq!(trail.back(), Some(&1));
+        assert_eq!(trail.back(), None);
+        assert_eq!(trail.forward(), Some(&2));
+        // A new place from the middle forgets what Forward led to.
+        trail.visit(9);
+        assert!(!trail.can_forward());
+        assert_eq!(trail.back(), Some(&2));
+        assert_eq!(trail.forward(), Some(&9));
     }
 
     #[test]

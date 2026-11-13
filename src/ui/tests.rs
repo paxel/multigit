@@ -1645,6 +1645,77 @@ fn kawaii_theme_animates_with_focus_and_stands_still_without() {
 }
 
 #[test]
+fn bunnies_and_cats_sit_on_the_cards_and_a_click_pets_one_without_marking() {
+    use crate::domain::critters::{Mood, Species};
+    let backend = Arc::new(FakeBackend::default());
+    *backend.snapshot.lock().unwrap() =
+        Some(snapshot(Counts::default(), Upstream::None, &["main"]));
+    let mut app = app_with(backend, None);
+    app.cards = (0..6).map(|i| card(&format!("/r/repo{i}"))).collect();
+    let mut h = harness(app);
+    h.run();
+    settle(&mut h, |a| a.cards.iter().all(|c| c.snapshot().is_some()));
+    h.run();
+    // No critters in a plain theme.
+    assert!(h.query_by_label("bunny").is_none());
+    assert!(h.state().critters.critters.is_empty());
+
+    h.state_mut().config.theme = crate::domain::config::Theme::Kawaii;
+    for _ in 0..4 {
+        h.step();
+    }
+    // Six cards: the fewest, a bunny and a cat, each on a card's top edge.
+    let species: Vec<_> = h
+        .state()
+        .critters
+        .critters
+        .iter()
+        .map(|c| c.species)
+        .collect();
+    assert_eq!(species, [Species::Bunny, Species::Cat]);
+    let bunny = h.get_by_label("bunny").rect();
+    let home = h.state().critters.critters[0].home.clone();
+    let name = home.file_name().unwrap().to_string_lossy().into_owned();
+    let card_name = h.get_by_label(name.as_str()).rect();
+    assert!(
+        bunny.bottom() < card_name.top(),
+        "above what the card shows"
+    );
+    assert!(card_name.top() - bunny.bottom() < 30.0, "and on that card");
+    h.get_by_label("cat");
+
+    // A click on the bunny pets it; the card under it keeps its mark off.
+    let at = bunny.center();
+    h.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.step();
+    h.step();
+    assert_eq!(h.state().critters.critters[0].mood, Mood::Pet);
+    assert!(h.state().marked.is_empty(), "{:?}", h.state().marked);
+    // Without focus and with nothing happening the picture stands still,
+    // critters and all.
+    h.input_mut().focused = false;
+    for _ in 0..200 {
+        h.step();
+    }
+    assert!(repaint_delay(&h) >= Duration::from_millis(200));
+
+    // Back in a plain theme they are gone.
+    h.state_mut().config.theme = crate::domain::config::Theme::Light;
+    h.input_mut().focused = true;
+    h.run();
+    assert!(h.query_by_label("bunny").is_none());
+    assert!(h.state().critters.critters.is_empty());
+}
+
+#[test]
 fn kawaii_glyphs_and_font_are_there() {
     for glyph in [crate::ui::view::HEART, crate::ui::view::STAR] {
         assert!(glyph.chars().all(bundled_fonts_draw), "{glyph}");

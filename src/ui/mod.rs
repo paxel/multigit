@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod critter;
 pub mod repo_view;
 pub mod settings;
 pub mod style;

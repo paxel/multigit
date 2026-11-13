@@ -9,6 +9,7 @@ use crate::domain::board::{SortKey, Sorted, compare, is_ahead, matches_filter};
 use crate::domain::command::{Job, display, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::{Config, Theme};
+use crate::domain::critters::{News, Troupe};
 use crate::domain::destructive::is_destructive;
 use crate::domain::details::{Details, DiffTarget, LogEntry, Place, RepoTab, Trail};
 use crate::domain::favorites::{FavoriteDraft, active_after_delete, forget};
@@ -234,6 +235,8 @@ pub struct App {
     /// The clock of the Kawaii theme's motion, in seconds; it runs only
     /// while the window has focus.
     pub kawaii_clock: f64,
+    /// The bunnies and cats of the Kawaii theme.
+    pub critters: Troupe,
     /// Seconds a change in a repository still keeps the Kawaii theme moving
     /// in a window without focus.
     kawaii_awake: f32,
@@ -314,6 +317,7 @@ impl App {
             toasts: Vec::new(),
             copy_flash: None,
             kawaii_clock: 0.0,
+            critters: Troupe::default(),
             kawaii_awake: 0.0,
             wobbles: HashMap::new(),
             confirm: None,
@@ -853,6 +857,7 @@ impl App {
     pub fn advance_kawaii(&mut self, dt: f32, focused: bool) -> bool {
         if !self.is_kawaii() {
             self.wobbles.clear();
+            self.critters = Troupe::default();
             self.kawaii_awake = 0.0;
             return false;
         }
@@ -869,6 +874,39 @@ impl App {
     /// in a window without focus.
     fn wake_kawaii(&mut self) {
         if self.is_kawaii() {
+            self.kawaii_awake = kawaii::WAKE_SECS;
+            self.critters.stir(self.kawaii_clock);
+        }
+    }
+
+    /// The paths of the cards the board shows, in its order.
+    fn board_order(&self) -> Vec<PathBuf> {
+        self.shown_cards().iter().map(|c| c.path.clone()).collect()
+    }
+
+    /// One frame of the critters: as many as the shown cards have, each on
+    /// a shown card, now and then one hopping.
+    pub fn tend_critters(&mut self) {
+        if self.is_kawaii() {
+            let shown = self.board_order();
+            self.critters.sync(&shown, self.kawaii_clock);
+            self.critters.tick(&shown, self.kawaii_clock);
+        }
+    }
+
+    /// Tell the critters what happened on the card of `repo`.
+    fn critter_news(&mut self, news: News, repo: &Path) {
+        if self.is_kawaii() {
+            let shown = self.board_order();
+            self.critters.news(news, repo, &shown, self.kawaii_clock);
+            self.kawaii_awake = kawaii::WAKE_SECS;
+        }
+    }
+
+    /// A click on the critter at this position: it jumps, with a heart.
+    pub fn pet_critter(&mut self, index: usize) {
+        if self.is_kawaii() {
+            self.critters.pet(index, self.kawaii_clock);
             self.kawaii_awake = kawaii::WAKE_SECS;
         }
     }
@@ -1201,6 +1239,13 @@ impl App {
                 self.sound_news(&sounds, Instant::now());
                 if changed {
                     self.wake_kawaii();
+                    for sound in &sounds {
+                        let news = match sound {
+                            Sound::Beep => News::RemoteCommit,
+                            Sound::Boop => News::LocalCommit,
+                        };
+                        self.critter_news(news, &repo);
+                    }
                     // The open view of that repository follows its card.
                     if self.repo_view.as_ref().is_some_and(|v| v.repo == repo) {
                         self.refresh_repo_view();
@@ -1215,6 +1260,7 @@ impl App {
                 }
                 if appeared {
                     self.wake_kawaii();
+                    self.critter_news(News::FetchError, &repo);
                 }
             }
             Event::Section { run, repo, state } => {
@@ -2040,6 +2086,84 @@ pub(crate) mod tests {
         assert_eq!(app.card_offset(&path, 1).0, 0.0);
         app.toggle_mark(path.clone());
         assert_eq!(app.card_offset(&path, 1).0, 0.0);
+    }
+
+    #[test]
+    fn critters_show_what_happens_on_the_cards() {
+        use crate::domain::critters::Mood;
+        let mut app = app_with(Arc::default(), None);
+        app.cards = (0..8)
+            .map(|i| Card::new(format!("/x/{i}").into()))
+            .collect();
+        let tracking = |ahead, behind| {
+            snapshot(
+                Counts::default(),
+                Upstream::Tracking { ahead, behind },
+                &["main"],
+            )
+        };
+        let probed = |repo: &str, snap: Snapshot, cause| Event::Probed {
+            repo: repo.into(),
+            result: Box::new(Ok(snap)),
+            cause,
+        };
+        for card in 0..8 {
+            let repo = format!("/x/{card}");
+            app.handle_event(probed(&repo, tracking(0, 0), ProbeCause::Poll));
+        }
+        // No critters outside the Kawaii theme, whatever happens.
+        app.tend_critters();
+        app.pet_critter(0);
+        app.handle_event(probed("/x/3", tracking(0, 1), ProbeCause::Fetch));
+        assert!(app.critters.critters.is_empty());
+
+        app.config.theme = Theme::Kawaii;
+        app.tend_critters();
+        assert_eq!(app.critters.critters.len(), 2);
+        let on = |app: &App, repo: &str| -> Vec<Mood> {
+            let at = |c: &&crate::domain::critters::Critter| c.home == Path::new(repo);
+            app.critters
+                .critters
+                .iter()
+                .filter(at)
+                .map(|c| c.mood)
+                .collect()
+        };
+        // A remote commit: one hops onto that card and looks up.
+        app.handle_event(probed("/x/3", tracking(0, 2), ProbeCause::Fetch));
+        assert_eq!(on(&app, "/x/3"), [Mood::LookUp]);
+        assert!(app.advance_kawaii(0.033, false), "and the picture moves");
+        // A local commit on the card it sits on: a dance.
+        app.handle_event(probed("/x/3", tracking(1, 2), ProbeCause::Poll));
+        assert_eq!(on(&app, "/x/3"), [Mood::Dance]);
+        // What the user's own command did is no news.
+        app.handle_event(probed("/x/3", tracking(2, 2), ProbeCause::Command));
+        assert_eq!(on(&app, "/x/3"), [Mood::Dance]);
+        // A failed fetch: hanging ears.
+        app.handle_event(Event::Fetched {
+            repo: "/x/3".into(),
+            error: Some(FetchError::from_message("auth failed".into())),
+        });
+        assert_eq!(on(&app, "/x/3"), [Mood::Droop]);
+        // A click pets, and keeps the picture moving without focus.
+        while app.advance_kawaii(0.033, false) {}
+        app.pet_critter(1);
+        assert_eq!(app.critters.critters[1].mood, Mood::Pet);
+        assert!(app.advance_kawaii(0.033, false));
+
+        // A filter that hides its card moves a critter to one that shows.
+        app.filter = "7".into();
+        app.tend_critters();
+        assert!(
+            app.critters
+                .critters
+                .iter()
+                .all(|c| c.home == Path::new("/x/7"))
+        );
+        // Another theme sends them away.
+        app.config.theme = Theme::Dark;
+        app.advance_kawaii(0.033, true);
+        assert!(app.critters.critters.is_empty());
     }
 
     #[test]

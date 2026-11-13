@@ -6,6 +6,7 @@ pub mod board;
 pub mod command;
 pub mod completion;
 pub mod config;
+pub mod critters;
 pub mod destructive;
 pub mod details;
 pub mod favorites;

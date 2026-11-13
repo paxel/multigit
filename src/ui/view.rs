@@ -2,6 +2,7 @@
 
 use crate::domain::board::SortKey;
 use crate::domain::command::{Job, display, shell_name, shell_program};
+use crate::domain::critters::{self, Troupe};
 use crate::domain::favorites::{EMOJIS, Favorite, PALETTE, color_rgb, dark_text_on, favorites_of};
 use crate::domain::kawaii;
 use crate::domain::naming::{parent_line, title};
@@ -11,6 +12,7 @@ use crate::domain::status::{Head, RepoState, Upstream};
 use crate::domain::switch::{Choice, branch_choices, matching, new_branch_command, tag_choices};
 use crate::ui::app::{App, Card, CopyFlash};
 use crate::ui::cli::{CliAction, CliContext};
+use crate::ui::critter;
 use crate::ui::settings;
 use crate::ui::style::{KAWAII_PINK, KAWAII_YELLOW};
 use egui::{Color32, RichText, Ui};
@@ -100,6 +102,8 @@ enum BoardAction {
     Open(PathBuf),
     /// A chip of the favorite at this position was clicked.
     ToggleFavorite(usize),
+    /// The critter at this position was clicked.
+    Pet(usize),
     /// A card text was clicked at this pointer position.
     Copy(String, egui::Pos2),
     /// The fetch error of this card was clicked at this pointer position.
@@ -480,13 +484,20 @@ impl App {
         };
         if kawaii {
             kawaii_background(ui, self.kawaii_clock);
+            self.tend_critters();
         }
         let mut index = 0;
+        // Where each card is, for the critters that sit on them.
+        let mut places: Vec<(PathBuf, egui::Rect)> = Vec::new();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 // Containers do not wrap inside `horizontal_wrapped`, so lay out
                 // fixed rows: as many columns as fit the width.
+                if kawaii {
+                    // Room for a critter on the cards of the first row.
+                    ui.add_space(critter::HEIGHT);
+                }
                 let card_width = CARD_OUTER_WIDTH + play;
                 let columns =
                     (((ui.available_width() + gap) / (card_width + gap)).floor() as usize).max(1);
@@ -508,7 +519,10 @@ impl App {
                             };
                             if kawaii {
                                 let offset = self.card_offset(&card.path, index);
-                                moved(ui, offset, |ui| view.show(ui, &mut actions));
+                                moved(ui, offset, |ui| {
+                                    let shown = ui.scope(|ui| view.show(ui, &mut actions));
+                                    places.push((card.path.clone(), shown.response.rect));
+                                });
                             } else {
                                 view.show(ui, &mut actions);
                             }
@@ -516,6 +530,17 @@ impl App {
                         }
                     });
                     ui.add_space(gap);
+                }
+                if kawaii {
+                    let asleep = self.critters.asleep(self.kawaii_clock);
+                    critters(
+                        ui,
+                        &self.critters,
+                        self.kawaii_clock,
+                        asleep,
+                        &places,
+                        &mut actions,
+                    );
                 }
             });
         for action in actions {
@@ -541,6 +566,7 @@ impl App {
                 }
                 BoardAction::Open(p) => self.open_repo_view(&p),
                 BoardAction::ToggleFavorite(i) => self.toggle_favorite(i),
+                BoardAction::Pet(i) => self.pet_critter(i),
                 BoardAction::NewFavorite(p) => {
                     let targets = self.menu_targets(&p);
                     self.new_favorite(targets);
@@ -792,6 +818,50 @@ fn kawaii_background(ui: &Ui, clock: f64) {
             egui::FontId::proportional(p.size),
             color.gamma_multiply(0.8 * p.alpha),
         );
+    }
+}
+
+/// The critters, each on the top edge of its card or in the air between
+/// two. One under the pointer looks at it; a click on one pets it and does
+/// not reach the card.
+fn critters(
+    ui: &mut Ui,
+    troupe: &Troupe,
+    clock: f64,
+    asleep: bool,
+    places: &[(PathBuf, egui::Rect)],
+    actions: &mut Vec<BoardAction>,
+) {
+    let pointer = ui.input(|i| i.pointer.hover_pos());
+    for (index, one) in troupe.critters.iter().enumerate() {
+        // Where it stands on a card: along the top edge, each critter at a
+        // place of its own so two on one card do not hide each other.
+        let stand = |card: &Path| {
+            let rect = places.iter().find(|(path, _)| path == card)?.1;
+            let along = 26.0 + (index % 4) as f32 * 34.0;
+            Some(egui::pos2(rect.left() + along, rect.top() + 2.0))
+        };
+        let Some(home) = stand(&one.home) else {
+            continue;
+        };
+        let pose = critters::pose(one, clock, asleep);
+        let from = stand(&one.from).unwrap_or(home);
+        let feet = from.lerp(home, pose.along) - egui::vec2(0.0, pose.lift * critter::HOP_HEIGHT);
+        let body = egui::Rect::from_min_max(
+            feet - egui::vec2(critter::HALF_WIDTH, critter::HEIGHT),
+            feet + egui::vec2(critter::HALF_WIDTH, 0.0),
+        );
+        let touch = ui.interact(body, ui.id().with(("critter", index)), egui::Sense::click());
+        let name = one.species.label();
+        touch.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+        if touch.clicked() {
+            actions.push(BoardAction::Pet(index));
+        }
+        let face = body.center();
+        let look = pointer
+            .map(|at| at - face)
+            .filter(|to| to.length() < 120.0 && to.length() > 1.0);
+        critter::paint(ui.painter(), feet, one, &pose, look);
     }
 }
 

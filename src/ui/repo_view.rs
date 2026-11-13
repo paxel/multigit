@@ -220,7 +220,11 @@ fn now() -> i64 {
 /// A row of the commit list: the author's initials in the author's color,
 /// the short hash and the title, and the age at the right edge.
 fn commit_row(ui: &mut Ui, view: &RepoView, commit: &LogEntry, now: i64, act: &mut Option<Act>) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    // A row of its own height: a centered layout left to itself takes all
+    // the height there is.
+    let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+    let layout = egui::Layout::right_to_left(egui::Align::Center);
+    ui.allocate_ui_with_layout(size, layout, |ui| {
         ui.weak(short_age(now, commit.time))
             .on_hover_text(&commit.date);
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {

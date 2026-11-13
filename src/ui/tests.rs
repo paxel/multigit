@@ -1297,7 +1297,12 @@ fn the_commit_list_reads_its_next_page_when_its_end_comes_into_view() {
     h.run();
     assert_eq!(commits(&h), 100);
     assert!(h.state().repo_view.as_ref().unwrap().more_commits);
-    h.get_by_label("AL 0000000 Commit number 0");
+    // Every row is one compact line, the first one too.
+    let first = h.get_by_label("AL 0000000 Commit number 0").rect();
+    let second = h.get_by_label("AL 0000001 Commit number 1").rect();
+    assert!(first.height() < 30.0, "{first:?}");
+    let step = second.top() - first.top();
+    assert!(step > 0.0 && step < 30.0, "{first:?} {second:?}");
     // The end of the list is far below: nothing more is read.
     for _ in 0..5 {
         h.step();

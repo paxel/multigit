@@ -282,7 +282,8 @@ beats that multigit makes itself, in three themes: Japanese traditional lofi
 triangle waves and noise drums of old consoles) and Babymetal-style lofi (an
 overdriven guitar, a high voice, double bass drums). Each theme has five
 songs of about a minute, which vary a little every time they play, and short
-and long breaks between them. After about five minutes a longer break leads
+and long breaks between them. After each song chance decides: three times in
+four the music stays in the theme, one time in four a longer break leads
 into another theme: a radio being tuned, a tape that stops, or a modem
 dialling in. A new volume is heard as soon as the slider is let go. No sound
 files and no network are involved. It plays whenever the app is open in that

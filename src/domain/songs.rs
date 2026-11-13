@@ -3,7 +3,7 @@
 //! of about a minute and six breaks. A song is written as parts that move
 //! its four-note motif through keys, instruments and drum grooves; a few
 //! things in it are left to chance, so it never plays the same way twice.
-//! After about five minutes in one style a change break leads into another.
+//! After a song, one time in four, a change break leads into another style.
 
 use crate::domain::lofi::{
     Drums, Noise, RATE, Voice, Vowel, add, finish, pitch, samples, shuffle, voice,
@@ -1085,8 +1085,8 @@ pub const METAL: Style = Style {
 /// The styles the music moves through.
 pub static STYLES: [Style; 3] = [JAPAN, RETRO, METAL];
 
-/// About how long the music stays in one style, in seconds of songs.
-pub const STAY_SECS: f32 = 270.0;
+/// After a song the music leaves its style one time in this many.
+pub const CHANGE_ONE_IN: usize = 4;
 
 /// One thing the music plays. The numbers count into the styles the
 /// program runs over.
@@ -1138,17 +1138,15 @@ impl Passage {
     }
 }
 
-/// Decides what plays next: song, break, song, break, and a change of
-/// style when the stay was long enough.
+/// Decides what plays next: song, break, song, break, and now and then,
+/// by chance, a change of style instead of a break.
 #[derive(Debug, Clone)]
 pub struct Program {
     styles: &'static [Style],
     random: u64,
     /// The style and song that play, or played last.
     at: Option<(usize, usize)>,
-    /// Seconds of songs played in this style.
-    stay: f32,
-    /// Songs of this style not played in this stay yet.
+    /// Songs of this style not played yet since the bag was last filled.
     songs: Vec<usize>,
     /// Breaks of this style not played yet.
     links: Vec<usize>,
@@ -1167,7 +1165,6 @@ impl Program {
             styles,
             random: seed,
             at: None,
-            stay: 0.0,
             songs: Vec::new(),
             links: Vec::new(),
             queued: None,
@@ -1214,30 +1211,19 @@ impl Program {
         }
     }
 
-    fn count(&mut self, passage: Passage) -> Passage {
-        if let Passage::Song { style, song, .. } = passage
-            && let Some((_, song)) = song_of(self.styles, (style, song))
-        {
-            self.stay += song.seconds();
-        }
-        passage
-    }
-
     /// What plays next.
     pub fn next_passage(&mut self) -> Passage {
         if let Some(song) = self.queued.take() {
-            return self.count(song);
+            return song;
         }
         let count = self.styles.len();
         let Some((style, last)) = self.at else {
             let style = self.draw(count);
             let song = self.take(true, 5, None);
-            let first = self.song(style, song);
-            return self.count(first);
+            return self.song(style, song);
         };
-        if self.stay >= STAY_SECS && count > 1 {
+        if count > 1 && self.draw(CHANGE_ONE_IN) == 0 {
             let next = (style + 1 + self.draw(count - 1)) % count;
-            self.stay = 0.0;
             self.songs.clear();
             self.links.clear();
             let song = self.take(true, 5, None);
@@ -1615,43 +1601,43 @@ mod tests {
     static TWO: [Style; 2] = [JAPAN, JAPAN];
 
     #[test]
-    fn the_program_plays_song_and_break_in_turn_and_no_song_twice_in_a_stay() {
+    fn the_program_plays_song_and_break_in_turn_and_changes_style_by_chance() {
+        let (mut songs, mut changes, mut stays) = (0, 0, Vec::new());
         for seed in [1, 2, 99, 12345] {
             let mut program = Program::over(&TWO, seed);
             let mut style_now = None;
-            let mut songs_of_stay: Vec<usize> = Vec::new();
-            let mut links_of_stay: Vec<usize> = Vec::new();
-            let mut changes = 0;
-            let mut stay = 0.0;
-            for step in 0..80 {
+            // The first songs of the stay.
+            let mut bag: Vec<usize> = Vec::new();
+            let mut last_song = None;
+            let mut stay = 0;
+            for step in 0..2000 {
                 let passage = program.next_passage();
                 match (step % 2, passage) {
                     (0, Passage::Song { style, song, .. }) => {
                         if style_now != Some(style) {
                             style_now = Some(style);
-                            songs_of_stay.clear();
-                            links_of_stay.clear();
-                            stay = 0.0;
+                            bag.clear();
+                            stays.push(stay);
+                            stay = 0;
+                        } else {
+                            assert_ne!(last_song, Some(song), "seed {seed}: twice in a row");
                         }
-                        assert!(
-                            !songs_of_stay.contains(&song),
-                            "seed {seed}: {songs_of_stay:?}"
-                        );
-                        songs_of_stay.push(song);
-                        stay += TWO[style].songs[song].seconds();
+                        // The first five of a stay are the style's five.
+                        if bag.len() < 5 {
+                            assert!(!bag.contains(&song), "seed {seed}: {bag:?} then {song}");
+                            bag.push(song);
+                        }
+                        last_song = Some(song);
+                        stay += 1;
+                        songs += 1;
                     }
                     (1, Passage::Break { style, link, into }) => {
                         assert_eq!(Some(style), style_now);
-                        assert!(stay < STAY_SECS);
-                        assert!(!links_of_stay.contains(&link), "no break twice");
-                        links_of_stay.push(link);
                         assert!(into < 5 && link < 6);
                     }
                     (1, Passage::Change { change, from, into }) => {
-                        assert!(stay >= STAY_SECS, "seed {seed}: after {stay} s");
-                        assert!(stay < STAY_SECS + 70.0);
                         assert_eq!(Some(from.0), style_now);
-                        assert_eq!(from.1, *songs_of_stay.last().unwrap());
+                        assert_eq!(Some(from.1), last_song);
                         assert_ne!(into.0, from.0, "another style");
                         assert!(change < CHANGES.len());
                         changes += 1;
@@ -1659,8 +1645,13 @@ mod tests {
                     other => panic!("seed {seed}, step {step}: {other:?}"),
                 }
             }
-            assert!(changes >= 6, "seed {seed}: {changes} changes");
         }
+        // One song in four is followed by a change of style.
+        let share = changes as f32 / songs as f32;
+        assert!((0.2..0.3).contains(&share), "{changes} of {songs}");
+        // Pure chance: stays of a single song and long stays both happen.
+        assert!(stays.contains(&1), "{stays:?}");
+        assert!(stays.iter().any(|s| *s > 8), "{stays:?}");
     }
 
     #[test]

@@ -249,6 +249,9 @@ pub struct App {
     /// The mark button that is pressed, and whether it was clicked again
     /// and marks the cards that do not fit it; not saved.
     pub pressed_mark: Option<(MarkBy, bool)>,
+    /// The mark button the board is filtered by: only the cards that fit
+    /// it are shown. Never `All`; not saved.
+    pub status_filter: Option<MarkBy>,
     /// Text of the filter field; not saved.
     pub filter: String,
     /// What the board is sorted by; not saved.
@@ -347,6 +350,7 @@ impl App {
             cards,
             marked: BTreeSet::new(),
             pressed_mark: None,
+            status_filter: None,
             filter: String::new(),
             sort: SortKey::default(),
             active_favorite: None,
@@ -1106,7 +1110,8 @@ impl App {
             .active_favorite
             .and_then(|i| self.config.favorites.get(i))
             .is_none_or(|f| f.contains(&card.path));
-        in_active && matches_filter(&card.path, &self.filter)
+        let fits = self.status_filter.is_none_or(|by| by.fits(card));
+        in_active && fits && matches_filter(&card.path, &self.filter)
     }
 
     /// The cards the board shows, in the order of the sort key. Everything that acts on
@@ -1142,6 +1147,13 @@ impl App {
             .collect();
         self.marked.retain(|p| !shown.contains(p));
         self.marked.extend(picked);
+    }
+
+    /// A right click on a mark button: show only the cards that fit it,
+    /// as they fit it now and later. On the button that filters, and on
+    /// `All`, it shows all again. The marks and the pressed button stay.
+    pub fn filter_by(&mut self, by: MarkBy) {
+        self.status_filter = (by != MarkBy::All && self.status_filter != Some(by)).then_some(by);
     }
 
     /// A click on a mark button. The first click marks the shown cards that
@@ -1968,6 +1980,67 @@ pub(crate) mod tests {
         assert_eq!(app.marked.len(), 4);
         app.press_mark(MarkBy::All);
         assert!(app.marked.is_empty());
+    }
+
+    #[test]
+    fn a_right_click_on_a_mark_button_filters_the_board_and_leaves_the_marks() {
+        let mut app = app_with(Arc::default(), None);
+        let dirty = Counts {
+            staged: 1,
+            ..Counts::default()
+        };
+        for (name, counts) in [("a", dirty), ("b", Counts::default()), ("web", dirty)] {
+            let mut card = Card::new(PathBuf::from(format!("/{name}")));
+            card.probe = Some(Ok(snapshot(counts, Upstream::None, &[])));
+            app.cards.push(card);
+        }
+        let shown = |app: &App| -> Vec<String> {
+            app.shown_cards()
+                .iter()
+                .map(|c| c.path.display().to_string())
+                .collect()
+        };
+        app.press_mark(MarkBy::All);
+        app.filter_by(MarkBy::Dirty);
+        assert_eq!(app.status_filter, Some(MarkBy::Dirty));
+        assert_eq!(shown(&app), ["/a", "/web"]);
+        // The marks and the pressed button are as they were; the hidden
+        // card keeps its mark, and nothing acts on it.
+        assert_eq!(app.marked.len(), 3);
+        assert_eq!(app.pressed_mark, Some((MarkBy::All, false)));
+        assert_eq!(app.marked_repos().len(), 2);
+        // A left click never changes the filter and marks what is shown.
+        app.press_mark(MarkBy::All);
+        assert_eq!(app.status_filter, Some(MarkBy::Dirty));
+        assert_eq!(app.marked, BTreeSet::from([PathBuf::from("/b")]));
+        app.press_mark(MarkBy::All);
+        assert_eq!(app.marked.len(), 3);
+
+        // Live: a card that is clean now leaves, still marked.
+        app.cards[0].probe = Some(Ok(snapshot(Counts::default(), Upstream::None, &[])));
+        assert_eq!(shown(&app), ["/web"]);
+        assert!(app.marked.contains(&PathBuf::from("/a")));
+        app.cards[1].probe = Some(Ok(snapshot(dirty, Upstream::None, &[])));
+        assert_eq!(shown(&app), ["/b", "/web"]);
+
+        // It works together with the text filter and the favorite.
+        app.filter = "we".into();
+        assert_eq!(shown(&app), ["/web"]);
+        app.filter.clear();
+
+        // Another button takes the filter over; the same one, or all,
+        // shows all again.
+        app.filter_by(MarkBy::Behind);
+        assert_eq!(app.status_filter, Some(MarkBy::Behind));
+        assert!(shown(&app).is_empty());
+        app.filter_by(MarkBy::Behind);
+        assert_eq!(app.status_filter, None);
+        assert_eq!(shown(&app).len(), 3);
+        app.filter_by(MarkBy::Ahead);
+        app.filter_by(MarkBy::All);
+        assert_eq!(app.status_filter, None);
+        app.filter_by(MarkBy::All);
+        assert_eq!(app.status_filter, None);
     }
 
     #[test]

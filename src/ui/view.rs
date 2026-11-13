@@ -73,19 +73,32 @@ fn swatch(ui: &mut Ui, text: &str, rgb: [u8; 3], picked: bool, small: bool) -> e
 }
 
 /// A mark button of the toolbar: filled while it is pressed, its text
-/// struck through while it marks the cards that do not fit it.
-fn mark_button(ui: &mut Ui, by: MarkBy, pressed: bool, inverted: bool) -> egui::Response {
+/// struck through while it marks the cards that do not fit it, and with a
+/// coloured border while the board shows only the cards that fit it.
+fn mark_button(
+    ui: &mut Ui,
+    by: MarkBy,
+    (pressed, inverted): (bool, bool),
+    filtering: bool,
+) -> egui::Response {
     let mut text = RichText::new(by.label());
     if inverted {
         text = text.strikethrough();
     }
     let hint = if by == MarkBy::All {
-        "Click: mark all repositories. Again: mark none.".to_owned()
+        "Click: mark all repositories. Again: mark none.\nRight click: show all again.".to_owned()
     } else {
-        format!("Click: mark {}. Again: mark all others instead.", by.what())
+        format!(
+            "Click: mark {what}. Again: mark all others instead.\n\
+             Right click: show only {what}. Again: show all.",
+            what = by.what()
+        )
     };
-    ui.add(egui::Button::selectable(pressed, text))
-        .on_hover_text(hint)
+    let mut button = egui::Button::selectable(pressed, text);
+    if filtering {
+        button = button.stroke(egui::Stroke::new(2.0, ui.visuals().warn_fg_color));
+    }
+    ui.add(button).on_hover_text(hint)
 }
 
 fn favorite_button(ui: &mut Ui, favorite: &Favorite, active: bool) -> egui::Response {
@@ -438,8 +451,25 @@ impl App {
                 Some((button, inverted)) if button == by => (true, inverted),
                 _ => (false, false),
             };
-            if mark_button(ui, by, pressed, inverted).clicked() {
+            let filtering = self.status_filter == Some(by);
+            let button = mark_button(ui, by, (pressed, inverted), filtering);
+            if button.clicked() {
                 self.press_mark(by);
+            }
+            if button.secondary_clicked() {
+                self.filter_by(by);
+            }
+        }
+        if let Some(by) = self.status_filter {
+            // Cards are missing from the board: say why, in plain words.
+            let showing = format!("showing {} ({})", by.label(), self.shown_cards().len());
+            let text = RichText::new(showing).color(ui.visuals().warn_fg_color);
+            if ui
+                .add(egui::Button::new(text).frame(false))
+                .on_hover_text("Only these repositories are shown. Click to show all again.")
+                .clicked()
+            {
+                self.status_filter = None;
             }
         }
         ui.separator();

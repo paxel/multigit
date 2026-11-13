@@ -552,6 +552,51 @@ fn mark_buttons_stay_pressed_and_a_second_click_marks_the_others() {
 }
 
 #[test]
+fn a_right_click_on_a_mark_button_shows_only_its_cards_and_says_so() {
+    use crate::ui::app::MarkBy;
+    let mut app = app_with(Arc::default(), None);
+    app.cards = vec![card("/r/alpha"), card("/r/beta")];
+    let mut h = harness(app);
+    h.run();
+    assert!(h.query_by_label_contains("showing").is_none());
+    // Nothing here is behind: the board is empty, and the toolbar says why.
+    h.get_by_label("behind").click_secondary();
+    h.run();
+    assert_eq!(h.state().status_filter, Some(MarkBy::Behind));
+    assert_eq!(
+        h.state().pressed_mark,
+        None,
+        "a right click presses nothing"
+    );
+    assert!(h.state().marked.is_empty(), "and marks nothing");
+    assert!(h.query_by_label("alpha").is_none());
+    h.get_by_label("showing behind (0)");
+    // A left click leaves the filter alone.
+    h.get_by_label("all").click();
+    h.run();
+    assert_eq!(h.state().status_filter, Some(MarkBy::Behind));
+    // A click on the text shows all again.
+    h.get_by_label("showing behind (0)").click();
+    h.run();
+    assert_eq!(h.state().status_filter, None);
+    h.get_by_label("alpha");
+    assert!(h.query_by_label_contains("showing").is_none());
+    // So does a second right click, and a right click on "all".
+    h.get_by_label("ahead").click_secondary();
+    h.run();
+    h.get_by_label("ahead").click_secondary();
+    h.run();
+    assert_eq!(h.state().status_filter, None);
+    h.get_by_label("dirty").click_secondary();
+    h.run();
+    assert_eq!(h.state().status_filter, Some(MarkBy::Dirty));
+    h.get_by_label("all").click_secondary();
+    h.run();
+    assert_eq!(h.state().status_filter, None);
+    assert_eq!(h.state().pressed_mark, Some((MarkBy::All, false)));
+}
+
+#[test]
 fn filter_field_hides_cards_and_counts_the_shown_ones() {
     let mut app = app_with(Arc::default(), None);
     app.cards = vec![card("/r/etl-load"), card("/r/web"), card("/r/Etl-store")];

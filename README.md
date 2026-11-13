@@ -165,7 +165,14 @@ emoji. A repository can be in several.
   clicked one stays pressed until another is clicked. A click on the pressed
   button marks the other cards instead (its text is struck through then), the
   next click the first ones again; a second click on **all** leaves nothing
-  marked. Marking a card by hand does not release the button. The toolbar repeats the card buttons
+  marked. Marking a card by hand does not release the button. A right click
+  on **dirty**, **behind** or **ahead** filters the board instead: only the
+  cards that fit are shown, cards come and go as their status changes, and
+  the marks stay as they are. The button gets a coloured border and the
+  toolbar says `showing dirty (7)`; a click on that text, a second right
+  click, or a right click on **all** shows all again. This filter works
+  together with the favorite and the filter field, and a card it hides keeps
+  its mark and is left alone like one the filter field hides. The toolbar repeats the card buttons
   for all marked repositories.
 - **Copying**: a click on a card's folder name, branch name (or the sha of a
   detached HEAD) or tag copies it to the clipboard instead of marking the

@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - In the Kawaii theme a card throws a burst of hearts and stars when a command on it ends well.
 - Every card shows the remote its branch tracks, as a short URL with the protocol first (`ssh github.com/paxel/multigit`); a click copies the URL. A branch that pushes to another remote says so.
 - A right click on a card's remote lists the remotes of the repository; picking one makes the branch track the branch of the same name there.
+- A right click on a mark button of the toolbar (dirty, behind, ahead) shows only the cards that fit it, and the toolbar says so; a second right click, or one on "all", shows all again.
 - A right click on text in the repository view (commit message, diff, file content) and on the output of a command opens a menu: `Copy` copies what is marked and leaves it marked, `Copy all` copies the whole text, the lines that are not on screen included.
 
 ### Changed

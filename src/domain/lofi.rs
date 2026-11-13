@@ -132,7 +132,7 @@ fn pulse(frequency: f32, seconds: f32, duty: f32) -> Vec<f32> {
             phase = (phase + frequency / RATE).fract();
             let wave = if phase < duty { 1.0 } else { -1.0 };
             let level = 0.6 + 0.4 * (-t * 5.0).exp();
-            wave * level * (t / 0.004).min(1.0) * 0.5
+            wave * level * (t / 0.004).min(1.0) * 0.32
         })
         .collect();
     fade_out(&mut out, 0.06);
@@ -147,7 +147,7 @@ fn triangle(frequency: f32, seconds: f32) -> Vec<f32> {
         .map(|i| {
             let t = i as f32 / RATE;
             phase = (phase + frequency / RATE).fract();
-            (4.0 * (phase - 0.5).abs() - 1.0) * (t / 0.01).min(1.0) * 0.75
+            (4.0 * (phase - 0.5).abs() - 1.0) * (t / 0.01).min(1.0) * 0.5
         })
         .collect();
     fade_out(&mut out, 0.12);
@@ -168,7 +168,7 @@ fn chip_pad(frequency: f32, seconds: f32) -> Vec<f32> {
             }
             let attack = (t / 0.4).min(1.0);
             let release = ((seconds - t) / 0.6).clamp(0.0, 1.0);
-            sum * 0.3 * attack * release
+            sum * 0.2 * attack * release
         })
         .collect()
 }
@@ -191,7 +191,7 @@ fn overdriven(frequency: f32, seconds: f32, partials: &[f32], drive: f32, ring: 
             }
             let pushed = (sum * drive / partials.len().max(1) as f32).tanh();
             soft += 0.3 * (pushed - soft);
-            soft * (t / 0.008).min(1.0) * (-t / ring).exp() * 0.6
+            soft * (t / 0.008).min(1.0) * (-t / ring).exp() * 0.45
         })
         .collect();
     fade_out(&mut out, 0.08);
@@ -386,7 +386,7 @@ fn tight_kick() -> Vec<f32> {
             let t = i as f32 / RATE;
             phase += (48.0 + 130.0 * (-t * 45.0).exp()) / RATE;
             let click = noise.sample() * (-t * 400.0).exp() * 0.3;
-            ((phase * TAU).sin() * (-t * 17.0).exp() + click) * 0.9
+            ((phase * TAU).sin() * (-t * 17.0).exp() + click) * 0.75
         })
         .collect()
 }

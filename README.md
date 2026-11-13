@@ -62,10 +62,28 @@ greyed out, and comes back by itself when the folder returns.
 ## Looking into a repository
 
 A double click on a card, or **Open** in its right-click menu, opens a
-read-only view of that repository over the board: its changed files (staged,
-modified, untracked), the last 100 commits of the current branch, and its
-branches. A click on a file shows its diff, a click on a commit its message
-and diff; a diff of more than 5000 lines is cut. The view reads the repository
+read-only view of that repository over the board. It has three tabs, and
+**Back** and **Forward** step through what was looked at:
+
+- **Files**, where the view opens when the repository has changes: the
+  changed files as a tree with folders that fold. Each file is listed once,
+  with a letter and a color for what happened to it since the last commit
+  (A added, M modified, D deleted, ! conflict), staged or not. A picked file
+  shows its content when it is new, what is gone when it was deleted, and its
+  diff otherwise.
+- **Commits**, where it opens when the repository is clean: the history of
+  the current branch, a row for each commit with the author's initials, the
+  short hash, the title and the age. It reads on when scrolled to its end. A
+  picked commit shows its hash, author, date, whole message and the branches
+  and tags on it; below that, the files it changed, and a click on a file
+  shows what the commit did to it.
+- **Graph**: all local and remote branches as a graph of the commits that
+  matter (branch tips, tags, merges, and where branches part). Runs of
+  commits between them are one row that unfolds on a click. Remote branches
+  that nobody has locally and that had no commit for 90 days are left out
+  behind a line that shows them. A click on a commit shows it as in Commits.
+
+A diff of more than 5000 lines is cut. The view reads the repository
 again when its card notices a change and on **Refresh**; **Close** or Esc
 returns to the board. The double click also marks and unmarks the card, so its
 mark ends as it was. A double click on a text that copies (name, branch, tag,

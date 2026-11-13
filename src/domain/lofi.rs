@@ -121,6 +121,83 @@ fn bass(frequency: f32, seconds: f32) -> Vec<f32> {
     out
 }
 
+/// A pulse wave, the tone of old game consoles: `duty` is the part of each
+/// period it is up. It starts hard and settles a little lower.
+fn pulse(frequency: f32, seconds: f32, duty: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut phase = 0.0_f32;
+    let mut out: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            phase = (phase + frequency / RATE).fract();
+            let wave = if phase < duty { 1.0 } else { -1.0 };
+            let level = 0.6 + 0.4 * (-t * 5.0).exp();
+            wave * level * (t / 0.004).min(1.0) * 0.5
+        })
+        .collect();
+    fade_out(&mut out, 0.06);
+    out
+}
+
+/// A triangle wave: the soft, hollow tone of the same consoles.
+fn triangle(frequency: f32, seconds: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut phase = 0.0_f32;
+    let mut out: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            phase = (phase + frequency / RATE).fract();
+            (4.0 * (phase - 0.5).abs() - 1.0) * (t / 0.01).min(1.0) * 0.75
+        })
+        .collect();
+    fade_out(&mut out, 0.12);
+    out
+}
+
+/// Two pulse waves a hair apart that swell in: a console's held chord.
+fn chip_pad(frequency: f32, seconds: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut phases = [0.0_f32; 2];
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let mut sum = 0.0;
+            for (phase, detune) in phases.iter_mut().zip([1.0, 1.006]) {
+                *phase = (*phase + frequency * detune / RATE).fract();
+                sum += if *phase < 0.5 { 1.0 } else { -1.0 };
+            }
+            let attack = (t / 0.4).min(1.0);
+            let release = ((seconds - t) / 0.6).clamp(0.0, 1.0);
+            sum * 0.3 * attack * release
+        })
+        .collect()
+}
+
+/// Saw waves at the given multiples of `frequency`, pushed into `drive`
+/// until they clip softly, with the edge taken off after: an overdriven
+/// amplifier. `ring` is how slowly the note dies.
+fn overdriven(frequency: f32, seconds: f32, partials: &[f32], drive: f32, ring: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut phases = vec![0.0_f32; partials.len()];
+    let mut soft = 0.0_f32;
+    let mut out: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let vibrato = 1.0 + 0.004 * ((t - 0.3).max(0.0) * 4.0).min(1.0) * (t * 5.5 * TAU).sin();
+            let mut sum = 0.0;
+            for (phase, partial) in phases.iter_mut().zip(partials) {
+                *phase = (*phase + frequency * partial * vibrato / RATE).fract();
+                sum += *phase * 2.0 - 1.0;
+            }
+            let pushed = (sum * drive / partials.len().max(1) as f32).tanh();
+            soft += 0.3 * (pushed - soft);
+            soft * (t / 0.008).min(1.0) * (-t / ring).exp() * 0.6
+        })
+        .collect();
+    fade_out(&mut out, 0.08);
+    out
+}
+
 /// An instrument that plays one note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Voice {
@@ -135,6 +212,24 @@ pub enum Voice {
     Pad,
     /// A low, round tone.
     Bass,
+    /// A square wave, as old game consoles made them.
+    Square,
+    /// A thinner pulse wave.
+    Pulse,
+    /// A triangle wave: the consoles' soft voice and their bass.
+    Triangle,
+    /// Two pulse waves swelling in: a console's held chord.
+    ChipPad,
+    /// An overdriven guitar playing one string.
+    Guitar,
+    /// An overdriven guitar playing a power chord: root, fifth, octave.
+    Chords,
+    /// An overdriven bass.
+    Growl,
+    /// A high voice singing "aah".
+    Idol,
+    /// The same voice singing "ooh".
+    IdolOoh,
 }
 
 impl Voice {
@@ -147,8 +242,25 @@ impl Voice {
             Voice::Flute => flute(frequency, seconds),
             Voice::Pad => pad(frequency, seconds),
             Voice::Bass => bass(frequency, seconds),
+            Voice::Square => pulse(frequency, seconds, 0.5),
+            Voice::Pulse => pulse(frequency, seconds, 0.25),
+            Voice::Triangle => triangle(frequency, seconds),
+            Voice::ChipPad => chip_pad(frequency, seconds),
+            Voice::Guitar => overdriven(frequency, seconds, &[1.0], 5.0, 1.2),
+            Voice::Chords => overdriven(frequency, seconds, &[1.0, 1.5, 2.0], 7.0, 2.5),
+            Voice::Growl => overdriven(frequency, seconds, &[1.0, 2.0], 3.0, 0.7),
+            Voice::Idol => quieter(voice(frequency, seconds, Vowel::Aah)),
+            Voice::IdolOoh => quieter(voice(frequency, seconds, Vowel::Ooh)),
         }
     }
+}
+
+/// The hummed voice at the level of the other instruments.
+fn quieter(mut sound: Vec<f32>) -> Vec<f32> {
+    for value in &mut sound {
+        *value *= 0.6;
+    }
+    sound
 }
 
 /// A set of drums.
@@ -156,24 +268,34 @@ impl Voice {
 pub enum Drums {
     /// Slow, soft lofi drums.
     Soft,
+    /// A console's drums: a dropping triangle and bursts of coarse noise.
+    Chip,
+    /// Tight and hard, for fast bass drums.
+    Metal,
 }
 
 impl Drums {
     pub fn kick(self) -> Vec<f32> {
         match self {
             Drums::Soft => kick(),
+            Drums::Chip => chip_kick(),
+            Drums::Metal => tight_kick(),
         }
     }
 
     pub fn snare(self) -> Vec<f32> {
         match self {
             Drums::Soft => snare(),
+            Drums::Chip => coarse_noise(0.14, 8, 26.0, 0.6),
+            Drums::Metal => hard_snare(),
         }
     }
 
     pub fn hat(self) -> Vec<f32> {
         match self {
             Drums::Soft => hat(),
+            Drums::Chip => coarse_noise(0.03, 2, 110.0, 0.22),
+            Drums::Metal => hat(),
         }
     }
 }
@@ -222,6 +344,66 @@ fn hat() -> Vec<f32> {
             let bright = raw - previous;
             previous = raw;
             bright * (-t * 90.0).exp() * 0.22
+        })
+        .collect()
+}
+
+/// A console's bass drum: a triangle wave that drops fast.
+fn chip_kick() -> Vec<f32> {
+    let n = samples(0.16);
+    let mut phase = 0.0_f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            phase = (phase + (40.0 + 140.0 * (-t * 30.0).exp()) / RATE).fract();
+            (4.0 * (phase - 0.5).abs() - 1.0) * (-t * 14.0).exp() * 0.95
+        })
+        .collect()
+}
+
+/// Noise that holds each value for `hold` samples, as a console makes it,
+/// dying at `decay`.
+fn coarse_noise(seconds: f32, hold: usize, decay: f32, level: f32) -> Vec<f32> {
+    let mut noise = Noise(1983);
+    let mut held = 0.0;
+    (0..samples(seconds))
+        .map(|i| {
+            if i % hold.max(1) == 0 {
+                held = noise.sample();
+            }
+            held * (-(i as f32 / RATE) * decay).exp() * level
+        })
+        .collect()
+}
+
+/// A short bass drum with a click in front, so fast ones stay apart.
+fn tight_kick() -> Vec<f32> {
+    let n = samples(0.18);
+    let mut noise = Noise(5);
+    let mut phase = 0.0_f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            phase += (48.0 + 130.0 * (-t * 45.0).exp()) / RATE;
+            let click = noise.sample() * (-t * 400.0).exp() * 0.3;
+            ((phase * TAU).sin() * (-t * 17.0).exp() + click) * 0.9
+        })
+        .collect()
+}
+
+/// A snare with more noise and a longer tail.
+fn hard_snare() -> Vec<f32> {
+    let n = samples(0.26);
+    let mut noise = Noise(11);
+    let mut low = 0.0_f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let raw = noise.sample();
+            low += 0.2 * (raw - low);
+            let hiss = (raw - low) * (-t * 15.0).exp();
+            let body = (t * 210.0 * TAU).sin() * (-t * 24.0).exp();
+            hiss * 0.6 + body * 0.4
         })
         .collect()
 }
@@ -359,10 +541,16 @@ mod tests {
             assert!(early < later / 3.0, "{early} {later}");
             assert!(slow.last().unwrap().abs() < 0.01, "lets go at the end");
         }
-        check("kick", &Drums::Soft.kick());
-        check("snare", &Drums::Soft.snare());
-        let hat = Drums::Soft.hat();
-        assert!(hat.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+        for drums in [Drums::Soft, Drums::Chip, Drums::Metal] {
+            check(&format!("{drums:?} kick"), &drums.kick());
+            check(&format!("{drums:?} snare"), &drums.snare());
+            let hat = drums.hat();
+            assert!(hat.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+            assert!(hat.len() < drums.snare().len());
+        }
+        assert_ne!(Drums::Soft.kick(), Drums::Chip.kick());
+        assert_ne!(Drums::Soft.kick(), Drums::Metal.kick());
+        assert_ne!(Drums::Chip.snare(), Drums::Metal.snare());
         check("ooh", &voice(220.0, 1.5, Vowel::Ooh));
         check("aah", &voice(220.0, 1.5, Vowel::Aah));
         assert_ne!(voice(220.0, 0.5, Vowel::Ooh), voice(220.0, 0.5, Vowel::Aah));
@@ -370,6 +558,44 @@ mod tests {
         assert!((pitch(69) - 440.0).abs() < 0.01 && (pitch(57) - 220.0).abs() < 0.01);
         // A note ends in silence, so notes can follow each other.
         assert!(Voice::Pluck.play(45, 0.5).last().unwrap().abs() < 0.01);
+    }
+
+    #[test]
+    fn console_and_overdriven_voices_sound_each_their_own() {
+        let voices = [
+            Voice::Square,
+            Voice::Pulse,
+            Voice::Triangle,
+            Voice::ChipPad,
+            Voice::Guitar,
+            Voice::Chords,
+            Voice::Growl,
+            Voice::Idol,
+            Voice::IdolOoh,
+        ];
+        let sounds: Vec<_> = voices.iter().map(|v| v.play(57, 1.5)).collect();
+        for (voice, sound) in voices.iter().zip(&sounds) {
+            check(&format!("{voice:?}"), sound);
+            let peak = sound.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+            assert!(peak <= 0.8, "{voice:?}: {peak}, louder than the soft ones");
+            assert_eq!(sound.len(), samples(1.5));
+            assert!(sound.last().unwrap().abs() < 0.02, "{voice:?} lets go");
+        }
+        for (i, a) in sounds.iter().enumerate() {
+            for b in sounds.iter().skip(i + 1) {
+                assert_ne!(a, b);
+            }
+        }
+        // A square wave is up half the time, the thin pulse a quarter.
+        let up =
+            |sound: &[f32]| sound.iter().filter(|s| **s > 0.0).count() as f32 / sound.len() as f32;
+        assert!((up(&sounds[0]) - 0.5).abs() < 0.05, "{}", up(&sounds[0]));
+        assert!((up(&sounds[1]) - 0.25).abs() < 0.05, "{}", up(&sounds[1]));
+        // Overdrive flattens the top: much of the guitar sits near its peak.
+        let guitar = &sounds[4][..samples(0.2)];
+        let top = guitar.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+        let near = guitar.iter().filter(|s| s.abs() > top * 0.7).count();
+        assert!(near > guitar.len() / 5, "{near} of {}", guitar.len());
     }
 
     #[test]

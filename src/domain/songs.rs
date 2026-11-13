@@ -57,6 +57,8 @@ pub enum Groove {
     Full,
     /// As `Full` with one more bass drum and a quiet snare at the end.
     Busy,
+    /// Double bass drum: sixteenths through the second half of the bar.
+    Double,
 }
 
 /// A stretch of a song that stays with one key, one lead and one groove.
@@ -383,6 +385,11 @@ impl Song {
                 Groove::Half => (&[0.0], &[4.0], 2),
                 Groove::Full => (&[0.0, 5.0], &[2.0, 6.0], 1),
                 Groove::Busy => (&[0.0, 3.0, 5.0], &[2.0, 6.0], 1),
+                Groove::Double => (
+                    &[0.0, 1.0, 4.0, 4.5, 5.0, 5.5, 6.5, 7.0, 7.5],
+                    &[2.0, 6.0],
+                    1,
+                ),
             };
             for place in kicks {
                 add(&mut mix, start + place * eighth, &kick, 0.9);
@@ -456,13 +463,25 @@ pub enum Link {
     Solo,
     /// Long: the drums come in piece by piece over a walking bass.
     Build,
+    /// The motif's chord run up fast over two octaves, like a prize jingle.
+    Arp,
+    /// Two quick high notes: a coin.
+    Coin,
+    /// Long: a run of the motif that starts a step higher in every bar.
+    Climb,
+    /// The chord struck once, a silence, then twice.
+    Stab,
+    /// A bar of fast bass drums under snares.
+    Blast,
+    /// Long: the motif sung a note a beat over struck chords.
+    Chant,
 }
 
 impl Link {
     fn bars(self) -> f32 {
         match self {
-            Link::Solo => 4.0,
-            Link::Build => 3.0,
+            Link::Solo | Link::Chant => 4.0,
+            Link::Build | Link::Climb => 3.0,
             _ => 1.0,
         }
     }
@@ -547,6 +566,77 @@ impl Link {
                     add(&mut mix, beat * (8.0 + f32::from(step) * 0.5), &hat, 0.7);
                 }
                 roll(&mut mix, beat * 10.5, beat * 0.9, &snare);
+            }
+            Link::Arp => {
+                let run = [a, b, c, d, a + 12, b + 12, c + 12, d + 12];
+                for (i, midi) in run.into_iter().enumerate() {
+                    let sound = kit.first.play(midi, beat * 0.3);
+                    add(&mut mix, beat * (0.75 + i as f32 * 0.25), &sound, 0.26);
+                }
+                add(&mut mix, beat * 2.75, &kit.first.play(a + 24, beat), 0.26);
+            }
+            Link::Coin => {
+                add(
+                    &mut mix,
+                    beat * 1.5,
+                    &kit.second.play(d + 12, beat * 0.2),
+                    0.3,
+                );
+                add(
+                    &mut mix,
+                    beat * 1.7,
+                    &kit.second.play(d + 17, beat * 1.2),
+                    0.3,
+                );
+            }
+            Link::Climb => {
+                for bar in 0..3u8 {
+                    let start = beat * (f32::from(bar) * 4.0 + 0.5);
+                    add(&mut mix, start, &kick, 0.9);
+                    add(&mut mix, start + beat * 2.0, &snare, 0.65);
+                    let low = kit.bass.play(a.saturating_sub(24) + bar, beat * 2.0);
+                    add(&mut mix, start, &low, 0.3);
+                    for (i, midi) in [a, b, c, d, c, b].into_iter().enumerate() {
+                        let sound = kit.second.play(midi + bar, beat * 0.45);
+                        add(&mut mix, start + beat * i as f32 * 0.5, &sound, 0.26);
+                    }
+                }
+            }
+            Link::Stab => {
+                for place in [0.5, 2.5, 3.0] {
+                    add(
+                        &mut mix,
+                        beat * place,
+                        &kit.pad.play(a.saturating_sub(12), beat * 0.45),
+                        0.3,
+                    );
+                    add(&mut mix, beat * place, &kick, 0.9);
+                }
+            }
+            Link::Blast => {
+                for sixteenth in 2..14u8 {
+                    add(&mut mix, beat * f32::from(sixteenth) * 0.25, &kick, 0.8);
+                    if sixteenth % 2 == 0 {
+                        add(&mut mix, beat * f32::from(sixteenth) * 0.25, &snare, 0.5);
+                    }
+                }
+            }
+            Link::Chant => {
+                let sung_notes = [a, b, c, d, c, b, a, a, b, c, d, d];
+                for (i, midi) in sung_notes.into_iter().enumerate() {
+                    let sound = kit.second.play(sung(midi), beat * 0.9);
+                    add(&mut mix, beat * (1.0 + i as f32), &sound, 0.26);
+                }
+                for bar in 0..4u8 {
+                    let start = beat * f32::from(bar) * 4.0;
+                    let chord = kit.pad.play(a.saturating_sub(12), beat * 1.5);
+                    add(&mut mix, start + beat, &chord, 0.2);
+                    add(&mut mix, start + beat * 3.0, &chord, 0.2);
+                    if bar < 3 {
+                        add(&mut mix, start + beat, &kick, 0.9);
+                        add(&mut mix, start + beat * 3.0, &snare, 0.65);
+                    }
+                }
             }
         }
         finish(&mut mix);
@@ -653,7 +743,7 @@ pub struct Style {
     pub breaks: [Link; 6],
 }
 
-use Groove::{Busy, Full, Half};
+use Groove::{Busy, Double, Full, Half};
 use Lead::{Both, First, Second, Tacet};
 
 const FORWARDS: Under = Under::Long { backwards: false };
@@ -741,8 +831,177 @@ pub const JAPAN: Style = Style {
     ],
 };
 
+/// Retro gaming lofi: the square, pulse and triangle waves of old game
+/// consoles, and their drums made of noise.
+pub const RETRO: Style = Style {
+    name: "Retro gaming lofi",
+    kit: Kit {
+        first: Voice::Square,
+        second: Voice::Pulse,
+        long: Voice::Triangle,
+        pad: Voice::ChipPad,
+        bass: Voice::Triangle,
+        drums: Drums::Chip,
+    },
+    songs: [
+        Song {
+            bpm: 84,
+            motif: [60, 64, 67, 72],
+            parts: &[
+                part(2, 0, First, Under::None, Half),
+                part(4, 0, First, Under::Pad, Full),
+                part(4, 5, Second, FORWARDS, Full),
+                part(4, 7, Both, Under::Pad, Busy),
+                part(2, 0, Tacet, BACKWARDS, Half),
+                part(4, 0, Both, FORWARDS, Busy),
+            ],
+        },
+        Song {
+            bpm: 88,
+            motif: [62, 66, 69, 74],
+            parts: &[
+                part(4, 0, Second, Under::None, Groove::None),
+                part(4, 0, First, FORWARDS, Full),
+                part(4, -2, Both, Under::Pad, Full),
+                part(2, 5, Tacet, Under::Pad, Half),
+                part(4, 7, First, BACKWARDS, Busy),
+                part(4, 0, Second, Under::Pad, Full),
+            ],
+        },
+        Song {
+            bpm: 80,
+            motif: [57, 60, 64, 69],
+            parts: &[
+                part(4, 0, First, BACKWARDS, Half),
+                part(4, 3, Second, Under::Pad, Full),
+                part(2, 0, Tacet, Under::None, Busy),
+                part(4, -4, Both, FORWARDS, Full),
+                part(4, 0, First, Under::Pad, Busy),
+                part(2, 0, Second, Under::None, Groove::None),
+            ],
+        },
+        Song {
+            bpm: 76,
+            motif: [65, 69, 72, 77],
+            parts: &[
+                part(2, 0, Tacet, Under::Pad, Groove::None),
+                part(4, 0, Second, Under::None, Half),
+                part(4, -5, First, FORWARDS, Full),
+                part(4, -7, Both, BACKWARDS, Full),
+                part(4, 0, First, Under::Pad, Busy),
+                part(2, 0, Second, FORWARDS, Half),
+            ],
+        },
+        Song {
+            bpm: 86,
+            motif: [55, 59, 62, 67],
+            parts: &[
+                part(4, 0, Both, Under::None, Full),
+                part(4, 5, First, Under::Pad, Busy),
+                part(2, 7, Tacet, FORWARDS, Half),
+                part(4, 0, Second, BACKWARDS, Full),
+                part(4, 2, Both, Under::Pad, Busy),
+                part(4, 0, First, FORWARDS, Half),
+            ],
+        },
+    ],
+    breaks: [
+        Link::Arp,
+        Link::Coin,
+        Link::Notes(true),
+        Link::Roll,
+        Link::Solo,
+        Link::Climb,
+    ],
+};
+
+/// Babymetal-style lofi: an overdriven guitar and a high voice over struck
+/// chords and double bass drums, slowed down.
+pub const METAL: Style = Style {
+    name: "Babymetal-style lofi",
+    kit: Kit {
+        first: Voice::Guitar,
+        second: Voice::Idol,
+        long: Voice::IdolOoh,
+        pad: Voice::Chords,
+        bass: Voice::Growl,
+        drums: Drums::Metal,
+    },
+    songs: [
+        Song {
+            bpm: 88,
+            motif: [52, 55, 59, 64],
+            parts: &[
+                part(2, 0, First, Under::None, Groove::None),
+                part(4, 0, First, Under::Pad, Double),
+                part(4, 5, Second, Under::Pad, Full),
+                part(4, 3, Both, FORWARDS, Double),
+                part(2, 0, Tacet, Under::Pad, Half),
+                part(4, 0, Second, BACKWARDS, Double),
+                part(2, 0, First, Under::None, Half),
+            ],
+        },
+        Song {
+            bpm: 84,
+            motif: [50, 53, 57, 62],
+            parts: &[
+                part(4, 0, Second, FORWARDS, Half),
+                part(4, 0, First, Under::Pad, Double),
+                part(4, 7, Both, Under::Pad, Full),
+                part(2, 5, Tacet, Under::None, Double),
+                part(4, 0, First, BACKWARDS, Double),
+                part(4, 0, Second, Under::Pad, Full),
+            ],
+        },
+        Song {
+            bpm: 80,
+            motif: [55, 58, 62, 67],
+            parts: &[
+                part(2, 0, Tacet, Under::Pad, Groove::None),
+                part(4, 0, First, Under::None, Full),
+                part(4, -3, Second, FORWARDS, Double),
+                part(4, 2, Both, Under::Pad, Double),
+                part(4, 0, First, BACKWARDS, Full),
+                part(2, 0, Second, Under::Pad, Half),
+            ],
+        },
+        Song {
+            bpm: 86,
+            motif: [59, 62, 66, 71],
+            parts: &[
+                part(4, 0, First, Under::Pad, Full),
+                part(4, -2, Second, BACKWARDS, Double),
+                part(2, 0, Tacet, FORWARDS, Half),
+                part(4, 5, Both, Under::Pad, Double),
+                part(4, 0, First, Under::None, Double),
+                part(4, 0, Second, FORWARDS, Full),
+            ],
+        },
+        Song {
+            bpm: 78,
+            motif: [54, 57, 61, 66],
+            parts: &[
+                part(4, 0, Second, Under::Pad, Groove::None),
+                part(4, 0, First, FORWARDS, Full),
+                part(4, 3, Both, Under::None, Double),
+                part(2, -2, Tacet, Under::Pad, Half),
+                part(4, 0, First, BACKWARDS, Double),
+                part(2, 0, Second, Under::Pad, Half),
+            ],
+        },
+    ],
+    breaks: [
+        Link::Stab,
+        Link::Hum(Vowel::Aah),
+        Link::Blast,
+        Link::Fall,
+        Link::Build,
+        Link::Chant,
+    ],
+};
+
 /// The styles the music moves through.
-pub static STYLES: [Style; 1] = [JAPAN];
+pub static STYLES: [Style; 3] = [JAPAN, RETRO, METAL];
 
 /// About how long the music stays in one style, in seconds of songs.
 pub const STAY_SECS: f32 = 270.0;
@@ -985,7 +1244,7 @@ mod tests {
 
     #[test]
     fn the_melody_states_the_motif_once_and_then_varies_it() {
-        for song in &JAPAN.songs {
+        for song in STYLES.iter().flat_map(|s| &s.songs) {
             let bars = bars_of(song, &plain());
             let stated: Vec<_> = (0..4u32).map(|i| (i * 2, 2, 0)).collect();
             let plain_bars = bars
@@ -1165,6 +1424,59 @@ mod tests {
         // The tape stop is silent between the sinking chord and the count.
         let quiet = &rendered[1][samples(6.3)..samples(7.4)];
         assert!(peak(quiet) < 0.01, "{}", peak(quiet));
+    }
+
+    #[test]
+    fn in_every_style_the_instruments_stay_behind_the_drums() {
+        for style in &STYLES {
+            for song in style.songs.iter().take(2) {
+                let variation = plain();
+                let instruments = song.instruments(&style.kit, &variation);
+                let drums = song.drums(&style.kit, &variation);
+                assert!(
+                    peak(&instruments) < peak(&drums) * 0.75,
+                    "{}: {} against {}",
+                    style.name,
+                    peak(&instruments),
+                    peak(&drums)
+                );
+                assert!(peak(&instruments) > 0.1, "{}", style.name);
+            }
+        }
+        // The styles do not share an instrument for their melodies.
+        let mut leads: Vec<_> = STYLES
+            .iter()
+            .flat_map(|s| [s.kit.first, s.kit.second])
+            .map(|v| format!("{v:?}"))
+            .collect();
+        leads.sort();
+        leads.dedup();
+        assert_eq!(leads.len(), STYLES.len() * 2);
+        let mut all_breaks: Vec<_> = STYLES
+            .iter()
+            .flat_map(|s| s.breaks)
+            .map(|l| format!("{l:?}"))
+            .collect();
+        all_breaks.sort();
+        all_breaks.dedup();
+        assert!(all_breaks.len() >= 12, "{all_breaks:?}");
+    }
+
+    #[test]
+    fn the_double_groove_has_fast_bass_drums() {
+        let song = &METAL.songs[0];
+        let bar = samples(4.0 * song.beat());
+        let drums = song.drums(
+            &METAL.kit,
+            &Variation {
+                skip: 20,
+                ..plain()
+            },
+        );
+        // Bars 2 to 5 are Double; bars 6 to 9 Full: more is hit in the first.
+        let energy =
+            |range: std::ops::Range<usize>| -> f32 { drums[range].iter().map(|s| s * s).sum() };
+        assert!(energy(2 * bar..3 * bar) > energy(6 * bar..7 * bar) * 1.5);
     }
 
     static TWO: [Style; 2] = [JAPAN, JAPAN];

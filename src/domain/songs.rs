@@ -1,7 +1,8 @@
 //! What the Kawaii theme's music plays. The music is organised in styles
 //! (the user calls them themes): each has its own instruments, five songs
 //! of about a minute and six breaks. A song is written as parts that move
-//! its four-note motif through keys, instruments and drum grooves; a few
+//! its four-note motif through keys, instruments and drum grooves, with
+//! parts on a second theme between them; a few
 //! things in it are left to chance, so it never plays the same way twice.
 //! After a song, one time in four, a change break leads into another style.
 
@@ -83,6 +84,9 @@ pub struct Part {
     pub lead: Lead,
     pub under: Under,
     pub groove: Groove,
+    /// It plays the song's second theme instead of its first: melody, long
+    /// tune, chord and bass.
+    pub b: bool,
 }
 
 const fn part(bars: u8, shift: i8, lead: Lead, under: Under, groove: Groove) -> Part {
@@ -92,6 +96,15 @@ const fn part(bars: u8, shift: i8, lead: Lead, under: Under, groove: Groove) -> 
         lead,
         under,
         groove,
+        b: false,
+    }
+}
+
+/// A part that plays the song's second theme.
+const fn part_b(bars: u8, shift: i8, lead: Lead, under: Under, groove: Groove) -> Part {
+    Part {
+        b: true,
+        ..part(bars, shift, lead, under, groove)
     }
 }
 
@@ -103,6 +116,10 @@ pub struct Song {
     /// Its four notes, as MIDI numbers. The melody is made from the motif;
     /// it is not the motif over and over.
     pub motif: [u8; 4],
+    /// Its second theme: four notes of the motif's scale on another root,
+    /// and not rising all the way as the motif does. Some parts play it
+    /// instead of the motif, so a song is not one idea for a minute.
+    pub second: [u8; 4],
     pub parts: &'static [Part],
 }
 
@@ -298,6 +315,12 @@ impl Song {
         self.bars() as f32 * 4.0 * self.beat()
     }
 
+    /// The four notes `part` plays, in its key: the motif or the second
+    /// theme.
+    fn theme(&self, part: &Part) -> [u8; 4] {
+        moved(if part.b { self.second } else { self.motif }, part.shift)
+    }
+
     fn each_bar(&self) -> Vec<Bar<'_>> {
         let mut bars = Vec::with_capacity(self.bars());
         for part in self.parts {
@@ -313,13 +336,15 @@ impl Song {
         bars
     }
 
-    /// The melody: the motif stated in the first bar that has a melody, a
+    /// The melody: the theme of each part (the motif or the second theme),
+    /// the motif stated in the first bar that has a melody, a
     /// rest in the song's last bar, and between them the other shapes in a
     /// turn that starts where the variation says.
     pub fn melody(&self, variation: &Variation) -> Vec<Note> {
         let last = self.bars().saturating_sub(1);
         let mut notes = Vec::new();
         let mut sung_bars = 0;
+        let mut second_stated = false;
         for bar in self.each_bar() {
             let second = match bar.part.lead {
                 Lead::Tacet => continue,
@@ -331,12 +356,16 @@ impl Song {
                 Shape::Statement
             } else if bar.number == last {
                 Shape::Rest
+            } else if bar.part.b && !second_stated {
+                // The second theme is said outright too, where it first comes.
+                second_stated = true;
+                Shape::Statement
             } else {
                 let at = (usize::from(self.motif[0]) + variation.turn + sung_bars) % SHAPES.len();
                 SHAPES.get(at).copied().unwrap_or(Shape::Answer)
             };
             sung_bars += 1;
-            for (at, beats, midi) in shape.notes(moved(self.motif, bar.part.shift)) {
+            for (at, beats, midi) in shape.notes(self.theme(bar.part)) {
                 notes.push(Note {
                     at: bar.number as f32 * 4.0 + at,
                     beats,
@@ -355,7 +384,7 @@ impl Song {
         let mut start = 0;
         for part in self.parts {
             if let Under::Long { backwards } = part.under {
-                let mut motif = moved(self.motif, part.shift);
+                let mut motif = self.theme(part);
                 if backwards != variation.mirror {
                     motif.reverse();
                 }
@@ -412,7 +441,7 @@ impl Song {
         let mut low = (kit.space == Space::Far).then(|| vec![0.0; mix.len()]);
         for bar in self.each_bar() {
             let at = bar.number as f32 * 4.0 * beat;
-            let [root, third, fifth, _] = moved(self.motif, bar.part.shift);
+            let [root, third, fifth, _] = self.theme(bar.part);
             if bar.part.under == Under::Pad && bar.within % 2 == 0 {
                 let bars = if bar.closes { 1.0 } else { 2.0 };
                 for midi in [root.saturating_sub(12), fifth.saturating_sub(12), third] {
@@ -1104,58 +1133,63 @@ pub const JAPAN: Style = Style {
         Song {
             bpm: 72,
             motif: [57, 60, 64, 67],
+            second: [62, 65, 69, 64],
             parts: &[
                 part(2, 0, First, Under::None, Groove::None),
                 part(4, 0, First, FORWARDS, Full),
-                part(4, 5, Second, Under::Pad, Full),
+                part_b(4, 5, Second, Under::Pad, Full),
                 part(2, -2, Tacet, FORWARDS, Half),
-                part(4, 0, Both, BACKWARDS, Busy),
+                part_b(4, 0, Both, BACKWARDS, Busy),
                 part(2, 0, First, Under::Pad, Groove::None),
             ],
         },
         Song {
             bpm: 76,
             motif: [62, 65, 69, 72],
+            second: [58, 62, 65, 60],
             parts: &[
                 part(4, 0, Second, Under::Pad, Half),
                 part(4, 0, First, Under::Pad, Full),
-                part(4, -5, Both, FORWARDS, Full),
+                part_b(4, -5, Both, FORWARDS, Full),
                 part(2, -2, Tacet, Under::Pad, Groove::None),
-                part(4, 0, First, BACKWARDS, Busy),
+                part_b(4, 0, First, BACKWARDS, Busy),
                 part(2, 0, Second, Under::None, Half),
             ],
         },
         Song {
             bpm: 68,
             motif: [60, 64, 67, 71],
+            second: [57, 60, 64, 59],
             parts: &[
                 part(2, 0, Tacet, Under::Pad, Groove::None),
                 part(4, 0, First, Under::None, Half),
-                part(4, 5, First, FORWARDS, Full),
-                part(4, -3, Second, BACKWARDS, Full),
+                part_b(4, 5, First, FORWARDS, Full),
+                part_b(4, -3, Second, BACKWARDS, Full),
                 part(2, 0, Both, Under::Pad, Half),
             ],
         },
         Song {
             bpm: 80,
             motif: [55, 58, 62, 65],
+            second: [51, 55, 58, 53],
             parts: &[
                 part(4, 0, First, BACKWARDS, Full),
                 part(4, 3, Second, Under::None, Busy),
-                part(2, 0, Tacet, Under::None, Full),
+                part_b(2, 0, Tacet, Under::None, Full),
                 part(4, -2, Both, Under::Pad, Full),
-                part(4, 0, First, FORWARDS, Full),
+                part_b(4, 0, First, FORWARDS, Full),
                 part(2, 0, Second, Under::Pad, Groove::None),
             ],
         },
         Song {
             bpm: 66,
             motif: [61, 64, 68, 71],
+            second: [66, 69, 73, 68],
             parts: &[
                 part(4, 0, Second, FORWARDS, Groove::None),
                 part(4, 0, First, Under::Pad, Half),
-                part(4, 5, Both, BACKWARDS, Full),
-                part(2, 7, Tacet, FORWARDS, Half),
+                part_b(4, 5, Both, BACKWARDS, Full),
+                part_b(2, 7, Tacet, FORWARDS, Half),
                 part(2, 0, First, Under::None, Half),
             ],
         },
@@ -1188,60 +1222,65 @@ pub const RETRO: Style = Style {
         Song {
             bpm: 84,
             motif: [60, 64, 67, 72],
+            second: [65, 69, 72, 67],
             parts: &[
                 part(2, 0, First, Under::None, Half),
                 part(4, 0, First, Under::Pad, Full),
-                part(4, 5, Second, FORWARDS, Full),
+                part_b(4, 5, Second, FORWARDS, Full),
                 part(4, 7, Both, Under::Pad, Busy),
-                part(2, 0, Tacet, BACKWARDS, Half),
+                part_b(2, 0, Tacet, BACKWARDS, Half),
                 part(4, 0, Both, FORWARDS, Busy),
             ],
         },
         Song {
             bpm: 88,
             motif: [62, 66, 69, 74],
+            second: [59, 62, 66, 61],
             parts: &[
                 part(4, 0, Second, Under::None, Groove::None),
                 part(4, 0, First, FORWARDS, Full),
-                part(4, -2, Both, Under::Pad, Full),
+                part_b(4, -2, Both, Under::Pad, Full),
                 part(2, 5, Tacet, Under::Pad, Half),
-                part(4, 7, First, BACKWARDS, Busy),
+                part_b(4, 7, First, BACKWARDS, Busy),
                 part(4, 0, Second, Under::Pad, Full),
             ],
         },
         Song {
             bpm: 80,
             motif: [57, 60, 64, 69],
+            second: [53, 57, 60, 55],
             parts: &[
                 part(4, 0, First, BACKWARDS, Half),
                 part(4, 3, Second, Under::Pad, Full),
-                part(2, 0, Tacet, Under::None, Busy),
+                part_b(2, 0, Tacet, Under::None, Busy),
                 part(4, -4, Both, FORWARDS, Full),
-                part(4, 0, First, Under::Pad, Busy),
+                part_b(4, 0, First, Under::Pad, Busy),
                 part(2, 0, Second, Under::None, Groove::None),
             ],
         },
         Song {
             bpm: 76,
             motif: [65, 69, 72, 77],
+            second: [62, 65, 69, 64],
             parts: &[
                 part(2, 0, Tacet, Under::Pad, Groove::None),
                 part(4, 0, Second, Under::None, Half),
-                part(4, -5, First, FORWARDS, Full),
+                part_b(4, -5, First, FORWARDS, Full),
                 part(4, -7, Both, BACKWARDS, Full),
-                part(4, 0, First, Under::Pad, Busy),
+                part_b(4, 0, First, Under::Pad, Busy),
                 part(2, 0, Second, FORWARDS, Half),
             ],
         },
         Song {
             bpm: 86,
             motif: [55, 59, 62, 67],
+            second: [60, 64, 67, 62],
             parts: &[
                 part(4, 0, Both, Under::None, Full),
                 part(4, 5, First, Under::Pad, Busy),
-                part(2, 7, Tacet, FORWARDS, Half),
+                part_b(2, 7, Tacet, FORWARDS, Half),
                 part(4, 0, Second, BACKWARDS, Full),
-                part(4, 2, Both, Under::Pad, Busy),
+                part_b(4, 2, Both, Under::Pad, Busy),
                 part(4, 0, First, FORWARDS, Half),
             ],
         },
@@ -1274,61 +1313,66 @@ pub const METAL: Style = Style {
         Song {
             bpm: 88,
             motif: [52, 55, 59, 64],
+            second: [57, 60, 64, 59],
             parts: &[
                 part(2, 0, First, Under::None, Groove::None),
                 part(4, 0, First, Under::Pad, Double),
-                part(4, 5, Second, Under::Pad, Full),
+                part_b(4, 5, Second, Under::Pad, Full),
                 part(4, 3, Both, FORWARDS, Double),
-                part(2, 0, Tacet, Under::Pad, Half),
-                part(4, 0, Second, BACKWARDS, Double),
+                part_b(2, 0, Tacet, Under::Pad, Half),
+                part_b(4, 0, Second, BACKWARDS, Double),
                 part(2, 0, First, Under::None, Half),
             ],
         },
         Song {
             bpm: 84,
             motif: [50, 53, 57, 62],
+            second: [46, 50, 53, 48],
             parts: &[
                 part(4, 0, Second, FORWARDS, Half),
                 part(4, 0, First, Under::Pad, Double),
-                part(4, 7, Both, Under::Pad, Full),
+                part_b(4, 7, Both, Under::Pad, Full),
                 part(2, 5, Tacet, Under::None, Double),
-                part(4, 0, First, BACKWARDS, Double),
+                part_b(4, 0, First, BACKWARDS, Double),
                 part(4, 0, Second, Under::Pad, Full),
             ],
         },
         Song {
             bpm: 80,
             motif: [55, 58, 62, 67],
+            second: [60, 63, 67, 62],
             parts: &[
                 part(2, 0, Tacet, Under::Pad, Groove::None),
                 part(4, 0, First, Under::None, Full),
-                part(4, -3, Second, FORWARDS, Double),
+                part_b(4, -3, Second, FORWARDS, Double),
                 part(4, 2, Both, Under::Pad, Double),
-                part(4, 0, First, BACKWARDS, Full),
+                part_b(4, 0, First, BACKWARDS, Full),
                 part(2, 0, Second, Under::Pad, Half),
             ],
         },
         Song {
             bpm: 86,
             motif: [59, 62, 66, 71],
+            second: [55, 59, 62, 57],
             parts: &[
                 part(4, 0, First, Under::Pad, Full),
                 part(4, -2, Second, BACKWARDS, Double),
-                part(2, 0, Tacet, FORWARDS, Half),
+                part_b(2, 0, Tacet, FORWARDS, Half),
                 part(4, 5, Both, Under::Pad, Double),
-                part(4, 0, First, Under::None, Double),
+                part_b(4, 0, First, Under::None, Double),
                 part(4, 0, Second, FORWARDS, Full),
             ],
         },
         Song {
             bpm: 78,
             motif: [54, 57, 61, 66],
+            second: [59, 62, 66, 61],
             parts: &[
                 part(4, 0, Second, Under::Pad, Groove::None),
                 part(4, 0, First, FORWARDS, Full),
-                part(4, 3, Both, Under::None, Double),
+                part_b(4, 3, Both, Under::None, Double),
                 part(2, -2, Tacet, Under::Pad, Half),
-                part(4, 0, First, BACKWARDS, Double),
+                part_b(4, 0, First, BACKWARDS, Double),
                 part(2, 0, Second, Under::Pad, Half),
             ],
         },
@@ -1362,68 +1406,73 @@ pub const CAJUN: Style = Style {
         Song {
             bpm: 104,
             motif: [55, 59, 62, 64],
+            second: [60, 64, 67, 62],
             parts: &[
                 part(2, 0, First, Under::None, Half),
                 part(4, 0, First, Under::Pad, Full),
-                part(4, 5, Both, FORWARDS, Busy),
-                part(4, 7, Second, Under::Pad, Full),
+                part_b(4, 5, Both, FORWARDS, Busy),
+                part_b(4, 7, Second, Under::Pad, Full),
                 part(2, 0, Tacet, BACKWARDS, Half),
                 part(4, 5, First, FORWARDS, Busy),
-                part(4, 0, Both, Under::Pad, Full),
+                part_b(4, 0, Both, Under::Pad, Full),
                 part(2, 0, First, Under::None, Half),
             ],
         },
         Song {
             bpm: 112,
             motif: [57, 61, 64, 66],
+            second: [54, 57, 61, 56],
             parts: &[
                 part(4, 0, First, Under::None, Full),
                 part(4, 0, Both, Under::Pad, Busy),
-                part(4, 5, Second, FORWARDS, Full),
-                part(2, 7, Tacet, Under::Pad, Half),
+                part_b(4, 5, Second, FORWARDS, Full),
+                part_b(2, 7, Tacet, Under::Pad, Half),
                 part(4, 0, First, BACKWARDS, Busy),
                 part(4, -5, Both, Under::Pad, Full),
-                part(4, 0, First, FORWARDS, Busy),
+                part_b(4, 0, First, FORWARDS, Busy),
                 part(2, 0, Second, Under::None, Half),
             ],
         },
         Song {
             bpm: 96,
             motif: [60, 64, 67, 69],
+            second: [65, 69, 72, 67],
             parts: &[
                 part(2, 0, Tacet, Under::Pad, Groove::None),
                 part(4, 0, First, Under::None, Half),
-                part(4, 5, First, FORWARDS, Full),
+                part_b(4, 5, First, FORWARDS, Full),
                 part(4, -2, Second, BACKWARDS, Full),
-                part(4, 7, Both, Under::Pad, Busy),
-                part(4, 0, First, FORWARDS, Full),
+                part_b(4, 7, Both, Under::Pad, Busy),
+                part_b(4, 0, First, FORWARDS, Full),
                 part(2, 0, Second, Under::Pad, Half),
             ],
         },
         Song {
             bpm: 108,
             motif: [62, 66, 69, 71],
+            second: [59, 62, 66, 61],
             parts: &[
                 part(4, 0, Both, FORWARDS, Full),
                 part(4, 7, First, Under::Pad, Busy),
-                part(2, 5, Tacet, Under::None, Half),
+                part_b(2, 5, Tacet, Under::None, Half),
                 part(4, 0, Second, BACKWARDS, Full),
-                part(4, 2, First, Under::Pad, Busy),
-                part(4, 0, Both, FORWARDS, Busy),
+                part_b(4, 2, First, Under::Pad, Busy),
+                part_b(4, 0, Both, FORWARDS, Busy),
                 part(4, 0, First, Under::None, Full),
             ],
         },
         Song {
             bpm: 100,
             motif: [52, 56, 59, 61],
+            second: [57, 61, 64, 59],
             parts: &[
                 part(2, 0, First, Under::None, Groove::None),
                 part(4, 0, First, BACKWARDS, Half),
-                part(4, 5, Second, Under::Pad, Full),
-                part(4, 0, Both, FORWARDS, Busy),
+                part_b(4, 5, Second, Under::Pad, Full),
+                part_b(4, 0, Both, FORWARDS, Busy),
                 part(2, -5, Tacet, Under::Pad, Half),
                 part(4, 7, First, Under::Pad, Full),
-                part(4, 0, Both, BACKWARDS, Busy),
+                part_b(4, 0, Both, BACKWARDS, Busy),
                 part(2, 0, Second, Under::None, Half),
             ],
         },
@@ -1456,60 +1505,65 @@ pub const TRIPHOP: Style = Style {
         Song {
             bpm: 80,
             motif: [50, 53, 57, 60],
+            second: [55, 58, 62, 57],
             parts: &[
                 part(2, 0, Tacet, Under::Pad, Groove::None),
                 part(4, 0, First, Under::Pad, Half),
-                part(4, 0, First, FORWARDS, Full),
+                part_b(4, 0, First, FORWARDS, Full),
                 part(4, 5, Second, Under::Pad, Full),
-                part(2, -2, Tacet, BACKWARDS, Half),
+                part_b(2, -2, Tacet, BACKWARDS, Half),
                 part(4, 0, Both, FORWARDS, Busy),
             ],
         },
         Song {
             bpm: 76,
             motif: [52, 55, 59, 62],
+            second: [48, 52, 55, 50],
             parts: &[
                 part(4, 0, First, Under::None, Half),
                 part(4, 0, Second, Under::Pad, Full),
-                part(4, -5, First, FORWARDS, Full),
-                part(2, 3, Tacet, Under::Pad, Groove::None),
+                part_b(4, -5, First, FORWARDS, Full),
+                part_b(2, 3, Tacet, Under::Pad, Groove::None),
                 part(4, 0, Both, BACKWARDS, Full),
             ],
         },
         Song {
             bpm: 84,
             motif: [59, 62, 66, 69],
+            second: [64, 67, 71, 66],
             parts: &[
                 part(2, 0, First, Under::None, Groove::None),
                 part(4, 0, First, Under::Pad, Full),
-                part(4, -4, Both, BACKWARDS, Busy),
+                part_b(4, -4, Both, BACKWARDS, Busy),
                 part(4, 0, Second, FORWARDS, Full),
-                part(2, 5, Tacet, Under::Pad, Half),
-                part(4, 0, First, FORWARDS, Busy),
+                part_b(2, 5, Tacet, Under::Pad, Half),
+                part_b(4, 0, First, FORWARDS, Busy),
                 part(2, 0, Second, Under::None, Half),
             ],
         },
         Song {
             bpm: 78,
             motif: [54, 57, 61, 64],
+            second: [50, 54, 57, 52],
             parts: &[
                 part(4, 0, Second, Under::Pad, Groove::None),
                 part(4, 0, First, FORWARDS, Half),
-                part(4, 7, First, Under::Pad, Full),
+                part_b(4, 7, First, Under::Pad, Full),
                 part(2, 5, Tacet, Under::None, Full),
-                part(4, 0, Both, BACKWARDS, Full),
+                part_b(4, 0, Both, BACKWARDS, Full),
                 part(2, 0, First, Under::Pad, Half),
             ],
         },
         Song {
             bpm: 82,
             motif: [53, 56, 60, 63],
+            second: [58, 61, 65, 60],
             parts: &[
                 part(2, 0, Tacet, FORWARDS, Groove::None),
                 part(4, 0, First, Under::None, Half),
-                part(4, 3, Second, Under::Pad, Full),
+                part_b(4, 3, Second, Under::Pad, Full),
                 part(4, -2, First, BACKWARDS, Full),
-                part(4, 0, Both, Under::Pad, Busy),
+                part_b(4, 0, Both, Under::Pad, Busy),
                 part(2, 0, First, Under::None, Half),
             ],
         },
@@ -1855,6 +1909,80 @@ mod tests {
                     assert_eq!(bars[bar].is_empty(), part.lead == Lead::Tacet);
                     bar += 1;
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn every_song_has_a_second_theme_that_some_parts_play_whole() {
+        for style in &STYLES {
+            for (i, song) in style.songs.iter().enumerate() {
+                let name = format!("{} {i}", style.name);
+                let (a, b) = (song.motif, song.second);
+                assert_ne!(a[0] % 12, b[0] % 12, "{name}: another root");
+                assert!(b[3] < b[2], "{name}: it does not rise all the way");
+                // The same scale: with the motif's notes it stays within
+                // seven notes, as the notes of one key do.
+                let mut notes: Vec<u8> = a.iter().chain(&b).map(|n| n % 12).collect();
+                notes.sort_unstable();
+                notes.dedup();
+                assert!(notes.len() <= 7, "{name}: {notes:?}");
+                let second: Vec<bool> = song.parts.iter().map(|p| p.b).collect();
+                let count = second.iter().filter(|b| **b).count();
+                assert!((2..=3).contains(&count), "{name}: {count} parts");
+                assert!(!second[0], "{name}: opens with its own theme");
+                assert!(!second[second.len() - 1], "{name}: and comes home");
+            }
+        }
+        // A part on the second theme has its notes in the melody, the long
+        // tune, the chord and the bass.
+        let song = &JAPAN.songs[0];
+        let (at, part) = song
+            .parts
+            .iter()
+            .scan(0, |start, part| {
+                let at = *start;
+                *start += usize::from(part.bars);
+                Some((at, part))
+            })
+            .find(|(_, part)| part.b && part.lead != Lead::Tacet)
+            .unwrap();
+        let theme = moved(song.second, part.shift);
+        assert_eq!(song.theme(part), theme);
+        let bars = bars_of(song, &plain());
+        let stated: Vec<u8> = bars[at].iter().map(|n| n.2).collect();
+        assert_eq!(stated, theme, "said outright where it first comes");
+        let as_first = Song {
+            second: song.motif,
+            ..*song
+        };
+        let variation = plain();
+        let bar = samples(4.0 * song.beat());
+        let (with, without) = (
+            song.instruments(&JAPAN.kit, &variation),
+            as_first.instruments(&JAPAN.kit, &variation),
+        );
+        assert_ne!(
+            with[at * bar..(at + 1) * bar],
+            without[at * bar..(at + 1) * bar]
+        );
+        assert_eq!(with[..bar], without[..bar], "the first part is the motif");
+        // The bass of that part is on the second theme's root.
+        let low = pitch(theme[0].saturating_sub(24));
+        let there = &with[at * bar..at * bar + samples(1.5 * song.beat())];
+        let other = pitch(moved(song.motif, part.shift)[0].saturating_sub(24));
+        assert!(tone(there, low) > tone(there, other), "the bass moved");
+        // A long tune in a part on the second theme plays its notes.
+        for song in STYLES.iter().flat_map(|s| &s.songs) {
+            let mut start = 0;
+            for part in song.parts {
+                if part.b && matches!(part.under, Under::Long { .. }) {
+                    let tune = song.long_tune(&plain());
+                    let note = tune.iter().find(|n| n.at == (start * 4) as f32).unwrap();
+                    let pitches: Vec<u8> = song.theme(part).iter().map(|m| m % 12).collect();
+                    assert!(pitches.contains(&(note.midi % 12)));
+                }
+                start += usize::from(part.bars);
             }
         }
     }

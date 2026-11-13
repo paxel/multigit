@@ -48,6 +48,18 @@ pub fn motto_notes(motto: &[MottoNote], root: u8) -> Vec<(f32, f32, u8)> {
         .collect()
 }
 
+/// The motto as `by` plays it in the key on `root`. The long instrument
+/// plays it an octave up where it would be low, the bass an octave down:
+/// always the whole phrase, so its steps stay what they are.
+pub fn motto_as(motto: &[MottoNote], root: u8, by: MottoBy) -> Vec<(f32, f32, u8)> {
+    let root = match by {
+        MottoBy::Lead => root,
+        MottoBy::Long => sung(root),
+        MottoBy::Bass => root.saturating_sub(12),
+    };
+    motto_notes(motto, root)
+}
+
 /// Who plays the motto when it comes in a song.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MottoBy {
@@ -461,23 +473,23 @@ impl Song {
     }
 
     /// Where the motto comes in this playing of the song, and in which
-    /// key: the first bar of one of the parts whose lead rests, or, in a
-    /// song without such a part, its last two bars. `None` when the motto
-    /// does not come.
+    /// key: the first bar of one of the parts whose lead rests, or the
+    /// song's last two bars. Never its first bars: a song opens with its
+    /// own theme. `None` when the motto does not come.
     pub fn motto_place(&self, variation: &Variation) -> Option<(usize, u8)> {
         variation.motto?;
         let mut places = Vec::new();
         let mut start = 0;
         for part in self.parts {
-            if part.lead == Lead::Tacet && part.bars >= 2 {
-                places.push((start, moved(self.motif, part.shift)[0]));
+            if part.lead == Lead::Tacet && part.bars >= 2 && start > 0 {
+                let [root, ..] = moved(self.motif, part.shift);
+                places.push((start, root));
             }
             start += usize::from(part.bars);
         }
-        if places.is_empty() {
-            let shift = self.parts.last().map_or(0, |p| p.shift);
-            places.push((self.bars().saturating_sub(2), moved(self.motif, shift)[0]));
-        }
+        let shift = self.parts.last().map_or(0, |p| p.shift);
+        let [home, ..] = moved(self.motif, shift);
+        places.push((self.bars().saturating_sub(2), home));
         places.get(variation.spot % places.len()).copied()
     }
 
@@ -493,12 +505,7 @@ impl Song {
             MottoBy::Bass => (kit.bass, 0.3),
         };
         let mut before = None;
-        for (at, beats, midi) in motto_notes(kit.motto, root) {
-            let midi = match by {
-                MottoBy::Lead => midi,
-                MottoBy::Long => sung(midi),
-                MottoBy::Bass => midi.saturating_sub(12),
-            };
+        for (at, beats, midi) in motto_as(kit.motto, root, by) {
             let sound = voice.play_after(before, midi, (beats + 0.3) * beat);
             add(mix, (bar as f32 * 4.0 + at) * beat, &sound, gain);
             before = Some(midi);
@@ -543,9 +550,14 @@ impl Song {
                 0.16,
             );
         }
-        self.motto(kit, variation, &mut mix);
         // In the far space the bass stays out of the echo.
         let mut low = (kit.space == Space::Far).then(|| vec![0.0; mix.len()]);
+        let bass_has_motto = variation.motto == Some(MottoBy::Bass);
+        let motto_into = match low.as_deref_mut() {
+            Some(low) if bass_has_motto => low,
+            _ => &mut mix,
+        };
+        self.motto(kit, variation, motto_into);
         for bar in self.each_bar() {
             let at = bar.number as f32 * 4.0 * beat;
             let [root, third, fifth, _] = self.theme(bar.part);
@@ -749,10 +761,14 @@ impl Link {
         // The motto, from `from` beats on, when this is the style's break
         // for it.
         let has_motto = self == kit.motto_in;
-        let motto = |mix: &mut [f32], voice: Voice, from: f32, gain: f32| {
+        let motto = |mix: &mut [f32], by: MottoBy, from: f32, gain: f32| {
+            let voice = if by == MottoBy::Long {
+                kit.long
+            } else {
+                kit.first
+            };
             let mut before = None;
-            for (at, beats, midi) in motto_notes(kit.motto, a) {
-                let midi = if voice == kit.long { sung(midi) } else { midi };
+            for (at, beats, midi) in motto_as(kit.motto, a, by) {
                 let sound = voice.play_after(before, midi, (beats + 0.3) * beat);
                 add(mix, (from + at) * beat, &sound, gain);
                 before = Some(midi);
@@ -807,7 +823,7 @@ impl Link {
                 ];
                 // The motto takes the place of the tune's first two bars.
                 if has_motto {
-                    motto(&mut mix, kit.long, 1.0, 0.2);
+                    motto(&mut mix, MottoBy::Long, 1.0, 0.2);
                 }
                 let skip = if has_motto { 3 } else { 0 };
                 for (at, beats, midi) in tune.into_iter().skip(skip) {
@@ -831,7 +847,7 @@ impl Link {
                 }
                 roll(&mut mix, beat * 10.5, beat * 0.9, &snare);
                 if has_motto {
-                    motto(&mut mix, kit.first, 2.0, 0.26);
+                    motto(&mut mix, MottoBy::Lead, 2.0, 0.26);
                 }
             }
             Link::Arp => {
@@ -905,7 +921,7 @@ impl Link {
                     add(&mut chord, beat * 0.5, &kit.pad.play(midi, beat * 9.0), 0.1);
                 }
                 if has_motto {
-                    motto(&mut chord, kit.first, 4.0, 0.22);
+                    motto(&mut chord, MottoBy::Lead, 4.0, 0.22);
                 }
                 for (slot, value) in mix.iter_mut().zip(reverb(&chord, 3.0, 0.5)) {
                     *slot += value;
@@ -2260,10 +2276,17 @@ mod tests {
         }
         assert!((140..=260).contains(&with), "{with} of 400");
         assert_eq!(by.len(), 3, "lead, long instrument and bass: {by:?}");
-        // Its places are the parts where the lead rests: bars 0 and 14 here.
+        // Its places are the part where the lead rests (bar 14) and the
+        // song's last two bars; not the resting part the song opens with.
         let mut places: Vec<_> = places.into_iter().collect();
         places.sort_unstable();
-        assert_eq!(places, [0, 14]);
+        assert_eq!(places, [14, 18]);
+        let at_end = Variation {
+            motto: Some(MottoBy::Lead),
+            spot: 1,
+            ..plain()
+        };
+        assert_eq!(song.motto_place(&at_end), Some((18, 50)), "at home");
 
         // Played, it is in those two bars and nowhere else, in the key of
         // its part; each player sounds different.
@@ -2273,7 +2296,7 @@ mod tests {
         for who in [MottoBy::Lead, MottoBy::Long, MottoBy::Bass] {
             let variation = Variation {
                 motto: Some(who),
-                spot: 1,
+                spot: 0,
                 ..plain()
             };
             assert_eq!(
@@ -2328,6 +2351,40 @@ mod tests {
             sung[6 * bar..],
             "the melody left its bars"
         );
+    }
+
+    #[test]
+    fn whoever_plays_the_motto_plays_its_steps_as_they_are_written() {
+        for style in &STYLES {
+            let written: Vec<i16> = style
+                .kit
+                .motto
+                .windows(2)
+                .map(|w| i16::from(w[1].above) - i16::from(w[0].above))
+                .collect();
+            for song in &style.songs {
+                for part in song.parts {
+                    let [root, ..] = moved(song.motif, part.shift);
+                    for by in [MottoBy::Lead, MottoBy::Long, MottoBy::Bass] {
+                        let played = motto_as(style.kit.motto, root, by);
+                        let steps: Vec<i16> = played
+                            .windows(2)
+                            .map(|w| i16::from(w[1].2) - i16::from(w[0].2))
+                            .collect();
+                        assert_eq!(steps, written, "{} on {root} by {by:?}", style.name);
+                        let rhythm: Vec<_> = played.iter().map(|n| (n.0, n.1)).collect();
+                        let lead = motto_as(style.kit.motto, root, MottoBy::Lead);
+                        assert_eq!(rhythm, lead.iter().map(|n| (n.0, n.1)).collect::<Vec<_>>());
+                    }
+                }
+            }
+        }
+        // The long instrument takes a low phrase up an octave, whole.
+        let low = motto_as(TRIPHOP.kit.motto, 50, MottoBy::Long);
+        let lead = motto_as(TRIPHOP.kit.motto, 50, MottoBy::Lead);
+        assert!(low.iter().zip(&lead).all(|(a, b)| a.2 == b.2 + 12));
+        let bass = motto_as(TRIPHOP.kit.motto, 50, MottoBy::Bass);
+        assert!(bass.iter().zip(&lead).all(|(a, b)| a.2 + 12 == b.2));
     }
 
     #[test]

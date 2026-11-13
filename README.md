@@ -259,12 +259,14 @@ the app draws no more often than in the other themes, except for five seconds
 after something changed on a card.
 
 With **Kawaii music** switched on (off at first), the Kawaii theme plays lofi
-beats that multigit makes itself: ten short sequences in random order, joined
-by short breaks (three notes, a drum fill, a hummed "ooh" or "aah"). A
-sequence is slow drums, a soft bass and a melody on a guitar-like or
-piano-like sound that states a four-note theme once and then varies it; under
-it a flute plays the same theme eight times slower, forwards or backwards, or
-a pad holds its chord. No sound
+beats that multigit makes itself, in three themes: Japanese traditional lofi
+(a plucked string, soft keys, a flute), retro gaming lofi (the square and
+triangle waves and noise drums of old consoles) and Babymetal-style lofi (an
+overdriven guitar, a high voice, double bass drums). Each theme has five
+songs of about a minute, which vary a little every time they play, and short
+and long breaks between them. After about five minutes a longer break leads
+into another theme: a radio being tuned, a tape that stops, or a modem
+dialling in. A new volume is heard as soon as the slider is let go. No sound
 files and no network are involved. It plays whenever the app is open in that
 theme, focused or not, through the same player program as the sounds, and has
 its own volume; a change of volume counts from the next passage on.

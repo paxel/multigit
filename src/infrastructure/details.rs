@@ -326,7 +326,8 @@ mod tests {
         repo.git(&["tag", "v1"]);
         repo.git(&["tag", "-a", "-m", "annotated", "v1-annotated"]);
         repo.git(&["branch", "other"]);
-        let tagged = log(&runner, repo.path(), 0, 2).unwrap();
+        let mut tagged = log(&runner, repo.path(), 0, 2).unwrap();
+        tagged[0].tags.sort();
         assert_eq!(tagged[0].tags, ["v1", "v1-annotated"]);
         assert!(tagged[1].tags.is_empty());
         repo.git(&["tag", "-d", "v1", "v1-annotated"]);

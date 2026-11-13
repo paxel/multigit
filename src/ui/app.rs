@@ -22,7 +22,7 @@ use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use crate::domain::status::{RepoState, Upstream};
 use crate::infrastructure::audio::decode;
 use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
-use crate::infrastructure::scan::scan;
+use crate::infrastructure::scan::{is_repo, scan};
 use crate::infrastructure::store::{self, Paths};
 use crate::ui::cli::CliState;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -527,7 +527,7 @@ impl App {
         }
         // Picking a hidden repository itself, not a folder above it, asks
         // for it by name: that unhides it.
-        let picked_itself = found.len() == 1 && folder.join(".git").exists();
+        let picked_itself = found.len() == 1 && is_repo(folder);
         let (mut duplicates, mut hidden) = (0, 0);
         for path in found {
             if self.cards.iter().any(|c| c.path == path) {
@@ -1684,6 +1684,7 @@ pub(crate) mod tests {
             .map(|n| {
                 let p = dir.path().join(n);
                 std::fs::create_dir_all(p.join(".git")).unwrap();
+                std::fs::write(p.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
                 p.canonicalize().unwrap()
             })
             .collect();

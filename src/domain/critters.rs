@@ -186,6 +186,8 @@ impl Troupe {
                 mood_at: f64::MIN,
             });
             self.stirred_at = clock;
+            // A critter that just came sits for a moment before any hops.
+            self.next_hop = self.next_hop.max(clock + 3.0);
         }
     }
 
@@ -399,6 +401,13 @@ mod tests {
             (Species::Bunny.label(), Species::Cat.label()),
             ("bunny", "cat")
         );
+        // Just arrived, nobody hops off at once.
+        let (mut fresh, cards) = super::tests::troupe(32);
+        let seated = fresh.critters.clone();
+        for tenth in 0..29 {
+            fresh.tick(&cards, f64::from(tenth) / 10.0);
+        }
+        assert_eq!(fresh.critters, seated);
         assert!(Troupe::default().critters.is_empty());
         let (none, _) = troupe_of_none();
         assert!(none.critters.is_empty());

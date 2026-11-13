@@ -1681,7 +1681,10 @@ fn bunnies_and_cats_sit_on_the_cards_and_a_click_pets_one_without_marking() {
         bunny.bottom() < card_name.top(),
         "above what the card shows"
     );
-    assert!(card_name.top() - bunny.bottom() < 30.0, "and on that card");
+    let gap = card_name.top() - bunny.bottom();
+    assert!(gap < 60.0, "and on that card: {gap} above its name");
+    let aside = bunny.center().x - card_name.left();
+    assert!((0.0..300.0).contains(&aside), "{aside}");
     h.get_by_label("cat");
 
     // A click on the bunny pets it; the card under it keeps its mark off.

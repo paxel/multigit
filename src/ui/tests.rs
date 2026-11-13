@@ -1229,6 +1229,9 @@ fn the_graph_tab_draws_named_commits_folds_plain_runs_and_picks_a_commit() {
     settle(&mut h, |a| a.repo_view.as_ref().unwrap().graph.is_some());
     h.run();
     h.get_by_label("All branches");
+    // The graph has most of the width: the right pane starts past the middle.
+    let pane = h.get_by_label("Pick a commit to see it.").rect();
+    assert!(pane.left() > 650.0 && pane.left() < 800.0, "{pane:?}");
     // A local branch and its remote branch on one commit share a label.
     h.get_by_label(" main = origin ");
     assert!(h.query_by_label(" origin/main ").is_none());
@@ -1297,6 +1300,9 @@ fn the_commit_list_reads_its_next_page_when_its_end_comes_into_view() {
     h.run();
     assert_eq!(commits(&h), 100);
     assert!(h.state().repo_view.as_ref().unwrap().more_commits);
+    // The list is the narrow side.
+    let pane = h.get_by_label("Pick a commit to see it.").rect();
+    assert!(pane.left() < 500.0, "{pane:?}");
     // Every row is one compact line, the first one too.
     let first = h.get_by_label("AL 0000000 Commit number 0").rect();
     let second = h.get_by_label("AL 0000001 Commit number 1").rect();

@@ -68,9 +68,15 @@ impl App {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
                 Some(Ok(details)) => {
-                    egui::Panel::left("repo-view-lists")
+                    // Each tab has a width of its own, kept while the app
+                    // runs; the graph needs room for lanes, names and titles.
+                    let width = match view.tab {
+                        RepoTab::Files | RepoTab::Commits => LIST_WIDTH,
+                        RepoTab::Graph => (ui.available_width() * GRAPH_SHARE).max(LIST_WIDTH),
+                    };
+                    egui::Panel::left(egui::Id::new(("repo-view-lists", view.tab)))
                         .resizable(true)
-                        .default_size(380.0)
+                        .default_size(width)
                         .show(ui, |ui| match view.tab {
                             RepoTab::Files => file_list(ui, details, view, &mut act),
                             RepoTab::Commits => commit_list(ui, details, view, &mut act),
@@ -99,6 +105,11 @@ impl App {
         }
     }
 }
+
+/// How wide the left side of the Files and Commits tabs is when it opens,
+/// and which share of the dialog the left side of the Graph tab takes.
+const LIST_WIDTH: f32 = 380.0;
+const GRAPH_SHARE: f32 = 0.6;
 
 /// Back and Forward, then the three tabs.
 fn navigation(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {

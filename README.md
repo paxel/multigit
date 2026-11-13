@@ -78,7 +78,7 @@ read-only view of that repository over the board. It has three tabs, and
   diff otherwise.
 - **Commits**, where it opens when the repository is clean: the history of
   the current branch, a row for each commit with the author's initials, the
-  short hash, the title and the age. It reads on when scrolled to its end. A
+  short hash, the tags on it, the title and the age. It reads on when scrolled to its end. A
   picked commit shows its hash, author, date, whole message and the branches
   and tags on it; below that, the files it changed, and a click on a file
   shows what the commit did to it.

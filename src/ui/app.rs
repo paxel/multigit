@@ -220,8 +220,6 @@ pub struct App {
     schedule: Schedule,
     applied_concurrency: usize,
     pub log: OutputLog,
-    /// The output panel is folded away; not saved.
-    pub output_hidden: bool,
     /// The last run the open output panel showed.
     output_seen: Option<u64>,
     pub history: History,
@@ -309,7 +307,6 @@ impl App {
             events,
             schedule: Schedule::default(),
             log: OutputLog::default(),
-            output_hidden: false,
             output_seen: None,
             history,
             cli: CliState::default(),
@@ -3014,6 +3011,28 @@ pub(crate) mod tests {
             store::load_config(&paths.config_file).unwrap().concurrency,
             3
         );
+    }
+
+    #[test]
+    fn the_app_starts_with_the_output_panel_as_it_was_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::in_dirs(dir.path(), dir.path());
+        let mut app = app_with(Arc::default(), Some(paths.clone()));
+        assert!(!app.config.output_hidden, "shown at the first start");
+        app.config.output_hidden = true;
+        app.tick(Instant::now());
+        let stored = store::load_config(&paths.config_file).unwrap();
+        assert!(stored.output_hidden);
+        // The next start reads it.
+        let next = App::new(
+            Ok(stored),
+            Some(paths),
+            History::default(),
+            Arc::new(FakeBackend::default()),
+            Arc::new(FakeDesktop::default()),
+            Arc::new(|| {}),
+        );
+        assert!(next.config.output_hidden);
     }
 
     #[test]

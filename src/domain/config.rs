@@ -125,6 +125,9 @@ pub struct Config {
     /// Volume of beep and boop, in percent.
     #[serde(default = "default_volume")]
     pub sound_volume: u8,
+    /// The output panel is folded away; the app starts as it was left.
+    #[serde(default)]
+    pub output_hidden: bool,
     /// The user's own sound file for the beep; the app's tone without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beep_file: Option<PathBuf>,
@@ -156,6 +159,7 @@ impl Default for Config {
             music_volume: default_music_volume(),
             sounds: false,
             sound_volume: default_volume(),
+            output_hidden: false,
             beep_file: None,
             boop_file: None,
             repos: Vec::new(),
@@ -294,6 +298,17 @@ mod tests {
             Config::from_toml("theme = \"kawaii\"").unwrap().theme,
             Theme::Kawaii
         );
+    }
+
+    #[test]
+    fn hidden_output_panel_survives_the_config_file() {
+        // A file of an older version has no such key: the panel is shown.
+        let mut config = Config::from_toml("concurrency = 2\n").unwrap();
+        assert!(!config.output_hidden);
+        config.output_hidden = true;
+        let back = Config::from_toml(&config.to_toml().unwrap()).unwrap();
+        assert!(back.output_hidden);
+        assert_eq!(back, config);
     }
 
     #[test]

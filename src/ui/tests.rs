@@ -557,14 +557,14 @@ fn output_button_folds_the_panel_away_and_marks_unseen_results() {
     };
     toggle(&h);
     h.run();
-    assert!(h.state().output_hidden);
+    assert!(h.state().config.output_hidden);
     assert!(h.query_by_label("Clear").is_none(), "the panel is gone");
 
     // A command leaves the panel hidden; the button tells its result.
     h.state_mut().start_run("status", vec!["/repo".into()]);
     settle(&mut h, |a| a.cards[0].last_command == Some(true));
     h.run();
-    assert!(h.state().output_hidden);
+    assert!(h.state().config.output_hidden);
     assert_eq!(h.state().unseen_outcome(), Some(Some(true)));
     let mark = format!("Output {}", crate::ui::view::OUTPUT_MARK);
     h.get_by_label(&mark).click();

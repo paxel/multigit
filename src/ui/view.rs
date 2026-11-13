@@ -214,7 +214,7 @@ impl App {
             self.cli_line(ui);
             ui.add_space(4.0);
         });
-        if !self.output_hidden {
+        if !self.config.output_hidden {
             self.output_shown();
             egui::Panel::bottom("output")
                 .resizable(true)
@@ -604,14 +604,14 @@ impl App {
         };
         let mut cli = std::mem::take(&mut self.cli);
         let unseen = self.unseen_outcome();
-        let mut hidden = self.output_hidden;
+        let mut hidden = self.config.output_hidden;
         let actions = ui
             .horizontal(|ui| {
                 output_toggle(ui, &mut hidden, unseen);
                 cli.show(ui, &cx)
             })
             .inner;
-        self.output_hidden = hidden;
+        self.config.output_hidden = hidden;
         self.cli = cli;
         for action in actions {
             match action {

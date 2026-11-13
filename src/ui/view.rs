@@ -94,7 +94,9 @@ fn mark_button(
             what = by.what()
         )
     };
-    let mut button = egui::Button::selectable(pressed, text);
+    // Not `Button::selectable`: that one has no frame until it is pressed,
+    // so the row would read as words and the filter's border would not show.
+    let mut button = egui::Button::new(text).selected(pressed);
     if filtering {
         button = button.stroke(egui::Stroke::new(2.0, ui.visuals().warn_fg_color));
     }

@@ -1136,6 +1136,7 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     assert!(h.query_by_label("ui/deep/").is_none());
     h.get_by_label("A notes.txt");
     h.get_by_label("src/").click();
+    h.run();
     h.get_by_label("ui/deep/").click();
     h.run();
     let pick = |h: &mut Harness<'static, App>, label: &str| {

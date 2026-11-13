@@ -220,13 +220,15 @@ pub fn parse_commit(raw: &str) -> Option<CommitDetail> {
         .collect();
     let message = fields.next()?.trim_end().to_owned();
     let mut files = Vec::new();
+    // git puts a NUL of its own between the message and the files, so an
+    // empty field comes first; no status and no path is ever empty.
+    let mut fields = fields.filter(|field| !field.trim().is_empty());
     while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
         let kind = match status.trim().chars().next() {
             Some('A') => ChangeKind::Added,
             Some('D') => ChangeKind::Deleted,
             Some('U') => ChangeKind::Conflict,
-            Some(_) => ChangeKind::Modified,
-            None => continue,
+            _ => ChangeKind::Modified,
         };
         files.push(FileChange {
             path: path.to_owned(),
@@ -819,6 +821,12 @@ mod tests {
                 ("old.rs", Deleted),
                 ("link", Modified)
             ]
+        );
+        // As git writes it: a NUL of its own before the files.
+        let real = parse_commit("abcd\0A\0a@b\0d\0\0msg\n\0\0A\0b.txt\0M\0c d.txt\0").unwrap();
+        assert_eq!(
+            real.files,
+            [file("b.txt", Added), file("c d.txt", Modified)]
         );
         // No names, no files: a commit that changed nothing, with HEAD
         // detached on it.

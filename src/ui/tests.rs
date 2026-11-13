@@ -1316,6 +1316,8 @@ fn the_commit_list_reads_its_next_page_when_its_end_comes_into_view() {
         });
         h.step();
     }
+    // Off the list again: a pointer resting on a row shows its tooltip.
+    h.event(egui::Event::PointerGone);
     settle(&mut h, |a| {
         let view = a.repo_view.as_ref().unwrap();
         view.details

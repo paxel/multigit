@@ -159,9 +159,13 @@ emoji. A repository can be in several.
 - **Card buttons** run in that one repository. The defaults are
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
 - **Marking**: a click on a card marks it, a second click unmarks it; marked
-  cards get a coloured border. The toolbar marks all, none, dirty (changes or
+  cards get a coloured border. The toolbar marks all, dirty (changes or
   an operation in progress), behind (unpulled commits) or ahead (unpushed
-  commits). The toolbar repeats the card buttons
+  commits). These buttons work like the station buttons of a radio: the
+  clicked one stays pressed until another is clicked. A click on the pressed
+  button marks the other cards instead (its text is struck through then), the
+  next click the first ones again; a second click on **all** leaves nothing
+  marked. Marking a card by hand does not release the button. The toolbar repeats the card buttons
   for all marked repositories.
 - **Copying**: a click on a card's folder name, branch name (or the sha of a
   detached HEAD) or tag copies it to the clipboard instead of marking the

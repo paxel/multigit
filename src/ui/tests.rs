@@ -520,10 +520,42 @@ fn fetch_error_is_one_line_and_a_click_copies_all_of_it_and_removes_it() {
 }
 
 #[test]
+fn mark_buttons_stay_pressed_and_a_second_click_marks_the_others() {
+    use crate::ui::app::MarkBy;
+    let mut app = app_with(Arc::default(), None);
+    app.cards = vec![card("/r/a"), card("/r/b")];
+    let mut h = harness(app);
+    h.run();
+    // The row is all, dirty, behind, ahead: "none" is the second click on "all".
+    assert!(h.query_by_label("none").is_none());
+    for label in ["dirty", "behind", "ahead"] {
+        h.get_by_label(label);
+    }
+    h.get_by_label("all").click();
+    h.run();
+    assert_eq!(h.state().pressed_mark, Some((MarkBy::All, false)));
+    assert_eq!(h.state().marked.len(), 2);
+    h.get_by_label("all").click();
+    h.run();
+    assert_eq!(h.state().pressed_mark, Some((MarkBy::All, true)));
+    assert!(h.state().marked.is_empty());
+    // Another button takes over; nothing here is behind, so its second
+    // click marks every card.
+    h.get_by_label("behind").click();
+    h.run();
+    assert_eq!(h.state().pressed_mark, Some((MarkBy::Behind, false)));
+    assert!(h.state().marked.is_empty());
+    h.get_by_label("behind").click();
+    h.run();
+    assert_eq!(h.state().pressed_mark, Some((MarkBy::Behind, true)));
+    assert_eq!(h.state().marked.len(), 2);
+}
+
+#[test]
 fn filter_field_hides_cards_and_counts_the_shown_ones() {
     let mut app = app_with(Arc::default(), None);
     app.cards = vec![card("/r/etl-load"), card("/r/web"), card("/r/Etl-store")];
-    app.mark_all();
+    app.press_mark(crate::ui::app::MarkBy::All);
     let mut h = harness(app);
     h.run();
     assert!(

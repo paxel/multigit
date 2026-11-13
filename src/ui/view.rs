@@ -14,7 +14,7 @@ use crate::domain::status::{Head, RepoState, Upstream};
 use crate::domain::switch::{
     Choice, branch_choices, matching, new_branch_command, remote_choices, tag_choices,
 };
-use crate::ui::app::{App, Card, CopyFlash};
+use crate::ui::app::{App, Card, CopyFlash, MarkBy};
 use crate::ui::cli::{CliAction, CliContext};
 use crate::ui::critter;
 use crate::ui::settings;
@@ -70,6 +70,22 @@ fn swatch(ui: &mut Ui, text: &str, rgb: [u8; 3], picked: bool, small: bool) -> e
         button = button.stroke(egui::Stroke::new(width, ui.visuals().strong_text_color()));
     }
     ui.add(button)
+}
+
+/// A mark button of the toolbar: filled while it is pressed, its text
+/// struck through while it marks the cards that do not fit it.
+fn mark_button(ui: &mut Ui, by: MarkBy, pressed: bool, inverted: bool) -> egui::Response {
+    let mut text = RichText::new(by.label());
+    if inverted {
+        text = text.strikethrough();
+    }
+    let hint = if by == MarkBy::All {
+        "Click: mark all repositories. Again: mark none.".to_owned()
+    } else {
+        format!("Click: mark {}. Again: mark all others instead.", by.what())
+    };
+    ui.add(egui::Button::selectable(pressed, text))
+        .on_hover_text(hint)
 }
 
 fn favorite_button(ui: &mut Ui, favorite: &Favorite, active: bool) -> egui::Response {
@@ -417,28 +433,14 @@ impl App {
         }
         ui.separator();
         ui.label("Mark:");
-        if ui.button("all").clicked() {
-            self.mark_all();
-        }
-        if ui.button("none").clicked() {
-            self.mark_none();
-        }
-        if ui.button("dirty").clicked() {
-            self.mark_dirty();
-        }
-        if ui
-            .button("behind")
-            .on_hover_text("Mark the repositories with unpulled commits")
-            .clicked()
-        {
-            self.mark_behind();
-        }
-        if ui
-            .button("ahead")
-            .on_hover_text("Mark the repositories with unpushed commits")
-            .clicked()
-        {
-            self.mark_ahead();
+        for by in MarkBy::EACH {
+            let (pressed, inverted) = match self.pressed_mark {
+                Some((button, inverted)) if button == by => (true, inverted),
+                _ => (false, false),
+            };
+            if mark_button(ui, by, pressed, inverted).clicked() {
+                self.press_mark(by);
+            }
         }
         ui.separator();
         let marked = self.marked_repos().len();

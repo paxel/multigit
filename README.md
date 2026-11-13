@@ -81,8 +81,10 @@ read-only view of that repository over the board. It has three tabs, and
   short hash, the tags on it, the title and the age. It reads on when scrolled to its end. A
   picked commit shows its hash, author, date, whole message and the branches
   and tags on it, and a click on one of these but the message copies it;
-  below that, the files it changed, and a click on a file shows what the
-  commit did to it.
+  it names the committer when that is not the author, and its parents, where
+  a click goes to that commit. Below that, the files it changed with the
+  lines added and removed, and a click on a file shows what the commit did
+  to it.
 - **Graph**: all local and remote branches as a graph of the commits that
   matter (branch tips, tags, merges, and where branches part). Runs of
   commits between them are one row that unfolds on a click. Remote branches

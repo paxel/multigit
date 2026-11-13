@@ -8,7 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- The Kawaii music has five themes, each with its own instruments, songs and breaks: Japanese traditional lofi, retro gaming lofi, Babymetal-style lofi, Cajun porch lofi (a banjo, a fiddle, a washtub bass, a washboard, a jaw harp) and trip-hop lofi (a theremin over a slow beat on a crackling record, with bombs and a call far away). After each song it stays in the theme or, one time in four, changes to another with a longer break between the two; among those breaks are a modem dialling in and a record scratch. Settings has a checkbox for each theme; with a single theme checked the music never leaves it.
+- The Kawaii music has five themes, each with its own instruments, songs and breaks: Japanese traditional lofi, retro gaming lofi, Babymetal-style lofi, Cajun porch lofi (a banjo, a fiddle, a washtub bass, a washboard, a jaw harp) and trip-hop lofi (a theremin over a slow beat on a crackling record, with bombs and a call far away). After each song it stays in the theme or, one time in four, changes to another with a longer break between the two; among those breaks are a modem dialling in and a record scratch.
+- Settings has a checkbox for each theme of the Kawaii music: only the checked themes play, and with a single one checked the music never leaves it.
 - Bunnies and cats live on the cards in the Kawaii theme. They blink, wiggle their ears, hop from card to card and sleep while nothing happens; they look up at a new remote commit, dance for a local one, let their ears hang over a failed fetch, look at the pointer and jump with a heart when clicked.
 - In the Kawaii theme a card throws a burst of hearts and stars when a command on it ends well.
 - Every card shows the remote its branch tracks, as a short URL with the protocol first (`ssh github.com/paxel/multigit`); a click copies the URL. A branch that pushes to another remote says so.

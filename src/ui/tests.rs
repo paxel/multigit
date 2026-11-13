@@ -1222,7 +1222,10 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
         assert!(h.state().copy_flash.is_some(), "{label}");
         // Off the value again: a resting pointer would show its tooltip.
         h.event(egui::Event::PointerGone);
-        h.run();
+        // Until "Copied" has faded.
+        for _ in 0..5 {
+            h.step();
+        }
     }
     // The message is for marking: a click on it copies nothing.
     h.get_by_label("Fix the thing\n\nBecause it was broken.")

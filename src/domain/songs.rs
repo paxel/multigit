@@ -120,7 +120,8 @@ pub struct Variation {
 impl Variation {
     /// The variation `seed` stands for, in a song of `bars` bars.
     pub fn of(seed: u64, bars: usize) -> Self {
-        let a = shuffle(seed);
+        // Seeds that lie close together must not give variations that do.
+        let a = shuffle(shuffle(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)));
         let b = shuffle(a);
         let c = shuffle(b);
         let inner = bars.saturating_sub(2).max(1) as u64;

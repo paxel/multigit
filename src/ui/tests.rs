@@ -1089,9 +1089,33 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     h.get_by_label("aaaabbbb");
     h.get_by_label(" main ");
     h.get_by_label(" v9 ");
-    h.get_by_label("Ada Lovelace <ada@example.org>");
+    h.get_by_label("<ada@example.org>");
     h.get_by_label("2026-11-12 20:03");
     h.get_by_label("Fix the thing\n\nBecause it was broken.");
+    // A click on a value of the header copies it, as on a card.
+    for (label, copy) in [
+        ("aaaabbbb", "aaaabbbb"),
+        (" main ", "main"),
+        (" v9 ", "v9"),
+        ("Ada Lovelace", "Ada Lovelace"),
+        ("<ada@example.org>", "ada@example.org"),
+        ("2026-11-12 20:03", "2026-11-12 20:03"),
+    ] {
+        h.get_by_label(label).click();
+        h.step();
+        assert_eq!(copied(&h), vec![copy.to_owned()], "{label}");
+        assert!(h.state().copy_flash.is_some(), "{label}");
+        // Off the value again: a resting pointer would show its tooltip.
+        h.event(egui::Event::PointerGone);
+        h.run();
+    }
+    // The message is for marking: a click on it copies nothing.
+    h.get_by_label("Fix the thing\n\nBecause it was broken.")
+        .click();
+    h.step();
+    assert!(copied(&h).is_empty());
+    h.event(egui::Event::PointerGone);
+    h.run();
     // Its files, folded; a click unfolds the diff of one in place.
     h.get_by_label("2 files changed");
     h.get_by_label("A docs/new.md");
@@ -1106,7 +1130,7 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     h.get_by_label("+after in src/main.rs");
     h.get_by_label("-before");
     h.get_by_label("A docs/new.md");
-    h.get_by_label("Ada Lovelace <ada@example.org>");
+    h.get_by_label("<ada@example.org>");
     h.get_by_label("M src/main.rs").click();
     h.run();
     assert!(h.query_by_label("+after in src/main.rs").is_none());
@@ -1254,7 +1278,7 @@ fn the_graph_tab_draws_named_commits_folds_plain_runs_and_picks_a_commit() {
     settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
     h.run();
     h.get_by_label("2 files changed");
-    h.get_by_label("Ada Lovelace <ada@example.org>");
+    h.get_by_label("<ada@example.org>");
 
     // Old remote branches are left out behind a line that shows them.
     assert!(h.query_by_label(" origin/ancient ").is_none());

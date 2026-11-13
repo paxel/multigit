@@ -30,6 +30,8 @@ enum Act {
     /// Draw the old remote branches too.
     Old,
     Select(DiffTarget),
+    /// Put this text on the clipboard; the click was there.
+    Copy(String, egui::Pos2),
 }
 
 impl App {
@@ -101,6 +103,7 @@ impl App {
             Some(Act::Run(first)) => self.unfold_graph_run(&first),
             Some(Act::Old) => self.show_old_branches(),
             Some(Act::Select(target)) => self.select_in_repo_view(target),
+            Some(Act::Copy(text, at)) => self.copy(ui, text, at),
             None => {}
         }
     }
@@ -504,6 +507,21 @@ enum CommitRow<'a> {
 
 /// The picked commit: its header, which stays in place, and under it the
 /// files it changed. A click on a file unfolds its diff in place.
+/// A value of the commit pane that goes to the clipboard on a click, like
+/// the values of a card; `hover` says what is copied.
+fn copy_value(ui: &mut Ui, text: RichText, copy: &str, hover: &str, act: &mut Option<Act>) {
+    let value = ui
+        .add(egui::Label::new(text).sense(egui::Sense::click()))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(hover);
+    if value.clicked() {
+        let at = value
+            .interact_pointer_pos()
+            .unwrap_or_else(|| value.rect.center());
+        *act = Some(Act::Copy(copy.to_owned(), at));
+    }
+}
+
 fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
     let Some(commit) = parse_commit(raw) else {
         ui.weak("this commit cannot be read");
@@ -511,15 +529,15 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
     };
     ui.horizontal_wrapped(|ui| {
         let short: String = commit.hash.chars().take(10).collect();
-        ui.label(RichText::new(short).monospace().strong())
-            .on_hover_text(&commit.hash);
+        let hover = format!("{}\nA click copies the hash", commit.hash);
+        let short = RichText::new(short).monospace().strong();
+        copy_value(ui, short, &commit.hash, &hover, act);
         for name in &commit.refs {
-            ui.label(
-                RichText::new(format!(" {name} "))
-                    .monospace()
-                    .background_color(ui.visuals().faint_bg_color)
-                    .color(ui.visuals().strong_text_color()),
-            );
+            let label = RichText::new(format!(" {name} "))
+                .monospace()
+                .background_color(ui.visuals().faint_bg_color)
+                .color(ui.visuals().strong_text_color());
+            copy_value(ui, label, name, "A click copies the name", act);
         }
     });
     ui.horizontal_wrapped(|ui| {
@@ -529,8 +547,12 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
                 .monospace()
                 .color(color),
         );
-        ui.label(format!("{} <{}>", commit.author, commit.email));
-        ui.weak(&commit.date);
+        let author = RichText::new(&commit.author);
+        copy_value(ui, author, &commit.author, "A click copies the name", act);
+        let mail = RichText::new(format!("<{}>", commit.email));
+        copy_value(ui, mail, &commit.email, "A click copies the address", act);
+        let date = RichText::new(&commit.date).weak();
+        copy_value(ui, date, &commit.date, "A click copies the date", act);
     });
     egui::ScrollArea::vertical()
         .id_salt("repo-view-message")

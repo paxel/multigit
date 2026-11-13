@@ -584,7 +584,7 @@ impl App {
     }
 
     /// Put `text` on the clipboard and start the "Copied" animation at `at`.
-    fn copy(&mut self, ui: &Ui, text: String, at: egui::Pos2) {
+    pub(super) fn copy(&mut self, ui: &Ui, text: String, at: egui::Pos2) {
         ui.ctx().copy_text(text);
         self.copy_flash = Some(CopyFlash {
             at,

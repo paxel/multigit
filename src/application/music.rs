@@ -1,10 +1,10 @@
-//! Plays the Kawaii theme's music: a thread that makes one passage after
-//! the other and waits for the player to finish each. It asks for no frame
-//! and needs none, so the music goes on in a minimised window.
+//! Plays the Kawaii theme's music: a thread that plays one passage after
+//! the other, each made while the one before it plays. It asks for no
+//! frame and needs none, so the music goes on in a minimised window.
 
 use crate::application::desktop::Desktop;
 use crate::domain::audio::{SAMPLE_RATE, wav_bytes};
-use crate::domain::lofi::{SEQUENCES, next_break, next_sequence, shuffle};
+use crate::domain::songs::Program;
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -36,8 +36,8 @@ fn samples_in(seconds: f64) -> usize {
 }
 
 impl Music {
-    /// Start playing: sequences in an order drawn from `seed`, a break
-    /// between every two.
+    /// Start playing what the program drawn from `seed` says: songs with
+    /// a break between every two.
     pub fn start(desktop: Arc<dyn Desktop>, write: WriteWav, volume: u8, seed: u64) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let halt = Arc::new(AtomicBool::new(false));
@@ -74,25 +74,20 @@ impl Music {
                     }
                     Ok(())
                 };
-                let mut random = seed;
-                let mut previous = None;
+                let mut program = Program::new(seed);
+                let styles = program.styles();
+                let mut ready = program.next_passage().render(styles);
                 while !stop.load(Ordering::SeqCst) {
-                    random = shuffle(random);
-                    let index = next_sequence(previous, random);
-                    let Some(sequence) = SEQUENCES.get(index) else {
-                        break;
-                    };
-                    // A break leads into every sequence but the first. Both
-                    // are made before either plays, so no silence the length
-                    // of the making falls between them.
-                    let lead_in = previous.map(|_| next_break(random >> 8).render(sequence));
-                    let rendered = sequence.render();
-                    let played = lead_in.map_or(Ok(()), play).and_then(|()| play(rendered));
+                    // The next passage is made while this one plays, so no
+                    // silence the length of the making falls between them.
+                    let upcoming = program.next_passage();
+                    let making = std::thread::spawn(move || upcoming.render(styles));
+                    let played = play(ready);
+                    ready = making.join().unwrap_or_default();
                     if let Err(e) = played {
                         *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.to_string());
                         break;
                     }
-                    previous = Some(index);
                 }
             })
         };
@@ -192,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn plays_a_sequence_then_break_and_sequence_until_it_is_dropped() {
+    fn plays_a_song_then_break_and_song_until_it_is_dropped() {
         let dir = tempfile::tempdir().unwrap();
         let player = Arc::new(FakePlayer {
             pass: 2,
@@ -205,10 +200,10 @@ mod tests {
         });
         let lengths = player.played.lock().unwrap().clone();
         let seconds = |bytes: usize| (bytes - 44) as f32 / 2.0 / SAMPLE_RATE as f32;
-        // A sequence, then a short break, then the next sequence.
-        assert!((10.0..=30.0).contains(&seconds(lengths[0])), "{lengths:?}");
-        assert!(seconds(lengths[1]) < 5.0, "{lengths:?}");
-        assert!((10.0..=30.0).contains(&seconds(lengths[2])), "{lengths:?}");
+        // A song, then a break, then the next song.
+        assert!((54.0..=66.0).contains(&seconds(lengths[0])), "{lengths:?}");
+        assert!(seconds(lengths[1]) < 16.0, "{lengths:?}");
+        assert!((54.0..=66.0).contains(&seconds(lengths[2])), "{lengths:?}");
         assert_eq!(music.take_error(), None);
         // Dropping stops the passage that is playing and ends the thread.
         drop(music);

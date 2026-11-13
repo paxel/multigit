@@ -16,5 +16,6 @@ pub mod lofi;
 pub mod naming;
 pub mod output;
 pub mod repo;
+pub mod songs;
 pub mod status;
 pub mod switch;

@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Bunnies and cats live on the cards in the Kawaii theme. They blink, wiggle their ears, hop from card to card and sleep while nothing happens; they look up at a new remote commit, dance for a local one, let their ears hang over a failed fetch, look at the pointer and jump with a heart when clicked.
 - In the Kawaii theme a card throws a burst of hearts and stars when a command on it ends well.
 - Every card shows the remote its branch tracks, as a short URL with the protocol first (`ssh github.com/paxel/multigit`); a click copies the URL. A branch that pushes to another remote says so.
+- A right click on a card's remote lists the remotes of the repository; picking one makes the branch track the branch of the same name there.
 
 ### Changed
 

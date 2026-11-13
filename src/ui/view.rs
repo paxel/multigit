@@ -7,10 +7,13 @@ use crate::domain::favorites::{EMOJIS, Favorite, PALETTE, color_rgb, dark_text_o
 use crate::domain::kawaii;
 use crate::domain::naming::{parent_line, title};
 use crate::domain::output::{Run, SectionState};
+use crate::domain::remote::remote_of;
 use crate::domain::remote::{safe_url, short_url};
 use crate::domain::repo::Snapshot;
 use crate::domain::status::{Head, RepoState, Upstream};
-use crate::domain::switch::{Choice, branch_choices, matching, new_branch_command, tag_choices};
+use crate::domain::switch::{
+    Choice, branch_choices, matching, new_branch_command, remote_choices, tag_choices,
+};
 use crate::ui::app::{App, Card, CopyFlash};
 use crate::ui::cli::{CliAction, CliContext};
 use crate::ui::critter;
@@ -1418,21 +1421,69 @@ fn tag_texts(
     }
 }
 
+/// The right-click menu of a card's remote line: the remotes of the
+/// repository. Picking one makes the branch track its namesake there; a
+/// remote without that branch cannot be picked.
+fn remote_menu(
+    anchor: &egui::Response,
+    path: &Path,
+    snap: &Snapshot,
+    actions: &mut Vec<BoardAction>,
+) {
+    egui::Popup::context_menu(anchor).show(|ui| {
+        ui.set_min_width(240.0);
+        let branch = match &snap.status.head {
+            Head::Branch(branch) => Some(branch.as_str()),
+            Head::Unborn(_) | Head::Detached(_) => None,
+        };
+        ui.strong(match branch {
+            Some(branch) => format!("Remote of {branch}"),
+            None => "Remotes".to_owned(),
+        });
+        let tracking = snap.status.tracking.as_deref();
+        let tracked = tracking
+            .and_then(|upstream| remote_of(&snap.remotes, upstream))
+            .map(|remote| remote.name.as_str());
+        for choice in remote_choices(branch, tracked, &snap.remotes, &snap.dated) {
+            let text = RichText::new(&choice.label).monospace();
+            match choice.command {
+                Some(command) => {
+                    if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                        actions.push(BoardAction::Run(path.to_path_buf(), command));
+                        ui.close();
+                    }
+                }
+                None => {
+                    let why = match (choice.current, branch) {
+                        (true, _) => "The branch tracks this remote".to_owned(),
+                        (false, Some(branch)) => format!("This remote has no branch {branch}"),
+                        (false, None) => "No branch is checked out".to_owned(),
+                    };
+                    let entry = egui::Button::selectable(choice.current, text);
+                    ui.add_enabled(false, entry).on_disabled_hover_text(why);
+                }
+            }
+        }
+    });
+}
+
 /// The card's remote line: the remote the branch tracks, its URL written
-/// short with the protocol first; a click copies the URL as git has it. A
-/// second line only when the branch pushes to another remote.
+/// short with the protocol first; a click copies the URL as git has it, a
+/// right click lists the remotes to switch to. A second line only when the
+/// branch pushes to another remote.
 fn remote_lines(ui: &mut Ui, path: &Path, snap: &Snapshot, actions: &mut Vec<BoardAction>) {
     ui.horizontal(|ui| {
         let Some(remote) = snap.remote() else {
-            let none = if snap.remotes.is_empty() {
-                "no remote"
+            if snap.remotes.is_empty() {
+                menu_anchor(ui, weak("no remote"), path, actions);
             } else {
-                "no remote for this branch"
-            };
-            menu_anchor(ui, weak(none), path, actions);
+                let none = menu_anchor(ui, weak("no remote for this branch"), path, actions);
+                remote_menu(&none, path, snap, actions);
+            }
             return;
         };
-        menu_anchor(ui, weak("remote"), path, actions);
+        let word = menu_anchor(ui, weak("remote"), path, actions);
+        remote_menu(&word, path, snap, actions);
         let text = RichText::new(short_url(&remote.url)).monospace();
         let line = egui::Label::new(text)
             .truncate()
@@ -1449,6 +1500,7 @@ fn remote_lines(ui: &mut Ui, path: &Path, snap: &Snapshot, actions: &mut Vec<Boa
                 .unwrap_or_else(|| url.rect.center());
             actions.push(BoardAction::Copy(remote.url.clone(), at));
         }
+        remote_menu(&url, path, snap, actions);
     });
     if let Some(push) = snap.push_remote() {
         ui.horizontal(|ui| {

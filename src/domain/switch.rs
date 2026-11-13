@@ -1,5 +1,6 @@
 //! What the right-click menus on a card's branch and tag offer.
 
+use crate::domain::remote::{Remote, short_url};
 use crate::domain::repo::{DatedRef, DatedRefs};
 use std::borrow::Cow;
 
@@ -67,6 +68,46 @@ pub fn tag_choices(dated: &DatedRefs) -> Vec<Choice> {
         .collect()
 }
 
+/// One remote in the menu of a card's remote line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteChoice {
+    /// As the menu shows it: the name and the short URL.
+    pub label: String,
+    /// The branch tracks this remote already.
+    pub current: bool,
+    /// The git arguments that make the branch track its namesake on this
+    /// remote; `None` when the remote has no such branch, or no branch is
+    /// checked out.
+    pub command: Option<String>,
+}
+
+/// The remotes to move the upstream of `branch` to; `tracked` is the name
+/// of the remote it tracks now. Only a remote that has a branch of the same
+/// name can be picked.
+pub fn remote_choices(
+    branch: Option<&str>,
+    tracked: Option<&str>,
+    remotes: &[Remote],
+    dated: &DatedRefs,
+) -> Vec<RemoteChoice> {
+    remotes
+        .iter()
+        .map(|remote| {
+            let current = tracked == Some(remote.name.as_str());
+            let there = branch
+                .map(|branch| format!("{}/{branch}", remote.name))
+                .filter(|name| dated.remote_branches.iter().any(|b| &b.name == name));
+            RemoteChoice {
+                label: format!("{}  {}", remote.name, short_url(&remote.url)),
+                current,
+                command: there
+                    .filter(|_| !current)
+                    .map(|name| format!("branch {}", quote(&format!("--set-upstream-to={name}")))),
+            }
+        })
+        .collect()
+}
+
 /// The choices whose label contains `filter`, case ignored.
 pub fn matching<'a>(choices: &'a [Choice], filter: &str) -> Vec<&'a Choice> {
     let needle = filter.trim().to_lowercase();
@@ -100,6 +141,59 @@ mod tests {
             .iter()
             .map(|c| (c.label.as_str(), c.command.as_str()))
             .collect()
+    }
+
+    #[test]
+    fn the_upstream_moves_only_to_a_remote_that_has_the_branch() {
+        let remote = |name: &str, url: &str| Remote {
+            name: name.into(),
+            url: url.into(),
+        };
+        let remotes = [
+            remote("origin", "https://example.org/team/x.git"),
+            remote("fork", "git@github.com:me/x.git"),
+            remote("mirror", "/srv/x.git"),
+        ];
+        let refs = DatedRefs {
+            branches: vec![dated("main", 1), dated("my topic", 1)],
+            remote_branches: vec![
+                dated("origin/main", 1),
+                dated("fork/main", 1),
+                dated("fork/my topic", 1),
+                dated("mirror/other", 1),
+            ],
+            tags: vec![],
+        };
+        let rows = |branch, tracked| -> Vec<(String, bool, Option<String>)> {
+            remote_choices(branch, tracked, &remotes, &refs)
+                .into_iter()
+                .map(|c| (c.label, c.current, c.command))
+                .collect()
+        };
+        let command = |name: &str| Some(format!("branch --set-upstream-to={name}"));
+        assert_eq!(
+            rows(Some("main"), Some("origin")),
+            [
+                ("origin  https example.org/team/x".to_owned(), true, None),
+                (
+                    "fork  ssh github.com/me/x".to_owned(),
+                    false,
+                    command("fork/main")
+                ),
+                ("mirror  file /srv/x".to_owned(), false, None),
+            ]
+        );
+        // Without an upstream every remote that has the branch can be picked.
+        let free = rows(Some("main"), None);
+        assert_eq!(free[0].2, command("origin/main"));
+        assert!(!free[0].1);
+        // A name with a blank is one argument.
+        assert_eq!(
+            rows(Some("my topic"), None)[1].2.as_deref(),
+            Some("branch '--set-upstream-to=fork/my topic'")
+        );
+        // No branch checked out: nothing to move.
+        assert!(rows(None, None).iter().all(|row| row.2.is_none()));
     }
 
     #[test]

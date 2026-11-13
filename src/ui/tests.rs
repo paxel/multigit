@@ -293,6 +293,58 @@ fn card_shows_the_remote_of_its_branch_and_a_click_copies_its_url() {
 }
 
 #[test]
+fn right_click_on_the_remote_moves_the_upstream_to_another_remote() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut app = marked_app(backend.clone(), &[]);
+    let dated = |name: &str| crate::domain::repo::DatedRef {
+        name: name.into(),
+        commit: String::new(),
+        date: 1,
+    };
+    let Some(Ok(snap)) = &mut app.cards[0].probe else {
+        panic!("no snapshot");
+    };
+    snap.remotes = vec![
+        remote("origin", "https://example.org/team/multigit.git"),
+        remote("fork", "git@github.com:paxel/multigit.git"),
+        remote("mirror", "/srv/mirror.git"),
+    ];
+    snap.dated.remote_branches = vec![dated("origin/main"), dated("fork/main")];
+    snap.status.tracking = Some("origin/main".into());
+    let mut h = harness(app);
+    h.run();
+    assert!(h.query_by_label("Remote of main").is_none());
+    h.get_by_label("https example.org/team/multigit")
+        .click_secondary();
+    h.run();
+    h.get_by_label("Remote of main");
+    // The one it tracks and the one without a branch main cannot be picked.
+    let off = |h: &Harness<'static, App>, label: &str| {
+        use egui_kittest::kittest::NodeT;
+        h.get_by_label(label).accesskit_node().is_disabled()
+    };
+    assert!(off(&h, "origin  https example.org/team/multigit"));
+    assert!(off(&h, "mirror  file /srv/mirror"));
+    assert!(!off(&h, "fork  ssh github.com/paxel/multigit"));
+    h.get_by_label("fork  ssh github.com/paxel/multigit")
+        .click();
+    h.run();
+    assert!(
+        h.query_by_label("Remote of main").is_none(),
+        "the menu closed"
+    );
+    settle(&mut h, |a| a.cards[0].last_command == Some(true));
+    let moved = (
+        PathBuf::from("/repo"),
+        vec![
+            "branch".to_owned(),
+            "--set-upstream-to=fork/main".to_owned(),
+        ],
+    );
+    assert_eq!(backend.runs.lock().unwrap().last(), Some(&moved));
+}
+
+#[test]
 fn right_click_removes_or_hides_the_marked_cards_and_settings_unhides() {
     let mut h = favorites_app();
     // An unmarked card: it alone is removed.

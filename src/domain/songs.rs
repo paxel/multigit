@@ -6,7 +6,7 @@
 //! After a song, one time in four, a change break leads into another style.
 
 use crate::domain::lofi::{
-    Drums, Noise, RATE, Voice, Vowel, add, finish, pitch, samples, shuffle, voice,
+    Drums, Noise, RATE, Voice, Vowel, add, finish, jaw_harp, pitch, samples, shuffle, voice,
 };
 use std::f32::consts::TAU;
 
@@ -476,12 +476,20 @@ pub enum Link {
     Blast,
     /// Long: the motif sung a note a beat over struck chords.
     Chant,
+    /// A roll: the first melody instrument picks the chord's notes in
+    /// sixteenths, as a banjo does.
+    Rolls,
+    /// A jaw harp twangs three times on the next song's first note.
+    Twang,
+    /// Long: a porch. A foot stomps, the jaw harp twangs, the bass starts
+    /// to walk and the first melody instrument picks its way in.
+    Porch,
 }
 
 impl Link {
     fn bars(self) -> f32 {
         match self {
-            Link::Solo | Link::Chant => 4.0,
+            Link::Solo | Link::Chant | Link::Porch => 4.0,
             Link::Build | Link::Climb => 3.0,
             _ => 1.0,
         }
@@ -621,6 +629,50 @@ impl Link {
                         add(&mut mix, beat * f32::from(sixteenth) * 0.25, &snare, 0.5);
                     }
                 }
+            }
+            Link::Rolls => {
+                let picked = [a, c, d, a + 12, c, d, a, c, d, a + 12];
+                for (i, midi) in picked.into_iter().enumerate() {
+                    let sound = kit.first.play(midi, beat * 0.6);
+                    add(&mut mix, beat * (0.5 + i as f32 * 0.25), &sound, 0.26);
+                }
+                add(&mut mix, beat * 3.0, &kit.first.play(a, beat * 0.9), 0.26);
+            }
+            Link::Twang => {
+                let low = pitch(a.saturating_sub(24));
+                for (at, beats) in [(0.5, 0.9), (1.5, 0.7), (2.25, 1.5)] {
+                    let twang = jaw_harp(low, beat * beats, 2.0 / beat);
+                    add(&mut mix, beat * at, &twang, 0.4);
+                }
+            }
+            Link::Porch => {
+                let low = pitch(a.saturating_sub(24));
+                for bar in 0..4u8 {
+                    let start = beat * f32::from(bar) * 4.0;
+                    add(&mut mix, start + beat * 0.5, &kick, 0.9);
+                    add(&mut mix, start + beat * 2.5, &kick, 0.9);
+                    let twang = jaw_harp(low, beat * 3.0, 2.0 / beat);
+                    add(&mut mix, start + beat * 0.5, &twang, 0.3);
+                    if bar >= 1 {
+                        add(&mut mix, start + beat * 1.5, &snare, 0.65);
+                        add(&mut mix, start + beat * 3.5, &snare, 0.65);
+                        for (i, midi) in [a, c].into_iter().enumerate() {
+                            let walked = kit.bass.play(midi.saturating_sub(24), beat * 1.6);
+                            add(
+                                &mut mix,
+                                start + beat * (0.5 + 2.0 * i as f32),
+                                &walked,
+                                0.3,
+                            );
+                        }
+                    }
+                }
+                let picked = [a, b, c, d, c, b, a, b, c, d, c, b];
+                for (i, midi) in picked.into_iter().enumerate() {
+                    let sound = kit.first.play(midi, beat * 0.7);
+                    add(&mut mix, beat * (8.5 + i as f32 * 0.5), &sound, 0.26);
+                }
+                add(&mut mix, beat * 14.5, &kit.first.play(a + 12, beat), 0.26);
             }
             Link::Chant => {
                 let sung_notes = [a, b, c, d, c, b, a, a, b, c, d, d];
@@ -1088,7 +1140,100 @@ pub const METAL: Style = Style {
 };
 
 /// The styles the music moves through.
-pub static STYLES: [Style; 3] = [JAPAN, RETRO, METAL];
+/// Cajun porch lofi: a banjo leads and a fiddle answers and plays the long
+/// tunes, over a washtub bass, a stomping foot and a washboard.
+pub const CAJUN: Style = Style {
+    name: "Cajun porch lofi",
+    label: "Cajun",
+    kit: Kit {
+        first: Voice::Banjo,
+        second: Voice::Fiddle,
+        long: Voice::Fiddle,
+        pad: Voice::Fiddle,
+        bass: Voice::Washtub,
+        drums: Drums::Porch,
+    },
+    songs: [
+        Song {
+            bpm: 104,
+            motif: [55, 59, 62, 64],
+            parts: &[
+                part(2, 0, First, Under::None, Half),
+                part(4, 0, First, Under::Pad, Full),
+                part(4, 5, Both, FORWARDS, Busy),
+                part(4, 7, Second, Under::Pad, Full),
+                part(2, 0, Tacet, BACKWARDS, Half),
+                part(4, 5, First, FORWARDS, Busy),
+                part(4, 0, Both, Under::Pad, Full),
+                part(2, 0, First, Under::None, Half),
+            ],
+        },
+        Song {
+            bpm: 112,
+            motif: [57, 61, 64, 66],
+            parts: &[
+                part(4, 0, First, Under::None, Full),
+                part(4, 0, Both, Under::Pad, Busy),
+                part(4, 5, Second, FORWARDS, Full),
+                part(2, 7, Tacet, Under::Pad, Half),
+                part(4, 0, First, BACKWARDS, Busy),
+                part(4, -5, Both, Under::Pad, Full),
+                part(4, 0, First, FORWARDS, Busy),
+                part(2, 0, Second, Under::None, Half),
+            ],
+        },
+        Song {
+            bpm: 96,
+            motif: [60, 64, 67, 69],
+            parts: &[
+                part(2, 0, Tacet, Under::Pad, Groove::None),
+                part(4, 0, First, Under::None, Half),
+                part(4, 5, First, FORWARDS, Full),
+                part(4, -2, Second, BACKWARDS, Full),
+                part(4, 7, Both, Under::Pad, Busy),
+                part(4, 0, First, FORWARDS, Full),
+                part(2, 0, Second, Under::Pad, Half),
+            ],
+        },
+        Song {
+            bpm: 108,
+            motif: [62, 66, 69, 71],
+            parts: &[
+                part(4, 0, Both, FORWARDS, Full),
+                part(4, 7, First, Under::Pad, Busy),
+                part(2, 5, Tacet, Under::None, Half),
+                part(4, 0, Second, BACKWARDS, Full),
+                part(4, 2, First, Under::Pad, Busy),
+                part(4, 0, Both, FORWARDS, Busy),
+                part(4, 0, First, Under::None, Full),
+            ],
+        },
+        Song {
+            bpm: 100,
+            motif: [52, 56, 59, 61],
+            parts: &[
+                part(2, 0, First, Under::None, Groove::None),
+                part(4, 0, First, BACKWARDS, Half),
+                part(4, 5, Second, Under::Pad, Full),
+                part(4, 0, Both, FORWARDS, Busy),
+                part(2, -5, Tacet, Under::Pad, Half),
+                part(4, 7, First, Under::Pad, Full),
+                part(4, 0, Both, BACKWARDS, Busy),
+                part(2, 0, Second, Under::None, Half),
+            ],
+        },
+    ],
+    breaks: [
+        Link::Rolls,
+        Link::Twang,
+        Link::Notes(true),
+        Link::Roll,
+        Link::Solo,
+        Link::Porch,
+    ],
+};
+
+pub static STYLES: [Style; 4] = [JAPAN, RETRO, METAL, CAJUN];
 
 /// After a song the music leaves its style one time in this many.
 pub const CHANGE_ONE_IN: usize = 4;
@@ -1603,6 +1748,38 @@ mod tests {
         all_breaks.sort();
         all_breaks.dedup();
         assert!(all_breaks.len() >= 12, "{all_breaks:?}");
+    }
+
+    #[test]
+    fn the_cajun_style_is_a_porch_band_with_a_jaw_harp_in_its_breaks() {
+        assert_eq!(STYLES[3], CAJUN);
+        assert_eq!(CAJUN.label, "Cajun");
+        assert_eq!(CAJUN.kit.first, Voice::Banjo, "the banjo leads");
+        assert_eq!(
+            CAJUN.kit.long,
+            Voice::Fiddle,
+            "the fiddle has the long tunes"
+        );
+        assert_eq!(CAJUN.kit.bass, Voice::Washtub);
+        assert_eq!(CAJUN.kit.drums, Drums::Porch);
+        let next = &CAJUN.songs[0];
+        // The twang is the jaw harp alone: no other style's kit changes it.
+        let twang = Link::Twang.render(&CAJUN.kit, next);
+        assert_eq!(twang, Link::Twang.render(&JAPAN.kit, next));
+        check("twang", &twang);
+        // The roll is picked on the banjo: sixteenths, so ten notes start
+        // within two and a half beats.
+        let roll = Link::Rolls.render(&CAJUN.kit, next);
+        assert_ne!(roll, Link::Rolls.render(&JAPAN.kit, next));
+        // The porch break stomps from its first bar and picks from the third.
+        let porch = Link::Porch.render(&CAJUN.kit, next);
+        let bar = samples(4.0 * next.beat());
+        assert!(peak(&porch[..bar]) > 0.3, "stomps at once");
+        assert!((8.0..=15.0).contains(&Link::Porch.seconds(next)));
+        // A song of it plays, in range and to its length.
+        let song = next.render(&CAJUN.kit, 3);
+        check("cajun song", &song);
+        assert_eq!(song.len(), samples(next.seconds()));
     }
 
     #[test]

@@ -288,10 +288,12 @@ the app draws no more often than in the other themes, except for five seconds
 after something changed on a card.
 
 With **Kawaii music** switched on (off at first), the Kawaii theme plays lofi
-beats that multigit makes itself, in three themes: Japanese traditional lofi
+beats that multigit makes itself, in four themes: Japanese traditional lofi
 (a plucked string, soft keys, a flute), retro gaming lofi (the square and
-triangle waves and noise drums of old consoles) and Babymetal-style lofi (an
-overdriven guitar, a high voice, double bass drums). Each theme has five
+triangle waves and noise drums of old consoles), Babymetal-style lofi (an
+overdriven guitar, a high voice, double bass drums) and Cajun porch lofi (a
+banjo, a fiddle, a washtub bass, a stomping foot and a washboard, and a jaw
+harp in the breaks). Each theme has five
 songs of about a minute, which vary a little every time they play, and short
 and long breaks between them. After each song chance decides: three times in
 four the music stays in the theme, one time in four a longer break leads

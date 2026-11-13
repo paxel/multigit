@@ -198,6 +198,105 @@ fn overdriven(frequency: f32, seconds: f32, partials: &[f32], drive: f32, ring: 
     out
 }
 
+/// A banjo: a plucked string like `pluck`, but bright, quick to die, and
+/// with the knock of the skin it is strung over.
+fn banjo(frequency: f32, seconds: f32) -> Vec<f32> {
+    let period = ((RATE / frequency) as usize).max(2);
+    let mut noise = Noise(frequency.to_bits() ^ 0x000B_A210);
+    let mut line: Vec<f32> = (0..period).map(|_| noise.sample()).collect();
+    let n = samples(seconds);
+    let mut out = Vec::with_capacity(n);
+    let mut soft = 0.0_f32;
+    for i in 0..n {
+        let t = i as f32 / RATE;
+        let at = i % period;
+        let next = line.get((at + 1) % period).copied().unwrap_or(0.0);
+        let here = line.get(at).copied().unwrap_or(0.0);
+        soft += 0.7 * (here - soft);
+        let knock = (t * 190.0 * TAU).sin() * (-t * 70.0).exp() * 0.5;
+        out.push((soft * 0.7 + knock) * (i as f32 / 20.0).min(1.0));
+        if let Some(slot) = line.get_mut(at) {
+            *slot = (here + next) * 0.5 * 0.988;
+        }
+    }
+    fade_out(&mut out, 0.05);
+    out
+}
+
+/// A fiddle: a bowed string, rich in overtones, that comes in with the
+/// bow, wavers in pitch once it stands and carries a little of the bow's
+/// scrape.
+fn fiddle(frequency: f32, seconds: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut noise = Noise(2718);
+    let mut scrape = 0.0_f32;
+    let mut phase = 0.0_f32;
+    // Overtones above the half of the sample rate would fold back.
+    let overtones = ((RATE * 0.45 / frequency) as usize).clamp(1, 8);
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let vibrato = 1.0 + 0.007 * ((t - 0.2).max(0.0) * 4.0).min(1.0) * (t * 5.6 * TAU).sin();
+            phase = (phase + frequency * vibrato / RATE).fract();
+            let p = phase * TAU;
+            let mut tone = 0.0;
+            for k in 1..=overtones {
+                let k = k as f32;
+                tone += (k * p).sin() / k;
+            }
+            let raw = noise.sample();
+            scrape += 0.5 * (raw - scrape);
+            let attack = (t / 0.06).min(1.0);
+            let release = ((seconds - t) / 0.12).clamp(0.0, 1.0);
+            (tone * 0.36 + (raw - scrape) * 0.03) * attack * release
+        })
+        .collect()
+}
+
+/// A washtub bass: one string on a broomstick over a tub. The note comes
+/// down to its pitch with a boing and dies in the tub.
+fn washtub(frequency: f32, seconds: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut phase = 0.0_f32;
+    let mut out: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let bent = frequency * (1.0 + 0.35 * (-t * 18.0).exp());
+            phase = (phase + bent / RATE).fract();
+            let p = phase * TAU;
+            let tone = p.sin() + 0.35 * (2.0 * p).sin() + 0.1 * (3.0 * p).sin();
+            tone * 0.62 * (t / 0.008).min(1.0) * (-t * 3.2).exp()
+        })
+        .collect();
+    fade_out(&mut out, 0.1);
+    out
+}
+
+/// A jaw harp: one low buzzing tongue, and a mouth that opens and closes
+/// around it `wahs` times a second, which is all the tune it has.
+pub fn jaw_harp(frequency: f32, seconds: f32, wahs: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut phase = 0.0_f32;
+    let (mut low, mut band) = (0.0_f32, 0.0_f32);
+    let mut out: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            phase = (phase + frequency / RATE).fract();
+            let buzz = if phase < 0.12 { 1.0 } else { -0.14 };
+            // The mouth: a resonance that moves between 500 and 1900 Hz.
+            let mouth = 500.0 + 1400.0 * (t * wahs * TAU / 2.0).sin().abs();
+            let f = 2.0 * (std::f32::consts::PI * mouth / RATE).sin();
+            low += f * band;
+            let high = buzz - low - 0.12 * band;
+            band += f * high;
+            let twang = band * 0.22 + buzz * 0.06;
+            twang / (1.0 + twang.abs()) * (t / 0.004).min(1.0) * (-t * 2.4).exp()
+        })
+        .collect();
+    fade_out(&mut out, 0.08);
+    out
+}
+
 /// An instrument that plays one note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Voice {
@@ -230,6 +329,12 @@ pub enum Voice {
     Idol,
     /// The same voice singing "ooh".
     IdolOoh,
+    /// A banjo: bright, short, with the knock of its skin.
+    Banjo,
+    /// A fiddle: a bowed string.
+    Fiddle,
+    /// A washtub bass: every note a boing.
+    Washtub,
 }
 
 impl Voice {
@@ -254,6 +359,9 @@ impl Voice {
             // high it would have no body left.
             Voice::Idol => quieter(voice(frequency * 2.0, seconds, Vowel::Aah)),
             Voice::IdolOoh => quieter(voice(frequency, seconds, Vowel::Ooh)),
+            Voice::Banjo => banjo(frequency, seconds),
+            Voice::Fiddle => fiddle(frequency, seconds),
+            Voice::Washtub => washtub(frequency, seconds),
         }
     }
 }
@@ -275,6 +383,8 @@ pub enum Drums {
     Chip,
     /// Tight and hard, for fast bass drums.
     Metal,
+    /// No drums at all: a foot on the porch and a washboard.
+    Porch,
 }
 
 impl Drums {
@@ -283,6 +393,7 @@ impl Drums {
             Drums::Soft => kick(),
             Drums::Chip => chip_kick(),
             Drums::Metal => tight_kick(),
+            Drums::Porch => stomp(),
         }
     }
 
@@ -291,6 +402,7 @@ impl Drums {
             Drums::Soft => snare(),
             Drums::Chip => coarse_noise(0.14, 8, 26.0, 0.6),
             Drums::Metal => hard_snare(),
+            Drums::Porch => washboard(0.16, 0.62),
         }
     }
 
@@ -299,8 +411,44 @@ impl Drums {
             Drums::Soft => hat(),
             Drums::Chip => coarse_noise(0.03, 2, 110.0, 0.22),
             Drums::Metal => hat(),
+            Drums::Porch => washboard(0.05, 0.3),
         }
     }
+}
+
+/// A foot stomping on wooden boards: a dull thud and the boards' rattle.
+fn stomp() -> Vec<f32> {
+    let n = samples(0.24);
+    let mut noise = Noise(1865);
+    let mut rattle = 0.0_f32;
+    let mut phase = 0.0_f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let frequency = 52.0 + 40.0 * (-t * 40.0).exp();
+            phase += frequency / RATE;
+            rattle += 0.12 * (noise.sample() - rattle);
+            let thud = (phase * TAU).sin() * (-t * 15.0).exp();
+            thud * 0.85 + rattle * (-t * 35.0).exp() * 0.5
+        })
+        .collect()
+}
+
+/// A thimble drawn over a washboard for `seconds`: bright noise that comes
+/// in ridges.
+fn washboard(seconds: f32, level: f32) -> Vec<f32> {
+    let n = samples(seconds);
+    let mut noise = Noise(1927);
+    let mut low = 0.0_f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let raw = noise.sample();
+            low += 0.35 * (raw - low);
+            let ridges = 0.35 + 0.65 * (t * 70.0 * TAU).sin().max(0.0);
+            (raw - low) * ridges * (-t * 3.0 / seconds).exp() * level
+        })
+        .collect()
 }
 
 /// Bass drum: a tone that drops from a thump to a hum.
@@ -544,7 +692,7 @@ mod tests {
             assert!(early < later / 3.0, "{early} {later}");
             assert!(slow.last().unwrap().abs() < 0.01, "lets go at the end");
         }
-        for drums in [Drums::Soft, Drums::Chip, Drums::Metal] {
+        for drums in [Drums::Soft, Drums::Chip, Drums::Metal, Drums::Porch] {
             check(&format!("{drums:?} kick"), &drums.kick());
             check(&format!("{drums:?} snare"), &drums.snare());
             let hat = drums.hat();
@@ -599,6 +747,71 @@ mod tests {
         let top = guitar.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
         let near = guitar.iter().filter(|s| s.abs() > top * 0.7).count();
         assert!(near > guitar.len() / 5, "{near} of {}", guitar.len());
+    }
+
+    /// How much of `sound` is a tone of `frequency`.
+    fn tone(sound: &[f32], frequency: f32) -> f32 {
+        let (mut sine, mut cosine) = (0.0_f32, 0.0_f32);
+        for (i, value) in sound.iter().enumerate() {
+            let angle = i as f32 / RATE * frequency * TAU;
+            sine += value * angle.sin();
+            cosine += value * angle.cos();
+        }
+        (sine * sine + cosine * cosine).sqrt() / sound.len() as f32
+    }
+
+    fn loudest(sound: &[f32]) -> f32 {
+        sound.iter().fold(0.0_f32, |m, s| m.max(s.abs()))
+    }
+
+    #[test]
+    fn the_porch_band_sounds_like_a_banjo_a_fiddle_a_tub_and_a_jaw_harp() {
+        let voices = [Voice::Banjo, Voice::Fiddle, Voice::Washtub];
+        for voice in voices {
+            let sound = voice.play(57, 1.5);
+            check(&format!("{voice:?}"), &sound);
+            assert!(loudest(&sound) <= 0.9, "{voice:?}: {}", loudest(&sound));
+            assert_eq!(sound.len(), samples(1.5));
+            assert!(sound.last().unwrap().abs() < 0.02, "{voice:?} lets go");
+            // In tune: more of the note than of the note beside it.
+            let in_tune = tone(&sound, pitch(57));
+            assert!(in_tune > 2.0 * tone(&sound, pitch(58)), "{voice:?}");
+        }
+        // A banjo is gone long before a plucked guitar-like string is.
+        let late = |voice: Voice| loudest(&voice.play(57, 1.5)[samples(0.8)..samples(1.2)]);
+        let early = |voice: Voice| loudest(&voice.play(57, 1.5)[..samples(0.1)]);
+        assert!(late(Voice::Banjo) < early(Voice::Banjo) * 0.2);
+        assert!(
+            late(Voice::Banjo) / early(Voice::Banjo) < late(Voice::Pluck) / early(Voice::Pluck)
+        );
+        // And brighter: more of its third overtone.
+        let bright = |voice: Voice| {
+            let sound = voice.play(57, 0.3);
+            tone(&sound, 3.0 * pitch(57)) / tone(&sound, pitch(57))
+        };
+        assert!(bright(Voice::Banjo) > bright(Voice::Pluck));
+        // The fiddle comes in with the bow and holds its note to the end.
+        let bowed = Voice::Fiddle.play(69, 2.0);
+        assert!(loudest(&bowed[..200]) < loudest(&bowed[samples(0.5)..samples(1.0)]) / 3.0);
+        assert!(loudest(&bowed[samples(1.5)..samples(1.8)]) > 0.2);
+        // The tub's note starts above its pitch and comes down.
+        let boing = Voice::Washtub.play(33, 1.0);
+        let start = &boing[..samples(0.04)];
+        assert!(tone(start, pitch(33) * 1.3) > tone(start, pitch(33) * 0.8));
+        // The jaw harp twangs: its loudness in the mouth's band goes up
+        // and down, while its buzz stays on one note.
+        let harp = jaw_harp(98.0, 1.0, 4.0);
+        check("jaw harp", &harp);
+        assert_eq!(harp.len(), samples(1.0));
+        assert!(harp.last().unwrap().abs() < 0.02);
+        let open = tone(&harp[samples(0.10)..samples(0.15)], 1764.0);
+        let closed = tone(&harp[samples(0.0)..samples(0.04)], 1764.0);
+        assert!(open > closed, "{open} {closed}");
+        assert_ne!(jaw_harp(98.0, 0.5, 4.0), jaw_harp(98.0, 0.5, 8.0));
+        // A stomp is low, a washboard is not.
+        let (stomp, board) = (Drums::Porch.kick(), Drums::Porch.snare());
+        assert!(tone(&stomp, 60.0) > 5.0 * tone(&board, 60.0));
+        assert!(tone(&board, 4000.0) > tone(&stomp, 4000.0));
     }
 
     #[test]

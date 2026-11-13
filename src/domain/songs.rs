@@ -848,10 +848,35 @@ pub enum Change {
     /// A modem on an acoustic coupler dials into the next style: dial
     /// tone, dialling, the answer, the handshake's warbling and screech.
     Modem,
+    /// A record scratch: the last song's chord on a record that a hand
+    /// pulls back and pushes forward; then the needle is dropped on the
+    /// next song, which is counted in.
+    Scratch,
 }
 
 /// The change breaks.
-pub const CHANGES: [Change; 3] = [Change::Radio, Change::TapeStop, Change::Modem];
+pub const CHANGES: [Change; 4] = [
+    Change::Radio,
+    Change::TapeStop,
+    Change::Modem,
+    Change::Scratch,
+];
+
+/// How fast the scratched record turns `t` seconds into the scratch, as a
+/// multiple of its speed; below zero it turns backwards. It plays for a
+/// moment, is scratched slowly, held, scratched fast, and stopped.
+fn scratch_speed(t: f32) -> f32 {
+    // A stroke back and a stroke forward in every `cell` seconds.
+    let strokes = |since: f32, cell: f32| -2.6 * ((since / cell).fract() * TAU).sin();
+    match t {
+        t if t < 1.6 => 1.0,
+        t if t < 3.1 => strokes(t - 1.6, 0.5),
+        t if t < 3.6 => 0.0,
+        t if t < 5.1 => strokes(t - 3.6, 0.25),
+        t if t < 5.4 => 1.0 - (t - 5.1) / 0.3,
+        _ => 0.0,
+    }
+}
 
 /// The two tones of each key the modem dials, in Hz.
 const DIALLED: [(f32, f32); 8] = [
@@ -908,6 +933,7 @@ impl Change {
             Change::Radio => 12.0,
             Change::TapeStop => 7.5 + 4.0 * next.beat(),
             Change::Modem => 13.0,
+            Change::Scratch => 8.0 + 4.0 * next.beat(),
         }
     }
 
@@ -970,6 +996,39 @@ impl Change {
                     add(&mut mix, 7.5 + f32::from(count) * beat, &hat, 0.9);
                 }
                 add(&mut mix, 7.5 + 3.5 * beat, &into.drums.kick(), 0.6);
+            }
+            Change::Scratch => {
+                let [root, third, fifth, _] = last.motif;
+                let chord = [root.saturating_sub(12), fifth.saturating_sub(12), third];
+                let mut phases = [0.0_f32; 3];
+                let mut noise = Noise(1973);
+                let mut hiss = 0.0_f32;
+                for (i, slot) in mix.iter_mut().take(samples(5.5)).enumerate() {
+                    let t = i as f32 / RATE;
+                    let speed = scratch_speed(t);
+                    let mut sum = 0.0;
+                    for (phase, midi) in phases.iter_mut().zip(chord) {
+                        *phase = (*phase + pitch(midi) * speed / RATE).rem_euclid(1.0);
+                        sum += (*phase * TAU).sin();
+                    }
+                    // The needle gives out what moves under it: nothing
+                    // while the hand holds the record, and its own hiss
+                    // the faster the record is pulled.
+                    hiss += 0.5 * (noise.sample() - hiss);
+                    let moving = speed.abs().min(1.0);
+                    *slot =
+                        (sum / 3.0 * 0.3 + hiss * 0.1 * speed.abs()) * moving * (t / 0.3).min(1.0);
+                }
+                add(&mut mix, 0.0, &from.first.play(root, 1.5), 0.26);
+                // The needle comes down on the next record.
+                add(&mut mix, 7.0, &into.drums.kick(), 0.25);
+                add(&mut mix, 7.0, &crackle(seconds - 7.0, 45), 0.2);
+                let beat = next.beat();
+                let hat = into.drums.hat();
+                for count in 0..4u8 {
+                    add(&mut mix, 8.0 + f32::from(count) * beat, &hat, 0.9);
+                }
+                add(&mut mix, 8.0 + 3.5 * beat, &into.drums.kick(), 0.6);
             }
             Change::Modem => {
                 let mut noise = Noise(56_000);
@@ -1941,6 +2000,60 @@ mod tests {
         // The tape stop is silent between the sinking chord and the count.
         let quiet = &rendered[1][samples(6.3)..samples(7.4)];
         assert!(peak(quiet) < 0.01, "{}", peak(quiet));
+    }
+
+    #[test]
+    fn the_record_scratch_goes_back_and_forth_stops_and_drops_the_needle() {
+        // The hand: the record plays, is pulled back and pushed forward,
+        // held, scratched twice as fast, and stopped.
+        assert_eq!(scratch_speed(0.5), 1.0);
+        let slow: Vec<f32> = (0..150)
+            .map(|i| scratch_speed(1.6 + i as f32 * 0.01))
+            .collect();
+        assert!(slow.iter().any(|s| *s < -2.0) && slow.iter().any(|s| *s > 2.0));
+        let turns = |speeds: &[f32]| {
+            speeds
+                .windows(2)
+                .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+                .count()
+        };
+        let fast: Vec<f32> = (0..150)
+            .map(|i| scratch_speed(3.6 + i as f32 * 0.01))
+            .collect();
+        assert!(turns(&fast) >= 2 * turns(&slow) - 2, "faster strokes");
+        assert_eq!(scratch_speed(3.3), 0.0, "held");
+        assert_eq!(scratch_speed(6.0), 0.0, "stopped");
+
+        assert_eq!(CHANGES[3], Change::Scratch);
+        let (last, next) = (&JAPAN.songs[0], &JAPAN.songs[3]);
+        let seconds = Change::Scratch.seconds(next);
+        assert!((10.0..=20.0).contains(&seconds), "{seconds}");
+        for style in &STYLES {
+            let other = Change::Scratch.seconds(&style.songs[1]);
+            assert!((10.0..=20.0).contains(&other), "{}: {other}", style.name);
+        }
+        let sound = Change::Scratch.render(&JAPAN.kit, last, &RETRO.kit, next);
+        check("scratch", &sound);
+        assert_eq!(sound.len(), samples(seconds));
+        assert!(sound.last().unwrap().abs() < 0.01);
+        // Scratching is heard, the held record is not, nor the stopped one.
+        assert!(peak(&sound[samples(1.7)..samples(3.0)]) > 0.05);
+        assert!(peak(&sound[samples(3.25)..samples(3.55)]) < 0.02, "held");
+        assert!(peak(&sound[samples(5.8)..samples(6.9)]) < 0.01, "stopped");
+        // Then the needle and the count into the next song.
+        assert!(
+            peak(&sound[samples(7.0)..samples(7.9)]) > 0.02,
+            "the needle"
+        );
+        assert!(peak(&sound[samples(8.0)..]) > 0.05, "the count");
+        for change in [Change::Radio, Change::TapeStop, Change::Modem] {
+            assert_ne!(sound, change.render(&JAPAN.kit, last, &RETRO.kit, next));
+        }
+        // It leads out of the song it follows: another chord, another sound.
+        assert_ne!(
+            sound,
+            Change::Scratch.render(&JAPAN.kit, &JAPAN.songs[1], &RETRO.kit, next)
+        );
     }
 
     #[test]

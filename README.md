@@ -300,8 +300,9 @@ very quiet and all echo, and now and then something calls out there). Each theme
 songs of about a minute, which vary a little every time they play, and short
 and long breaks between them. After each song chance decides: three times in
 four the music stays in the theme, one time in four a longer break leads
-into another theme: a radio being tuned, a tape that stops, or a modem
-dialling in. Under the switch, Settings has a checkbox for each theme: only
+into another theme: a radio being tuned, a tape that stops, a modem
+dialling in, or a record that is scratched before the needle drops on the
+next one. Under the switch, Settings has a checkbox for each theme: only
 the checked ones play, and with a single one checked the music never leaves
 it. The last checked box cannot be unchecked. Unchecking the theme that plays
 ends its passage at once and starts a song of another; any other change is

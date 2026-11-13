@@ -125,7 +125,8 @@ emoji. A repository can be in several.
 
 - **+** opens a folder dialog. A repository is added as one card; any other
   folder is scanned for repositories up to two levels deep (configurable),
-  without descending into repositories it finds. Repositories already on the
+  without descending into repositories it finds. A folder whose `.git` is
+  empty or incomplete, like one copied without its content, is no repository. Repositories already on the
   board are skipped.
 - A right click on a card takes it off the board, in two ways; on a marked
   card, both act on all marked cards. Nothing on disk is touched.

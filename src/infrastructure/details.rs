@@ -4,8 +4,8 @@
 //! is run for a diff or a signature.
 
 use crate::domain::details::{
-    COMMIT_FORMAT, ChangeKind, Details, DiffTarget, LOG_DATE, LOG_FORMAT, LOG_PAGE, LogEntry,
-    cut_diff, parse_branches, parse_changes, parse_log,
+    COMMIT_FORMAT, ChangeKind, Details, DiffTarget, LOG_DATE, LOG_FORMAT, LOG_NAMES, LOG_PAGE,
+    LogEntry, cut_diff, parse_branches, parse_changes, parse_log,
 };
 use crate::domain::graph::{
     GRAPH_FORMAT, GRAPH_LIMIT, GraphData, REF_FORMAT, RefKind, drawn_refs, parse_graph_log,
@@ -55,6 +55,7 @@ pub fn log(
         &count,
         &skip,
         "--no-show-signature",
+        LOG_NAMES,
         LOG_DATE,
         LOG_FORMAT,
     ];
@@ -320,6 +321,16 @@ mod tests {
             ["f0.txt"]
         );
         assert!(log(&runner, repo.path(), 9, 2).unwrap().is_empty());
+        // The tags on a commit are read with it; branch names are not.
+        assert!(all.iter().all(|entry| entry.tags.is_empty()));
+        repo.git(&["tag", "v1"]);
+        repo.git(&["tag", "-a", "-m", "annotated", "v1-annotated"]);
+        repo.git(&["branch", "other"]);
+        let tagged = log(&runner, repo.path(), 0, 2).unwrap();
+        assert_eq!(tagged[0].tags, ["v1", "v1-annotated"]);
+        assert!(tagged[1].tags.is_empty());
+        repo.git(&["tag", "-d", "v1", "v1-annotated"]);
+        repo.git(&["branch", "-D", "other"]);
         // The lists hold as many commits as were asked for, a page at least.
         assert_eq!(details(&runner, repo.path(), 3).unwrap().commits.len(), 5);
 

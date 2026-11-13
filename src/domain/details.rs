@@ -132,6 +132,8 @@ pub struct LogEntry {
     pub time: i64,
     /// The same as a date with the time of day.
     pub date: String,
+    /// The tags on it.
+    pub tags: Vec<String>,
     pub subject: String,
 }
 
@@ -378,9 +380,13 @@ impl Details {
 
 /// How many commits the list reads at a time.
 pub const LOG_PAGE: usize = 100;
-/// The `--format` of the commit list: hash, short hash, author, time, date
-/// and subject, tab separated.
-pub const LOG_FORMAT: &str = "--format=%H%x09%h%x09%an%x09%at%x09%ad%x09%s";
+/// The `--format` of the commit list: hash, short hash, author, time, date,
+/// the names on the commit and its subject, tab separated.
+pub const LOG_FORMAT: &str = "--format=%H%x09%h%x09%an%x09%at%x09%ad%x09%D%x09%s";
+/// Of the names on a commit the list reads the tags only.
+pub const LOG_NAMES: &str = "--decorate-refs=refs/tags/";
+/// What git writes before the name of a tag among the names on a commit.
+const TAG_MARK: &str = "tag: ";
 /// How the list's and the pane's dates are written.
 pub const LOG_DATE: &str = "--date=format:%Y-%m-%d %H:%M";
 /// Lines of a diff the pane shows; longer ones are cut.
@@ -457,13 +463,19 @@ pub fn parse_log(output: &str) -> Vec<LogEntry> {
     output
         .lines()
         .filter_map(|line| {
-            let mut fields = line.splitn(6, '\t');
+            let mut fields = line.splitn(7, '\t');
             Some(LogEntry {
                 hash: fields.next().filter(|h| !h.is_empty())?.to_owned(),
                 short: fields.next()?.to_owned(),
                 author: fields.next()?.to_owned(),
                 time: fields.next()?.parse().ok()?,
                 date: fields.next()?.to_owned(),
+                tags: fields
+                    .next()?
+                    .split(", ")
+                    .filter_map(|name| name.strip_prefix(TAG_MARK))
+                    .map(str::to_owned)
+                    .collect(),
                 subject: fields.next().unwrap_or_default().to_owned(),
             })
         })
@@ -708,9 +720,9 @@ mod tests {
 
     #[test]
     fn commits_and_branches_are_read_from_git_output() {
-        let log = "aaaa\taa\tAda\t1700000000\t2023-11-14 22:13\tFix a\tb\n\
-                   bbbb\tbb\tBob\t1600000000\t2020-09-13 12:26\t\n\nbroken\n\
-                   cccc\tcc\tCy\tnot a time\tdate\tsubject\n";
+        let log = "aaaa\taa\tAda\t1700000000\t2023-11-14 22:13\t\tFix a\tb\n\
+                   bbbb\tbb\tBob\t1600000000\t2020-09-13 12:26\tHEAD -> main, tag: v1, tag: v0.9, origin/main\t\n\nbroken\n\
+                   cccc\tcc\tCy\tnot a time\tdate\t\tsubject\n";
         let commits = parse_log(log);
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].subject, "Fix a\tb");
@@ -720,6 +732,9 @@ mod tests {
             ("Bob", "2020-09-13 12:26")
         );
         assert_eq!(commits[1].subject, "");
+        // Of the names on a commit only the tags are kept.
+        assert!(commits[0].tags.is_empty());
+        assert_eq!(commits[1].tags, ["v1", "v0.9"]);
 
         let branches = parse_branches("main\nfeature/x\n\n", Some("feature/x"));
         assert_eq!(branches.len(), 2);
@@ -841,7 +856,7 @@ mod tests {
     fn a_selection_outlives_a_reload_only_while_the_lists_hold_it() {
         let details = Details {
             files: vec![file("a.rs", ChangeKind::Modified)],
-            commits: parse_log("aaaa\taa\tAda\t1\tthen\tone\n"),
+            commits: parse_log("aaaa\taa\tAda\t1\tthen\t\tone\n"),
             branches: vec![],
         };
         let inside = DiffTarget::CommitFile {

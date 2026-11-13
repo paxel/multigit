@@ -998,7 +998,7 @@ fn repo_view_app() -> Harness<'static, App> {
             },
         ],
         commits: parse_log(
-            "aaaabbbb\taaaabbb\tAda Lovelace\t1700000000\t2023-11-14 22:13\tFix the thing\n",
+            "aaaabbbb\taaaabbb\tAda Lovelace\t1700000000\t2023-11-14 22:13\t\tFix the thing\n",
         ),
         branches: vec![
             BranchEntry {
@@ -1303,6 +1303,8 @@ fn the_commit_list_reads_its_next_page_when_its_end_comes_into_view() {
     // The list is the narrow side.
     let pane = h.get_by_label("Pick a commit to see it.").rect();
     assert!(pane.left() < 500.0, "{pane:?}");
+    // A tagged commit carries the name of its tag before its title.
+    h.get_by_label("AL 0000007  v7  Commit number 7");
     // Every row is one compact line, the first one too.
     let first = h.get_by_label("AL 0000000 Commit number 0").rect();
     let second = h.get_by_label("AL 0000001 Commit number 1").rect();

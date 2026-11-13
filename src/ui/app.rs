@@ -1474,6 +1474,12 @@ pub(crate) mod tests {
             author: "Ada Lovelace".into(),
             time: 1_700_000_000 - i as i64 * 3600,
             date: "2023-11-14 22:13".into(),
+            // Every fiftieth commit is a release.
+            tags: if i % 50 == 7 {
+                vec![format!("v{i}")]
+            } else {
+                Vec::new()
+            },
             subject: format!("Commit number {i}"),
         }
     }
@@ -2295,7 +2301,7 @@ pub(crate) mod tests {
         };
         let lists = |files: &[&str]| Details {
             files: files.iter().map(|f| file(f)).collect(),
-            commits: parse_log("aaaa\taa\tAda\t1\tthen\tone\n"),
+            commits: parse_log("aaaa\taa\tAda\t1\tthen\t\tone\n"),
             branches: vec![],
         };
         let view = |app: &App| app.repo_view.clone().unwrap();

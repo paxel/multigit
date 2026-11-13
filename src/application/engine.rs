@@ -464,6 +464,7 @@ mod tests {
                 author: String::new(),
                 time: 0,
                 date: String::new(),
+                tags: Vec::new(),
                 subject: String::new(),
             };
             // A history of 150 commits.

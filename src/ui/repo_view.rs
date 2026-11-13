@@ -251,6 +251,12 @@ fn commit_row(ui: &mut Ui, view: &RepoView, commit: &LogEntry, now: i64, act: &m
             text.append(&format!("{:<2} ", initials(&commit.author)), 0.0, author);
             let hash = part(&mono, ui.visuals().weak_text_color());
             text.append(&format!("{} ", commit.short), 0.0, hash);
+            for tag in &commit.tags {
+                let mut name = part(&mono, ui.visuals().warn_fg_color);
+                name.background = ui.visuals().faint_bg_color;
+                text.append(&format!(" {tag} "), 0.0, name);
+                text.append(" ", 0.0, part(&mono, Color32::TRANSPARENT));
+            }
             let title = part(&body, ui.visuals().text_color());
             text.append(&commit.subject, 0.0, title);
             let hover = format!("{}, {}\n{}", commit.author, commit.date, commit.subject);

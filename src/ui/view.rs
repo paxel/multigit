@@ -19,6 +19,7 @@ use crate::ui::cli::{CliAction, CliContext};
 use crate::ui::critter;
 use crate::ui::settings;
 use crate::ui::style::{KAWAII_PINK, KAWAII_YELLOW};
+use crate::ui::text_menu::{self, Picked, TextOf};
 use egui::{Color32, RichText, Ui};
 use std::path::{Path, PathBuf};
 
@@ -233,6 +234,7 @@ impl App {
         self.confirm_dialog(ui, enter_confirms);
         self.favorite_dialog(ui);
         self.repo_view_dialog(ui);
+        self.text_menu_overlay(ui);
         settings::show(self, ui.ctx());
     }
 
@@ -646,6 +648,37 @@ impl App {
             });
         for (run, repo) in opened {
             self.open_output(run, repo.as_deref());
+        }
+    }
+
+    /// The right-click menu on a text, and what was picked in it.
+    fn text_menu_overlay(&mut self, ui: &Ui) {
+        match self.text_picked.take() {
+            // egui copies what is marked; only the animation is left to do.
+            Some(Picked::Copy(at)) => {
+                self.copy_flash = Some(CopyFlash {
+                    at,
+                    started: ui.input(|i| i.time),
+                });
+            }
+            Some(Picked::CopyAll(text, at)) => {
+                if let Some(text) = self.text_of(&text) {
+                    self.copy(ui, text, at);
+                }
+            }
+            None => {}
+        }
+        // The text went away under the menu: the view closed, the panel
+        // was folded away.
+        let gone = self.text_menu.as_ref().is_some_and(|menu| match menu.text {
+            TextOf::Message | TextOf::Pane => self.repo_view.is_none(),
+            TextOf::Output(..) => self.config.output_hidden || self.repo_view.is_some(),
+        });
+        if gone {
+            self.text_menu = None;
+        }
+        if let Some(menu) = &mut self.text_menu {
+            text_menu::show(ui.ctx(), menu);
         }
     }
 
@@ -1658,7 +1691,9 @@ fn run_ui(ui: &mut Ui, run: &Run, opened: &mut Vec<OpenOutput>) {
                 if open_in_editor(ui, done, "this repository's output") {
                     opened.push((run.id, Some(section.repo.clone())));
                 }
-                section_output(ui, &section.state);
+                let shown = ui.scope(|ui| section_output(ui, &section.state));
+                let text = TextOf::Output(run.id, section.repo.clone());
+                text_menu::area(ui, shown.response.rect, text);
             });
     }
 }

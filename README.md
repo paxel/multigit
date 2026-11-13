@@ -94,6 +94,11 @@ returns to the board. The double click also marks and unmarks the card, so its
 mark ends as it was. A double click on a text that copies (name, branch, tag,
 commit) copies and does not open.
 
+A right click on text in the right pane (a commit message, a diff, the
+content of a file) and on the output of a command in the output panel opens a
+menu: **Copy** copies the marked text and leaves it marked, **Copy all**
+copies the whole text, the lines that are not on screen included.
+
 ## Favorites
 
 A favorite is a named group of repositories with a color and, if you like, an

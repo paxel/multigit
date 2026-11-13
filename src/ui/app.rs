@@ -17,7 +17,7 @@ use crate::domain::graph::GraphData;
 use crate::domain::history::History;
 use crate::domain::kawaii;
 use crate::domain::naming::{board_order, title};
-use crate::domain::output::OutputLog;
+use crate::domain::output::{OutputLog, SectionState};
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use crate::domain::status::{RepoState, Upstream};
 use crate::infrastructure::audio::decode;
@@ -25,6 +25,7 @@ use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
 use crate::infrastructure::scan::{is_repo, scan};
 use crate::infrastructure::store::{self, Paths};
 use crate::ui::cli::CliState;
+use crate::ui::text_menu::{self, Picked, TextMenu, TextOf};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -230,6 +231,10 @@ pub struct App {
     commands_requested: bool,
     pub toasts: Vec<Toast>,
     pub copy_flash: Option<CopyFlash>,
+    /// The open right-click menu on a text.
+    pub text_menu: Option<TextMenu>,
+    /// What was picked in it, until the next frame does it.
+    pub text_picked: Option<Picked>,
     /// The clock of the Kawaii theme's motion, in seconds; it runs only
     /// while the window has focus.
     pub kawaii_clock: f64,
@@ -316,6 +321,8 @@ impl App {
             commands_requested: false,
             toasts: Vec::new(),
             copy_flash: None,
+            text_menu: None,
+            text_picked: None,
             kawaii_clock: 0.0,
             critters: Troupe::default(),
             bursts: Vec::new(),
@@ -513,6 +520,43 @@ impl App {
 
     fn sync_repos_to_config(&mut self) {
         self.config.repos = self.cards.iter().map(|c| c.path.clone()).collect();
+    }
+
+    /// Before egui reads the input of a frame: the clicks that belong to
+    /// the right-click menu on a text are taken out of it.
+    pub fn filter_input(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        let areas = text_menu::take_areas(ctx);
+        let picked = text_menu::filter(&mut self.text_menu, input, |pos| {
+            // Only what lies on top at that point is meant.
+            let layer = ctx.layer_id_at(pos)?;
+            let hit = |area: &&text_menu::Area| area.layer == layer && area.rect.contains(pos);
+            areas.iter().rev().find(hit).map(|area| area.text.clone())
+        });
+        if picked.is_some() {
+            self.text_picked = picked;
+        }
+    }
+
+    /// The whole text behind `text`, as the menu's `Copy all` copies it;
+    /// `None` when it is not there any more.
+    pub fn text_of(&self, text: &TextOf) -> Option<String> {
+        match text {
+            TextOf::Message | TextOf::Pane => self.repo_view.as_ref()?.text_of(text),
+            TextOf::Output(run, repo) => {
+                let run = self.log.run(*run)?;
+                let section = run.sections.iter().find(|s| &s.repo == repo)?;
+                match &section.state {
+                    SectionState::Done(out) => {
+                        let parts = [out.stdout.trim_end(), out.stderr.trim_end()];
+                        let parts: Vec<&str> =
+                            parts.into_iter().filter(|part| !part.is_empty()).collect();
+                        Some(parts.join("\n"))
+                    }
+                    SectionState::SpawnFailed(error) => Some(error.clone()),
+                    SectionState::Queued | SectionState::Running => None,
+                }
+            }
+        }
     }
 
     /// (+): add a repository, or every repository found below a folder.

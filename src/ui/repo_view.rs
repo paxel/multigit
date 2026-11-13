@@ -3,12 +3,13 @@
 //! the right, and Back and Forward through what was looked at.
 
 use crate::domain::details::{
-    ChangeKind, Details, DiffTarget, FileChange, LineKind, LogEntry, RepoTab, author_hue,
-    file_lines, initials, parse_commit, short_age, tree_rows,
+    ChangeKind, CommitDetail, Details, DiffTarget, FileChange, LineKind, LogEntry, RepoTab,
+    author_hue, file_lines, initials, parse_commit, short_age, tree_rows,
 };
 use crate::domain::graph::{GraphData, GraphRow, LabelKind, RowKind, graph_rows, labels};
 use crate::domain::naming::title;
 use crate::ui::app::{App, RepoView};
+use crate::ui::text_menu::{self, TextOf};
 use crate::ui::view::ok_color;
 use egui::{Color32, RichText, Ui};
 
@@ -498,6 +499,68 @@ fn diff_pane(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
     diff_lines(ui, "repo-view-diff", &lines);
 }
 
+/// The rows under the header of `commit`: its files, each with the lines
+/// of its diff when it is unfolded.
+fn commit_rows<'a>(commit: &'a CommitDetail, view: &'a RepoView) -> Vec<CommitRow<'a>> {
+    let mut rows = Vec::new();
+    for file in &commit.files {
+        let diff = view.unfolded.get(&file.path);
+        let lines = commit.lines.get(&file.path).copied();
+        rows.push(CommitRow::File(file, diff.is_some(), lines));
+        match diff {
+            None => {}
+            Some(None) => rows.push(CommitRow::Note("loading")),
+            Some(Some(Err(error))) => rows.push(CommitRow::Note(error)),
+            Some(Some(Ok(diff))) => {
+                let lines = file_lines(file.kind, diff);
+                if lines.is_empty() {
+                    rows.push(CommitRow::Note("nothing to show"));
+                }
+                rows.extend(
+                    lines
+                        .into_iter()
+                        .map(|(kind, line)| CommitRow::Line(kind, line)),
+                );
+            }
+        }
+    }
+    rows
+}
+
+/// What the right pane shows as one text, for `Copy all`.
+impl RepoView {
+    pub(super) fn text_of(&self, text: &TextOf) -> Option<String> {
+        let Some(Ok(diff)) = &self.diff else {
+            return None;
+        };
+        match (text, self.selected.as_ref()?) {
+            (TextOf::Message, DiffTarget::Commit(_)) => Some(parse_commit(diff)?.message),
+            (TextOf::Pane, DiffTarget::File(file)) => {
+                let lines: Vec<&str> = file_lines(file.kind, diff)
+                    .into_iter()
+                    .map(|(_, line)| line)
+                    .collect();
+                Some(lines.join("\n"))
+            }
+            (TextOf::Pane, DiffTarget::Commit(_)) => {
+                let commit = parse_commit(diff)?;
+                let lines: Vec<String> = commit_rows(&commit, self)
+                    .into_iter()
+                    .map(|row| match row {
+                        CommitRow::File(file, ..) => {
+                            format!("{} {}", file.kind.letter(), file.path)
+                        }
+                        CommitRow::Line(_, line) => line.to_owned(),
+                        CommitRow::Note(note) => note.to_owned(),
+                    })
+                    .collect();
+                Some(lines.join("\n"))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// A row under the header of a commit.
 enum CommitRow<'a> {
     /// A file, whether its diff is unfolded, and its lines added and taken
@@ -586,12 +649,13 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
             }
         });
     }
-    egui::ScrollArea::vertical()
+    let message = egui::ScrollArea::vertical()
         .id_salt("repo-view-message")
         .max_height(140.0)
         .show(ui, |ui| {
             ui.label(&commit.message);
         });
+    text_menu::area(ui, message.inner_rect, TextOf::Message);
     ui.separator();
     let count = commit.files.len();
     ui.horizontal(|ui| {
@@ -604,31 +668,10 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
             line_counts(ui, commit.total_lines());
         }
     });
-    let mut rows = Vec::new();
-    for file in &commit.files {
-        let diff = view.unfolded.get(&file.path);
-        let lines = commit.lines.get(&file.path).copied();
-        rows.push(CommitRow::File(file, diff.is_some(), lines));
-        match diff {
-            None => {}
-            Some(None) => rows.push(CommitRow::Note("loading")),
-            Some(Some(Err(error))) => rows.push(CommitRow::Note(error)),
-            Some(Some(Ok(diff))) => {
-                let lines = file_lines(file.kind, diff);
-                if lines.is_empty() {
-                    rows.push(CommitRow::Note("nothing to show"));
-                }
-                rows.extend(
-                    lines
-                        .into_iter()
-                        .map(|(kind, line)| CommitRow::Line(kind, line)),
-                );
-            }
-        }
-    }
+    let rows = commit_rows(&commit, view);
     let row_height = ui.spacing().interact_size.y;
     let (added, removed) = (ok_color(ui), ui.visuals().error_fg_color);
-    egui::ScrollArea::both()
+    let files = egui::ScrollArea::both()
         .id_salt("repo-view-commit")
         .auto_shrink([false, false])
         .show_rows(ui, row_height, rows.len(), |ui, shown| {
@@ -674,13 +717,14 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
                 });
             }
         });
+    text_menu::area(ui, files.inner_rect, TextOf::Pane);
 }
 
 /// Lines of a diff or of a file, colored by kind, scrolling both ways.
 fn diff_lines(ui: &mut Ui, id: &str, lines: &[(LineKind, &str)]) {
     let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
     let (added, removed) = (ok_color(ui), ui.visuals().error_fg_color);
-    egui::ScrollArea::both()
+    let shown = egui::ScrollArea::both()
         .id_salt(id)
         .auto_shrink([false, false])
         .show_rows(ui, row_height, lines.len(), |ui, rows| {
@@ -696,4 +740,5 @@ fn diff_lines(ui: &mut Ui, id: &str, lines: &[(LineKind, &str)]) {
                 });
             }
         });
+    text_menu::area(ui, shown.inner_rect, TextOf::Pane);
 }

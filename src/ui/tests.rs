@@ -1370,6 +1370,184 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     assert!(h.query_by_label("Commits").is_none());
 }
 
+/// Hand `events` to the app as the window does, through its input filter,
+/// and run a frame.
+fn send(h: &mut Harness<'static, App>, events: Vec<egui::Event>) {
+    let mut raw = egui::RawInput {
+        events,
+        ..Default::default()
+    };
+    let ctx = h.ctx.clone();
+    h.state_mut().filter_input(&ctx, &mut raw);
+    for event in raw.events {
+        h.event(event);
+    }
+    h.step();
+}
+
+fn pointer_button(pos: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+/// A click of `button` at `pos`, through the input filter.
+fn filtered_click(h: &mut Harness<'static, App>, pos: egui::Pos2, button: egui::PointerButton) {
+    send(h, vec![egui::Event::PointerMoved(pos)]);
+    send(h, vec![pointer_button(pos, button, true)]);
+    send(h, vec![pointer_button(pos, button, false)]);
+}
+
+/// Whether a text is marked.
+fn text_is_marked(h: &Harness<'static, App>) -> bool {
+    h.ctx
+        .plugin::<egui::text_selection::LabelSelectionState>()
+        .lock()
+        .has_selection()
+}
+
+/// Where the open text menu drew `Copy` and `Copy all`.
+fn text_menu_entries(h: &Harness<'static, App>) -> (egui::Pos2, egui::Pos2) {
+    let menu = h.state().text_menu.as_ref().expect("no menu is open");
+    let [_, copy, all] = menu.drawn.expect("the menu was not drawn");
+    (copy.center(), all.center())
+}
+
+#[test]
+fn right_click_on_text_of_the_repository_view_copies_the_marked_text_or_all_of_it() {
+    use crate::ui::text_menu::TextOf;
+    use egui::PointerButton::{Primary, Secondary};
+    let mut h = repo_view_app();
+    h.run();
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.state_mut()
+        .switch_repo_tab(crate::domain::details::RepoTab::Commits);
+    h.run();
+    h.get_by_label("AL aaaabbb Fix the thing").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.event(egui::Event::PointerGone);
+    h.run();
+    let message = "Fix the thing\n\nBecause it was broken.";
+    let text = h.get_by_label(message).rect();
+
+    // Mark the first line of the message by dragging over it.
+    let from = text.left_top() + egui::vec2(0.5, 6.0);
+    let to = egui::pos2(text.right() - 1.0, from.y);
+    send(&mut h, vec![egui::Event::PointerMoved(from)]);
+    send(&mut h, vec![pointer_button(from, Primary, true)]);
+    send(&mut h, vec![egui::Event::PointerMoved(to)]);
+    send(&mut h, vec![pointer_button(to, Primary, false)]);
+    assert!(text_is_marked(&h));
+    assert!(h.state().text_menu.is_none());
+
+    // A right click on it opens the menu, and the text stays marked.
+    let on_text = text.left_top() + egui::vec2(20.0, 6.0);
+    filtered_click(&mut h, on_text, Secondary);
+    h.step();
+    assert!(text_is_marked(&h), "the right click took the selection");
+    assert_eq!(h.state().text_menu.as_ref().unwrap().text, TextOf::Message);
+    h.get_by_label("Copy");
+    h.get_by_label("Copy all");
+
+    // Copy: what is marked, and it stays marked.
+    let (copy, _) = text_menu_entries(&h);
+    send(&mut h, vec![egui::Event::PointerMoved(copy)]);
+    send(&mut h, vec![pointer_button(copy, Primary, true)]);
+    assert_eq!(copied(&h), vec!["Fix the thing".to_owned()]);
+    assert!(h.state().text_menu.is_none(), "the menu closed");
+    send(&mut h, vec![pointer_button(copy, Primary, false)]);
+    assert!(text_is_marked(&h), "the click on Copy took the selection");
+    assert!(h.query_by_label("Copy all").is_none());
+
+    // Copy all: the whole message.
+    filtered_click(&mut h, on_text, Secondary);
+    h.step();
+    let (_, all) = text_menu_entries(&h);
+    send(&mut h, vec![egui::Event::PointerMoved(all)]);
+    send(&mut h, vec![pointer_button(all, Primary, true)]);
+    assert_eq!(copied(&h), vec![message.to_owned()]);
+    send(&mut h, vec![pointer_button(all, Primary, false)]);
+    for _ in 0..5 {
+        h.step();
+    }
+
+    // Under the header: the files of the commit with what is unfolded.
+    let file = h.get_by_label("A docs/new.md").rect().center();
+    filtered_click(&mut h, file, Secondary);
+    h.step();
+    assert_eq!(h.state().text_menu.as_ref().unwrap().text, TextOf::Pane);
+    let (_, all) = text_menu_entries(&h);
+    send(&mut h, vec![egui::Event::PointerMoved(all)]);
+    send(&mut h, vec![pointer_button(all, Primary, true)]);
+    assert_eq!(copied(&h), vec!["M src/main.rs\nA docs/new.md".to_owned()]);
+    send(&mut h, vec![pointer_button(all, Primary, false)]);
+
+    // Esc closes the menu, not the view; a click elsewhere closes it too.
+    filtered_click(&mut h, on_text, Secondary);
+    assert!(h.state().text_menu.is_some());
+    send(&mut h, vec![enter_or_esc(Key::Escape)]);
+    assert!(h.state().text_menu.is_none());
+    assert!(h.state().repo_view.is_some());
+    filtered_click(&mut h, on_text, Secondary);
+    h.step();
+    let row = h.get_by_label("AL aaaabbb Fix the thing").rect().center();
+    filtered_click(&mut h, row, Primary);
+    assert!(h.state().text_menu.is_none());
+    // The list on the left is no text to copy: no menu there.
+    filtered_click(&mut h, row, Secondary);
+    assert!(h.state().text_menu.is_none());
+}
+
+fn enter_or_esc(key: Key) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+#[test]
+fn right_click_on_the_output_of_a_command_copies_all_of_it() {
+    use crate::ui::text_menu::TextOf;
+    use egui::PointerButton::{Primary, Secondary};
+    let mut h = harness(marked_app(Arc::default(), &[]));
+    h.run();
+    h.state_mut().start_run("status", vec!["/repo".into()]);
+    settle(&mut h, |a| a.cards[0].last_command == Some(true));
+    h.run();
+    let output = h.get_by_label("ran status").rect().center();
+    filtered_click(&mut h, output, Secondary);
+    h.step();
+    assert!(matches!(
+        h.state().text_menu.as_ref().unwrap().text,
+        TextOf::Output(_, ref repo) if repo == &PathBuf::from("/repo")
+    ));
+    // Nothing is marked: only Copy all does something.
+    let (copy, all) = text_menu_entries(&h);
+    send(&mut h, vec![egui::Event::PointerMoved(copy)]);
+    send(&mut h, vec![pointer_button(copy, Primary, true)]);
+    assert!(copied(&h).is_empty());
+    assert!(h.state().text_menu.is_some());
+    send(&mut h, vec![pointer_button(copy, Primary, false)]);
+    send(&mut h, vec![egui::Event::PointerMoved(all)]);
+    send(&mut h, vec![pointer_button(all, Primary, true)]);
+    assert_eq!(copied(&h), vec!["ran status".to_owned()]);
+    assert!(h.state().text_menu.is_none());
+    send(&mut h, vec![pointer_button(all, Primary, false)]);
+
+    // A right click on a card is the card's own menu, as before.
+    let card = card_space(&h);
+    filtered_click(&mut h, card, Secondary);
+    assert!(h.state().text_menu.is_none());
+}
+
 #[test]
 fn open_in_the_card_menu_and_the_buttons_of_the_view() {
     let mut h = repo_view_app();

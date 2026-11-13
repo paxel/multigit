@@ -289,7 +289,7 @@ pub fn jaw_harp(frequency: f32, seconds: f32, wahs: f32) -> Vec<f32> {
             low += f * band;
             let high = buzz - low - 0.12 * band;
             band += f * high;
-            let twang = band * 0.22 + buzz * 0.06;
+            let twang = band * 0.6 + buzz * 0.1;
             twang / (1.0 + twang.abs()) * (t / 0.004).min(1.0) * (-t * 2.4).exp()
         })
         .collect();

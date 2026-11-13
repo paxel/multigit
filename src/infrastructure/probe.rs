@@ -62,11 +62,13 @@ pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
 
 /// The cheap probe: one `git status`. While HEAD is where `previous` saw
 /// it, the branches, tags and commit line of `previous` are taken as they
-/// are. `None` when HEAD moved or the status failed: then only
-/// [`probe_full`] knows.
+/// are. `None` when HEAD moved, the branch got another upstream or the
+/// status failed: then only [`probe_full`] knows.
 pub fn probe_light(runner: &GitRunner, dir: &Path, previous: &Probed) -> Option<Probed> {
     let (status, head) = status(runner, dir).ok()?;
-    if head != previous.head {
+    // The remotes of the card hang on the upstream: with another one, the
+    // remote the branch pushes to has to be asked for again.
+    if head != previous.head || status.tracking != previous.snapshot.status.tracking {
         return None;
     }
     let mut snapshot = previous.snapshot.clone();
@@ -361,6 +363,18 @@ mod tests {
         // HEAD moved: the light probe gives up.
         repo.git(&["commit", "-q", "-am", "two"]);
         assert_eq!(probe_light(&runner, repo.path(), &light), None);
+
+        // So it does when the branch gets another upstream while HEAD stays.
+        let full = probe_full(&runner, repo.path()).unwrap();
+        assert!(probe_light(&runner, repo.path(), &full).is_some());
+        let head = repo.git(&["rev-parse", "HEAD"]);
+        repo.git(&["remote", "add", "fork", "/does/not/exist.git"]);
+        repo.git(&["update-ref", "refs/remotes/fork/main", head.trim()]);
+        repo.git(&["branch", "-q", "--set-upstream-to=fork/main"]);
+        assert_eq!(probe_light(&runner, repo.path(), &full), None);
+        let full = probe_full(&runner, repo.path()).unwrap();
+        assert_eq!(full.snapshot.remote().unwrap().name, "fork");
+        assert!(probe_light(&runner, repo.path(), &full).is_some());
         // The repository is gone: it gives up as well.
         std::fs::remove_dir_all(repo.path().join(".git")).unwrap();
         assert_eq!(probe_light(&runner, repo.path(), &light), None);

@@ -253,7 +253,11 @@ installed.
 
 The **Kawaii** theme is round and pastel, in the Fredoka font, with a rainbow
 drifting behind the cards, hearts and stars floating up, cards that bob, grow
-under the pointer and swing when marked, and a burst of stars on a copy. It
+under the pointer and swing when marked, and a burst of stars on a copy.
+Bunnies and cats sit on the cards: they hop about, sleep while nothing
+happens, look up at a new remote commit, dance for a local one, let their
+ears hang over a failed fetch and jump with a heart when clicked. A command
+that ends well throws hearts and stars out of its card. It
 moves while the window has focus. Without focus the picture stands still and
 the app draws no more often than in the other themes, except for five seconds
 after something changed on a card.

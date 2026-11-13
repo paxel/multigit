@@ -385,7 +385,9 @@ pub fn reverb(dry: &[f32], decay: f32, wet: f32) -> Vec<f32> {
                     let out = *slot;
                     // Every round loses a little of its highs, as in air.
                     comb.dull += 0.45 * (out - comb.dull);
-                    *slot = x + comb.dull * comb.feedback;
+                    // What goes in is turned down by what the round keeps,
+                    // so a held note does not pile up in the room.
+                    *slot = x * (1.0 - comb.feedback) * 2.0 + comb.dull * comb.feedback;
                     sum += out;
                 }
             }
@@ -404,11 +406,19 @@ pub fn reverb(dry: &[f32], decay: f32, wet: f32) -> Vec<f32> {
 }
 
 /// `sound` as heard from far away: its echo alone, with five seconds for
-/// it to die.
+/// it to die, and its loudest moment at 0.8.
 pub fn distant(sound: &[f32]) -> Vec<f32> {
     let mut long = sound.to_vec();
     long.resize(sound.len() + samples(5.0), 0.0);
     let mut far = reverb(&long, 5.0, 1.0);
+    // Always as loud as the others of its kind: how quiet it is in the mix
+    // is for the mix to say.
+    let peak = far.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+    if peak > 0.0 {
+        for value in &mut far {
+            *value *= 0.8 / peak;
+        }
+    }
     fade_out(&mut far, 1.0);
     far
 }
@@ -423,7 +433,8 @@ pub fn crackle(seconds: f32, seed: u64) -> Vec<f32> {
         .map(|i| {
             let t = i as f32 / RATE;
             if noise.sample() > chance {
-                click = 0.3 + 0.7 * noise.sample();
+                let size = noise.sample();
+                click = size.signum() * (0.3 + 0.7 * size.abs());
             }
             click *= 0.7;
             hiss += 0.2 * (noise.sample() - hiss);
@@ -1134,7 +1145,7 @@ mod tests {
         assert_eq!(room[0], 0.0, "the echo alone: the click itself is gone");
         let early = loudest(&room[samples(0.1)..samples(0.5)]);
         let late = loudest(&room[samples(2.5)..samples(3.0)]);
-        assert!(early > 0.01, "{early}");
+        assert!(early > 0.002, "{early}");
         assert!(late > 0.0 && late < early * 0.1, "{early} then {late}");
         // A longer decay rings longer.
         let hall = reverb(&click, 5.0, 1.0);
@@ -1169,7 +1180,10 @@ mod tests {
         let dust = crackle(2.0, 5);
         assert_eq!(dust.len(), samples(2.0));
         assert!(dust.iter().all(|s| s.is_finite() && s.abs() <= 1.2));
-        let clicks = dust.windows(2).filter(|w| w[1] - w[0] > 0.25).count();
+        let clicks = dust
+            .windows(2)
+            .filter(|w| w[1].abs() - w[0].abs() > 0.25)
+            .count();
         assert!((10..=60).contains(&clicks), "{clicks} clicks in 2 s");
         assert!(dust[0].abs() < 0.01, "comes in softly");
         assert_ne!(dust, crackle(2.0, 6));

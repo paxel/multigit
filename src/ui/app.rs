@@ -12,6 +12,7 @@ use crate::domain::config::{Config, Theme};
 use crate::domain::destructive::is_destructive;
 use crate::domain::details::{Details, DiffTarget, LogEntry, Place, RepoTab, Trail};
 use crate::domain::favorites::{FavoriteDraft, active_after_delete, forget};
+use crate::domain::graph::GraphData;
 use crate::domain::history::History;
 use crate::domain::kawaii;
 use crate::domain::naming::{board_order, title};
@@ -115,12 +116,45 @@ pub struct RepoView {
     /// The files of the picked commit that are unfolded, by path, each
     /// with its diff; `None` while it is read.
     pub unfolded: HashMap<String, Option<Result<String, String>>>,
+    /// The graph of all branches; `None` until the Graph tab asked for it.
+    pub graph: Option<Result<GraphData, String>>,
+    /// The folded runs of the graph that were unfolded, each by the hash
+    /// of its newest commit.
+    pub graph_open: HashSet<String>,
+    /// The graph draws the old remote branches too.
+    pub with_old: bool,
     /// The history goes on after the commits the list holds.
     pub more_commits: bool,
     /// The next page of commits is being read.
     pub loading_commits: bool,
     /// The diff of `selected`; `None` while it is read.
     pub diff: Option<Result<String, String>>,
+}
+
+impl RepoView {
+    /// Whether what was read still has `target`: a file among the changed
+    /// ones, a commit in the list or in the graph.
+    pub fn holds(&self, target: &DiffTarget) -> bool {
+        let listed = matches!(&self.details, Some(Ok(details)) if details.holds(target));
+        let drawn = match (target, &self.graph) {
+            (DiffTarget::Commit(hash), Some(Ok(graph))) => graph.holds(hash),
+            _ => false,
+        };
+        listed || drawn
+    }
+
+    /// Take off the picks that what was read no longer has, in the shown
+    /// tab and in the others.
+    fn drop_what_is_gone(&mut self) {
+        if self.selected.as_ref().is_some_and(|t| !self.holds(t)) {
+            self.selected = None;
+            self.diff = None;
+            self.unfolded.clear();
+        }
+        let mut kept = std::mem::take(&mut self.kept);
+        kept.retain(|_, target| self.holds(target));
+        self.kept = kept;
+    }
 }
 
 /// What the settings window shows.
@@ -577,6 +611,9 @@ impl App {
             trail: Trail::new((tab, None)),
             closed: HashSet::new(),
             unfolded: HashMap::new(),
+            graph: None,
+            graph_open: HashSet::new(),
+            with_old: false,
             more_commits: true,
             loading_commits: false,
             diff: None,
@@ -598,6 +635,9 @@ impl App {
                 .and_then(|d| d.as_ref().ok())
                 .map_or(0, |d| d.commits.len());
             self.engine.load_details(view.repo.clone(), commits);
+            if view.graph.is_some() || view.tab == RepoTab::Graph {
+                self.engine.load_graph(view.repo.clone(), view.with_old);
+            }
         }
     }
 
@@ -611,11 +651,11 @@ impl App {
             view.kept.insert(view.tab, old);
         }
         view.kept.remove(&tab);
-        let held = match &view.details {
-            Some(Ok(details)) => target.filter(|t| details.holds(t)),
-            _ => None,
-        };
+        let held = target.filter(|t| view.holds(t));
         view.tab = tab;
+        if tab == RepoTab::Graph && view.graph.is_none() {
+            self.engine.load_graph(view.repo.clone(), view.with_old);
+        }
         view.selected = held.clone();
         view.diff = None;
         view.unfolded.clear();
@@ -701,6 +741,33 @@ impl App {
         }
     }
 
+    /// The graph of the open view was read.
+    fn graph_loaded(&mut self, repo: &Path, result: Result<GraphData, String>) {
+        let Some(view) = self.repo_view.as_mut().filter(|v| v.repo == repo) else {
+            return;
+        };
+        view.graph = Some(result);
+        view.drop_what_is_gone();
+    }
+
+    /// A click on a folded run of the graph: show its commits.
+    pub fn unfold_graph_run(&mut self, first: &str) {
+        if let Some(view) = &mut self.repo_view {
+            view.graph_open.insert(first.to_owned());
+        }
+    }
+
+    /// A click on the line that counts the old remote branches left out of
+    /// the graph: draw them too.
+    pub fn show_old_branches(&mut self) {
+        if let Some(view) = &mut self.repo_view
+            && !view.with_old
+        {
+            view.with_old = true;
+            self.engine.load_graph(view.repo.clone(), true);
+        }
+    }
+
     /// A click on a folder of the file tree: fold it, or unfold it.
     pub fn toggle_repo_folder(&mut self, path: &str) {
         if let Some(view) = &mut self.repo_view
@@ -752,25 +819,14 @@ impl App {
         let Some(view) = self.repo_view.as_mut().filter(|v| v.repo == repo) else {
             return;
         };
-        let held = match (&result, &view.selected) {
-            (Ok(details), Some(target)) => details.holds(target),
-            _ => false,
-        };
-        if !held {
-            view.selected = None;
-            view.diff = None;
-            view.unfolded.clear();
-        }
+        view.details = Some(result);
+        view.drop_what_is_gone();
         // A page asked for before this reload no longer fits the list.
         view.loading_commits = false;
-        if let Ok(details) = &result {
+        if let Some(Ok(details)) = &view.details {
             let page = crate::domain::details::LOG_PAGE;
             view.more_commits = details.commits.len() >= page && details.commits.len() % page == 0;
         }
-        if let Ok(details) = &result {
-            view.kept.retain(|_, target| details.holds(target));
-        }
-        view.details = Some(result);
         if let Some(target) = view.selected.clone() {
             self.engine.load_diff(repo.to_path_buf(), target);
         }
@@ -1183,6 +1239,7 @@ impl App {
                 result,
                 more,
             } => self.commits_loaded(&repo, skip, result, more),
+            Event::Graph { repo, result } => self.graph_loaded(&repo, result),
             Event::Diff {
                 repo,
                 target,
@@ -1321,6 +1378,12 @@ pub(crate) mod tests {
         pub details: Mutex<Option<Details>>,
         /// How often the lists were read.
         pub details_read: Mutex<usize>,
+        /// What the Graph tab gets; an error while `None`. Asked for the
+        /// old remote branches too, it has `origin/ancient` on its last
+        /// commit.
+        pub graph: Mutex<Option<GraphData>>,
+        /// How often the graph was read.
+        pub graphs_read: Mutex<usize>,
         /// How many commits the history has; 0 leaves the commits of
         /// `details` as they are, `usize::MAX` makes reading a page fail.
         pub log_length: Mutex<usize>,
@@ -1415,6 +1478,25 @@ pub(crate) mod tests {
                 details.commits = (0..count).map(fake_commit).collect();
             }
             details.ok_or_else(|| "not a git repository".to_owned())
+        }
+        fn graph(&self, _dir: &Path, with_old: bool) -> Result<GraphData, String> {
+            *self.graphs_read.lock().unwrap() += 1;
+            let mut graph = self.graph.lock().unwrap().clone();
+            if let Some(graph) = &mut graph
+                && with_old
+            {
+                graph.refs.push(crate::domain::graph::GraphRef {
+                    name: "origin/ancient".into(),
+                    kind: crate::domain::graph::RefKind::Remote,
+                    hash: graph
+                        .commits
+                        .last()
+                        .map(|c| c.hash.clone())
+                        .unwrap_or_default(),
+                    time: 0,
+                });
+            }
+            graph.ok_or_else(|| "no graph".to_owned())
         }
         fn log(&self, _dir: &Path, skip: usize) -> Result<Vec<LogEntry>, String> {
             let length = *self.log_length.lock().unwrap();
@@ -2288,6 +2370,83 @@ pub(crate) mod tests {
         assert!(!view(&app).more_commits);
         assert_eq!(app.toasts.len(), 1);
         assert!(app.toasts[0].text.contains("history unreadable"));
+    }
+
+    #[test]
+    fn the_graph_is_read_for_its_tab_and_keeps_its_pick_while_it_holds_it() {
+        use crate::domain::graph::GraphCommit;
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details::default());
+        let commit = |hash: &str| GraphCommit {
+            hash: hash.into(),
+            parents: vec![],
+            author: String::new(),
+            subject: String::new(),
+        };
+        let mut app = app_with(backend.clone(), None);
+        let view = |app: &App| app.repo_view.clone().unwrap();
+        let read = || *backend.graphs_read.lock().unwrap();
+        app.unfold_graph_run("aa");
+        app.show_old_branches();
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| view(a).details.is_some());
+        app.refresh_repo_view();
+        settle(&mut app, |_| *backend.details_read.lock().unwrap() == 2);
+        assert_eq!(read(), 0, "nobody looked at the graph yet");
+
+        // The tab reads the graph, once; an unreadable one shows why.
+        app.switch_repo_tab(RepoTab::Graph);
+        assert_eq!(view(&app).graph, None);
+        settle(&mut app, |a| view(a).graph.is_some());
+        assert_eq!(view(&app).graph, Some(Err("no graph".into())));
+        *backend.graph.lock().unwrap() = Some(GraphData {
+            commits: vec![commit("aa"), commit("bb")],
+            ..GraphData::default()
+        });
+        app.switch_repo_tab(RepoTab::Commits);
+        app.switch_repo_tab(RepoTab::Graph);
+        assert_eq!(read(), 1);
+        app.refresh_repo_view();
+        settle(&mut app, |a| matches!(view(a).graph, Some(Ok(_))));
+        assert_eq!(read(), 2);
+
+        // A commit only the graph has can be picked and outlives a reload.
+        let target = DiffTarget::Commit("bb".into());
+        app.select_in_repo_view(target.clone());
+        app.refresh_repo_view();
+        settle(&mut app, |_| read() == 3);
+        app.handle_events();
+        assert_eq!(view(&app).selected, Some(target.clone()));
+        app.unfold_graph_run("aa");
+        assert!(view(&app).graph_open.contains("aa"));
+
+        // The old remote branches are asked for once.
+        app.show_old_branches();
+        app.show_old_branches();
+        assert!(view(&app).with_old);
+        settle(
+            &mut app,
+            |a| matches!(&view(a).graph, Some(Ok(graph)) if graph.refs.len() == 1),
+        );
+        assert_eq!(read(), 4);
+
+        // The pick goes when its commit left the graph, in whatever tab.
+        app.switch_repo_tab(RepoTab::Files);
+        *backend.graph.lock().unwrap() = Some(GraphData {
+            commits: vec![commit("aa")],
+            ..GraphData::default()
+        });
+        app.refresh_repo_view();
+        settle(&mut app, |_| read() == 5);
+        app.handle_events();
+        app.switch_repo_tab(RepoTab::Graph);
+        assert_eq!(view(&app).selected, None);
+        // A graph of a repository whose view is not open is dropped.
+        app.handle_event(Event::Graph {
+            repo: "/x/other".into(),
+            result: Err("other".into()),
+        });
+        assert!(matches!(view(&app).graph, Some(Ok(_))));
     }
 
     /// An app with sounds on, one card, and what its fake player was given.

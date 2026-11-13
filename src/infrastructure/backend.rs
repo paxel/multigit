@@ -2,6 +2,7 @@
 
 use crate::application::engine::Backend;
 use crate::domain::details::{Details, DiffTarget, LOG_PAGE, LogEntry};
+use crate::domain::graph::GraphData;
 use crate::domain::output::ProcessOutput;
 use crate::domain::repo::{ProbeError, Snapshot};
 use crate::infrastructure::details;
@@ -126,6 +127,13 @@ impl Backend for GitBackend {
 
     fn log(&self, dir: &Path, skip: usize) -> Result<Vec<LogEntry>, String> {
         details::log(&self.runner, dir, skip, LOG_PAGE)
+    }
+
+    fn graph(&self, dir: &Path, with_old: bool) -> Result<GraphData, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        details::graph(&self.runner, dir, now, with_old)
     }
 
     fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String> {

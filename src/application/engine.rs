@@ -11,6 +11,7 @@
 use crate::application::semaphore::Semaphore;
 use crate::domain::command::Job;
 use crate::domain::details::{Details, DiffTarget, LOG_PAGE, LogEntry};
+use crate::domain::graph::GraphData;
 use crate::domain::output::{ProcessOutput, SectionState};
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use std::collections::HashMap;
@@ -46,6 +47,9 @@ pub trait Backend: Send + Sync + 'static {
     fn details(&self, dir: &Path, commits: usize) -> Result<Details, String>;
     /// The next page of the commit list after the first `skip`; same rule.
     fn log(&self, dir: &Path, skip: usize) -> Result<Vec<LogEntry>, String>;
+    /// The graph of all branches; `with_old` draws the old remote branches
+    /// too. Same rule.
+    fn graph(&self, dir: &Path, with_old: bool) -> Result<GraphData, String>;
     /// The diff of a file or commit for the repository view; same rule.
     fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String>;
 }
@@ -100,6 +104,11 @@ pub enum Event {
         skip: usize,
         result: Result<Vec<LogEntry>, String>,
         more: bool,
+    },
+    /// The graph of the repository view was read.
+    Graph {
+        repo: PathBuf,
+        result: Result<GraphData, String>,
     },
     /// A diff for the repository view was read.
     Diff {
@@ -326,6 +335,15 @@ impl Engine {
         });
     }
 
+    /// Read the graph of the repository view (sends [`Event::Graph`]).
+    pub fn load_graph(&self, repo: PathBuf, with_old: bool) {
+        let shared = self.shared.clone();
+        thread::spawn(move || {
+            let result = shared.backend.graph(&repo, with_old);
+            shared.send(Event::Graph { repo, result });
+        });
+    }
+
     /// Read a diff for the repository view (sends [`Event::Diff`]).
     pub fn load_diff(&self, repo: PathBuf, target: DiffTarget) {
         let shared = self.shared.clone();
@@ -453,6 +471,9 @@ mod tests {
         }
         fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String> {
             Ok(format!("diff {} {target:?}", dir.display()))
+        }
+        fn graph(&self, dir: &Path, with_old: bool) -> Result<GraphData, String> {
+            Err(format!("graph {} {with_old}", dir.display()))
         }
     }
 
@@ -667,6 +688,14 @@ mod tests {
                 other => panic!("{other:?}"),
             }
         }
+        engine.load_graph("/r".into(), true);
+        assert_eq!(
+            recv(&rx),
+            Event::Graph {
+                repo: "/r".into(),
+                result: Err("graph /r true".into())
+            }
+        );
         let target = DiffTarget::Commit("abc".into());
         engine.load_diff("/r".into(), target.clone());
         assert_eq!(

@@ -7,6 +7,10 @@ use crate::domain::details::{
     COMMIT_FORMAT, ChangeKind, Details, DiffTarget, LOG_DATE, LOG_FORMAT, LOG_PAGE, LogEntry,
     cut_diff, parse_branches, parse_changes, parse_log,
 };
+use crate::domain::graph::{
+    GRAPH_FORMAT, GRAPH_LIMIT, GraphData, REF_FORMAT, RefKind, drawn_refs, parse_graph_log,
+    parse_refs,
+};
 use crate::domain::output::ProcessOutput;
 use crate::domain::status::{Head, parse_porcelain_v2};
 use crate::infrastructure::git::GitRunner;
@@ -55,6 +59,62 @@ pub fn log(
         LOG_FORMAT,
     ];
     stdout(runner, dir, &args).map(|out| parse_log(&out))
+}
+
+/// The graph of all branches of the repository at `dir`, as it is at `now`
+/// (seconds since 1970); `with_old` draws the old remote branches too.
+pub fn graph(
+    runner: &GitRunner,
+    dir: &Path,
+    now: i64,
+    with_old: bool,
+) -> Result<GraphData, String> {
+    let names = stdout(
+        runner,
+        dir,
+        &[
+            "for-each-ref",
+            REF_FORMAT,
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+    )?;
+    let (refs, hidden) = drawn_refs(parse_refs(&names), now, with_old);
+    // The history of every branch drawn; tags only name commits in it.
+    let mut tips: Vec<&str> = refs
+        .iter()
+        .filter(|r| r.kind != RefKind::Tag)
+        .map(|r| r.hash.as_str())
+        .collect();
+    tips.sort_unstable();
+    tips.dedup();
+    if tips.is_empty() {
+        return Ok(GraphData {
+            hidden,
+            ..GraphData::default()
+        });
+    }
+    // One more than is shown tells whether the history goes on.
+    let limit = format!("-{}", GRAPH_LIMIT + 1);
+    let mut args = vec![
+        "log",
+        "--topo-order",
+        &limit,
+        "--no-show-signature",
+        GRAPH_FORMAT,
+    ];
+    args.extend(tips);
+    args.push("--");
+    let mut commits = parse_graph_log(&stdout(runner, dir, &args)?);
+    let cut = commits.len() > GRAPH_LIMIT;
+    commits.truncate(GRAPH_LIMIT);
+    Ok(GraphData {
+        commits,
+        refs,
+        hidden,
+        cut,
+    })
 }
 
 /// The lists of the view for the repository at `dir`, with at least the
@@ -172,6 +232,7 @@ mod tests {
     use super::*;
     use crate::domain::details::FileChange;
     use crate::infrastructure::testutil::{TestRepo, isolated_runner};
+    use std::collections::HashSet;
 
     fn file(path: &str, kind: ChangeKind) -> DiffTarget {
         DiffTarget::File(FileChange {
@@ -285,6 +346,89 @@ mod tests {
         };
         let brought = diff(&runner, repo.path(), &inside).unwrap();
         assert!(brought.contains("+from the side"), "{brought}");
+    }
+
+    #[test]
+    fn the_graph_reads_all_branches_their_names_and_leaves_old_remote_ones_out() {
+        let repo = TestRepo::new();
+        let runner = isolated_runner();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let empty = graph(&runner, repo.path(), now, false).unwrap();
+        assert_eq!(empty, GraphData::default(), "no commit yet");
+
+        repo.commit("a.txt", "one\n");
+        repo.git(&["tag", "v1"]);
+        repo.git(&["tag", "-a", "-m", "annotated", "v1-annotated"]);
+        let root = repo.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        repo.commit("b.txt", "two\n");
+        repo.git(&["checkout", "-q", "-b", "side", &root]);
+        repo.commit("c.txt", "three\n");
+        let side = repo.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        repo.git(&["checkout", "-q", "main"]);
+        let main = repo.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        // Remote branches without a remote: names under refs/remotes.
+        repo.git(&["update-ref", "refs/remotes/origin/main", &main]);
+        repo.git(&["update-ref", "refs/remotes/origin/theirs", &side]);
+        repo.git(&[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ]);
+
+        let data = graph(&runner, repo.path(), now, false).unwrap();
+        let hashes: HashSet<&str> = data.commits.iter().map(|c| c.hash.as_str()).collect();
+        assert_eq!(hashes.len(), 3);
+        assert!(hashes.contains(root.as_str()) && hashes.contains(side.as_str()));
+        assert_eq!(data.commits.last().unwrap().hash, root, "parents come last");
+        let of = |hash: &str| data.commits.iter().find(|c| c.hash == hash).unwrap();
+        assert_eq!(of(&main).parents, std::slice::from_ref(&root));
+        assert_eq!(of(&main).subject, "b.txt");
+        assert_eq!(of(&main).author, "Test");
+        let mut names: Vec<_> = data
+            .refs
+            .iter()
+            .map(|r| (r.name.as_str(), r.hash.as_str()))
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                ("main", main.as_str()),
+                ("origin/main", main.as_str()),
+                ("origin/theirs", side.as_str()),
+                ("side", side.as_str()),
+                ("v1", root.as_str()),
+                ("v1-annotated", root.as_str()),
+            ]
+        );
+        assert_eq!((data.hidden, data.cut), (0, false));
+
+        // A hundred days on, the remote branch nobody has locally is old.
+        let later = now + 100 * 86_400;
+        let aged = graph(&runner, repo.path(), later, false).unwrap();
+        assert_eq!(aged.hidden, 1);
+        assert!(aged.refs.iter().all(|r| r.name != "origin/theirs"));
+        assert_eq!(aged.commits.len(), 3, "its commit is still on side");
+        let all = graph(&runner, repo.path(), later, true).unwrap();
+        assert_eq!(all.hidden, 1);
+        assert!(all.refs.iter().any(|r| r.name == "origin/theirs"));
+        // Without the local branch its commit goes with it.
+        repo.git(&["branch", "-D", "side"]);
+        let gone = graph(&runner, repo.path(), later, false).unwrap();
+        assert_eq!(gone.commits.len(), 2);
+        assert_eq!(
+            graph(&runner, repo.path(), later, true)
+                .unwrap()
+                .commits
+                .len(),
+            3
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        assert!(graph(&runner, dir.path(), now, false).is_err());
     }
 
     #[test]
@@ -533,6 +677,10 @@ mod tests {
                 .contains("+one")
         );
         log(&runner, repo.path(), 0, 5).unwrap();
+        assert_eq!(
+            graph(&runner, repo.path(), 0, true).unwrap().commits.len(),
+            1
+        );
         for (name, marker) in [
             ("diff.external", &external_ran),
             ("textconv", &textconv_ran),

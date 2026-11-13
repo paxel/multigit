@@ -6,6 +6,7 @@ use crate::domain::details::{
     ChangeKind, Details, DiffTarget, FileChange, LineKind, LogEntry, RepoTab, author_hue,
     file_lines, initials, parse_commit, short_age, tree_rows,
 };
+use crate::domain::graph::{GraphData, GraphRow, LabelKind, RowKind, graph_rows, labels};
 use crate::domain::naming::title;
 use crate::ui::app::{App, RepoView};
 use crate::ui::view::ok_color;
@@ -24,6 +25,10 @@ enum Act {
     Unfold(String),
     /// The end of the commit list came into view.
     More,
+    /// Unfold the run of the graph that starts with this commit.
+    Run(String),
+    /// Draw the old remote branches too.
+    Old,
     Select(DiffTarget),
 }
 
@@ -69,7 +74,7 @@ impl App {
                         .show(ui, |ui| match view.tab {
                             RepoTab::Files => file_list(ui, details, view, &mut act),
                             RepoTab::Commits => commit_list(ui, details, view, &mut act),
-                            RepoTab::Graph => branch_list(ui, details),
+                            RepoTab::Graph => graph_list(ui, details, view, &mut act),
                         });
                     egui::CentralPanel::default().show(ui, |ui| diff_pane(ui, view, &mut act));
                 }
@@ -87,6 +92,8 @@ impl App {
             Some(Act::Fold(path)) => self.toggle_repo_folder(&path),
             Some(Act::Unfold(path)) => self.toggle_commit_file(&path),
             Some(Act::More) => self.load_more_commits(),
+            Some(Act::Run(first)) => self.unfold_graph_run(&first),
+            Some(Act::Old) => self.show_old_branches(),
             Some(Act::Select(target)) => self.select_in_repo_view(target),
             None => {}
         }
@@ -259,18 +266,167 @@ fn commit_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option
     });
 }
 
-/// The Graph tab: the branches.
-fn branch_list(ui: &mut Ui, details: &Details) {
-    list(ui, "Branches", RepoTab::Graph, |ui| {
-        for branch in &details.branches {
-            let name = RichText::new(&branch.name).monospace();
-            if branch.current {
-                ui.label(name.strong()).on_hover_text("checked out");
-            } else {
-                ui.label(name);
+/// How wide a lane of the graph is, and how high a row.
+const LANE: f32 = 14.0;
+const GRAPH_ROW: f32 = 22.0;
+
+/// The color of a lane: neighbours far apart on the color wheel.
+fn lane_color(ui: &Ui, lane: usize) -> Color32 {
+    let value = if ui.visuals().dark_mode { 0.95 } else { 0.65 };
+    let hue = (lane as f32 * 0.381_966).fract();
+    egui::ecolor::Hsva::new(hue, 0.65, value, 1.0).into()
+}
+
+/// The lines and the dot of one row of the graph, in the `gutter`.
+fn graph_lines(ui: &Ui, gutter: egui::Rect, entry: &GraphRow) {
+    let painter = ui.painter_at(gutter);
+    let x = |lane: usize| gutter.left() + LANE * (lane as f32 + 0.5);
+    let (top, middle, bottom) = (gutter.top(), gutter.center().y, gutter.bottom());
+    let line = |lane: usize| egui::Stroke::new(1.5, lane_color(ui, lane));
+    for lane in &entry.through {
+        let (from, to) = (egui::pos2(x(*lane), top), egui::pos2(x(*lane), bottom));
+        painter.line_segment([from, to], line(*lane));
+    }
+    let dot = egui::pos2(x(entry.lane), middle);
+    if entry.up {
+        painter.line_segment([egui::pos2(dot.x, top), dot], line(entry.lane));
+    }
+    if entry.down {
+        painter.line_segment([dot, egui::pos2(dot.x, bottom)], line(entry.lane));
+    }
+    for lane in &entry.into {
+        painter.line_segment([egui::pos2(x(*lane), top), dot], line(*lane));
+    }
+    for lane in &entry.out {
+        painter.line_segment([dot, egui::pos2(x(*lane), bottom)], line(*lane));
+    }
+    let color = lane_color(ui, entry.lane);
+    match &entry.kind {
+        // A merge is a ring, any other commit a dot.
+        RowKind::Commit { merge: true, .. } => {
+            painter.circle_filled(dot, 4.5, ui.visuals().panel_fill);
+            painter.circle_stroke(dot, 4.5, egui::Stroke::new(1.5, color));
+        }
+        RowKind::Commit { .. } => {
+            painter.circle_filled(dot, 4.0, color);
+        }
+        // A folded run: three small dots on its line.
+        RowKind::Fold { .. } => {
+            for offset in [-5.0, 0.0, 5.0] {
+                painter.circle_filled(dot + egui::vec2(0.0, offset), 1.5, color);
             }
         }
-    });
+    }
+}
+
+/// The Graph tab: all branches as a condensed graph. A click on a commit
+/// picks it for the right pane; a click on a folded run unfolds it.
+fn graph_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<Act>) {
+    let graph = match &view.graph {
+        None => {
+            ui.weak("loading");
+            return;
+        }
+        Some(Err(error)) => {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+            return;
+        }
+        Some(Ok(graph)) => graph,
+    };
+    let head = details.branches.iter().find(|b| b.current);
+    let names = labels(&graph.refs, head.map(|b| b.name.as_str()));
+    let rows = graph_rows(&graph.commits, &names, &view.graph_open);
+    let lanes = rows.iter().map(GraphRow::width).max().unwrap_or(1);
+    ui.strong("All branches");
+    graph_notes(ui, graph, view, act);
+    if rows.is_empty() {
+        ui.weak("no commits yet");
+        return;
+    }
+    egui::ScrollArea::both()
+        .id_salt(RepoTab::Graph)
+        .auto_shrink([false, false])
+        .show_rows(ui, GRAPH_ROW, rows.len(), |ui, shown| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            for entry in rows.get(shown).unwrap_or_default() {
+                ui.horizontal(|ui| {
+                    ui.set_height(GRAPH_ROW);
+                    let size = egui::vec2(lanes as f32 * LANE, GRAPH_ROW);
+                    let (gutter, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    graph_lines(ui, gutter, entry);
+                    graph_row_text(ui, view, entry, act);
+                });
+            }
+        });
+}
+
+/// The lines above the graph: old remote branches left out, and a history
+/// too long to be read whole.
+fn graph_notes(ui: &mut Ui, graph: &GraphData, view: &RepoView, act: &mut Option<Act>) {
+    if graph.hidden > 0 && !view.with_old {
+        let text = if graph.hidden == 1 {
+            "1 old remote branch hidden".to_owned()
+        } else {
+            format!("{} old remote branches hidden", graph.hidden)
+        };
+        let hover =
+            "Remote branches nobody has locally, without a commit for 90 days. Click to show them.";
+        if ui.link(text).on_hover_text(hover).clicked() {
+            *act = Some(Act::Old);
+        }
+    }
+    if graph.cut {
+        ui.weak("older history is not shown");
+    }
+}
+
+/// What stands beside the lines of a row: the names on the commit and its
+/// title, or how many commits a folded run holds.
+fn graph_row_text(ui: &mut Ui, view: &RepoView, entry: &GraphRow, act: &mut Option<Act>) {
+    match &entry.kind {
+        RowKind::Fold { count, first } => {
+            let text = RichText::new(format!("{count} commits")).weak();
+            let run = egui::Button::new(text).frame(false);
+            if ui.add(run).on_hover_text("Show these commits").clicked() {
+                *act = Some(Act::Run(first.clone()));
+            }
+        }
+        RowKind::Commit {
+            hash,
+            author,
+            subject,
+            labels,
+            ..
+        } => {
+            for label in labels {
+                let fill = match label.kind {
+                    LabelKind::Local | LabelKind::Both => lane_color(ui, entry.lane),
+                    LabelKind::Remote => ui.visuals().weak_text_color(),
+                    LabelKind::Tag => ui.visuals().warn_fg_color,
+                };
+                let mut text = RichText::new(format!(" {} ", label.text))
+                    .monospace()
+                    .background_color(fill.gamma_multiply(0.3))
+                    .color(ui.visuals().strong_text_color());
+                if label.head {
+                    text = text.strong().underline();
+                }
+                let hover = match (label.kind, label.head) {
+                    (_, true) => "The checked-out branch",
+                    (LabelKind::Local, _) => "A local branch",
+                    (LabelKind::Remote, _) => "A remote branch",
+                    (LabelKind::Both, _) => {
+                        "A local branch and its remote branch, on the same commit"
+                    }
+                    (LabelKind::Tag, _) => "A tag",
+                };
+                ui.label(text).on_hover_text(hover);
+            }
+            let target = DiffTarget::Commit(hash.clone());
+            let hover = format!("{author}\n{subject}");
+            row(ui, view, target, RichText::new(subject), &hover, act);
+        }
+    }
 }
 
 /// What is picked, on the right: a commit, or a file with the content of

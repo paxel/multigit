@@ -1011,6 +1011,37 @@ fn repo_view_app() -> Harness<'static, App> {
             },
         ],
     });
+    // main: tip, two plain commits, base; side-branch: one commit on base.
+    use crate::domain::graph::{GraphCommit, GraphData, GraphRef, RefKind};
+    let commit = |hash: &str, parent: &str, subject: &str| GraphCommit {
+        hash: hash.into(),
+        parents: vec![parent.into()],
+        author: "Ada Lovelace".into(),
+        subject: subject.into(),
+    };
+    let name = |name: &str, kind, hash: &str| GraphRef {
+        name: name.into(),
+        kind,
+        hash: hash.into(),
+        time: 0,
+    };
+    *backend.graph.lock().unwrap() = Some(GraphData {
+        commits: vec![
+            commit("aa01", "aa02", "Tip of main"),
+            commit("aa02", "aa03", "Plain one"),
+            commit("aa03", "ba5e", "Plain two"),
+            commit("51de", "ba5e", "Work on the side"),
+            commit("ba5e", "0000", "Where they part"),
+        ],
+        refs: vec![
+            name("main", RefKind::Local, "aa01"),
+            name("origin/main", RefKind::Remote, "aa01"),
+            name("side-branch", RefKind::Local, "51de"),
+            name("v1", RefKind::Tag, "ba5e"),
+        ],
+        hidden: 2,
+        cut: false,
+    });
     // Frames close enough together for two clicks to be a double click.
     let mut h = harness_stepping(marked_app(backend, &[]), 0.05);
     h.run();
@@ -1131,7 +1162,9 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     // The Graph tab has the branches.
     h.get_by_label("Graph").click();
     h.run();
-    h.get_by_label("side-branch");
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().graph.is_some());
+    h.run();
+    h.get_by_label(" side-branch ");
 
     // Back goes to the file, on through the files picked before it to the
     // Files tab without a pick, then to the commit; Forward returns.
@@ -1182,6 +1215,62 @@ fn open_in_the_card_menu_and_the_buttons_of_the_view() {
     h.get_by_label("Close").click();
     h.run();
     assert!(h.state().repo_view.is_none());
+}
+
+#[test]
+fn the_graph_tab_draws_named_commits_folds_plain_runs_and_picks_a_commit() {
+    let mut h = repo_view_app();
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.run();
+    h.get_by_label("Graph").click();
+    h.run();
+    h.get_by_label("loading");
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().graph.is_some());
+    h.run();
+    h.get_by_label("All branches");
+    // A local branch and its remote branch on one commit share a label.
+    h.get_by_label(" main = origin ");
+    assert!(h.query_by_label(" origin/main ").is_none());
+    h.get_by_label(" side-branch ");
+    h.get_by_label(" v1 ");
+    h.get_by_label("Tip of main");
+    h.get_by_label("Work on the side");
+    h.get_by_label("Where they part");
+    // The two plain commits between the tip and the fork are one row.
+    assert!(h.query_by_label("Plain one").is_none());
+    h.get_by_label("2 commits").click();
+    h.run();
+    h.get_by_label("Plain one");
+    h.get_by_label("Plain two");
+    assert!(h.query_by_label("2 commits").is_none());
+
+    // A commit of the graph shows on the right like one of the list.
+    h.get_by_label("Work on the side").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.run();
+    h.get_by_label("2 files changed");
+    h.get_by_label("Ada Lovelace <ada@example.org>");
+
+    // Old remote branches are left out behind a line that shows them.
+    assert!(h.query_by_label(" origin/ancient ").is_none());
+    h.get_by_label("2 old remote branches hidden").click();
+    h.run();
+    settle(&mut h, |a| {
+        let view = a.repo_view.as_ref().unwrap();
+        matches!(&view.graph, Some(Ok(graph)) if graph.refs.len() == 5)
+    });
+    h.run();
+    h.get_by_label(" origin/ancient ");
+    assert!(h.query_by_label("2 old remote branches hidden").is_none());
+    // The pick is still there, and Back leaves the graph.
+    h.get_by_label("2 files changed");
+    h.get_by_label("Back").click();
+    h.run();
+    h.get_by_label("Back").click();
+    h.run();
+    assert!(h.query_by_label("All branches").is_none());
 }
 
 #[test]

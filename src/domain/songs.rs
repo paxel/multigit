@@ -653,10 +653,61 @@ pub enum Change {
     /// The tape stops: the last song's chord sinks away; after a silence
     /// the next song is counted in.
     TapeStop,
+    /// A modem on an acoustic coupler dials into the next style: dial
+    /// tone, dialling, the answer, the handshake's warbling and screech.
+    Modem,
 }
 
 /// The change breaks.
-pub const CHANGES: [Change; 2] = [Change::Radio, Change::TapeStop];
+pub const CHANGES: [Change; 3] = [Change::Radio, Change::TapeStop, Change::Modem];
+
+/// The two tones of each key the modem dials, in Hz.
+const DIALLED: [(f32, f32); 8] = [
+    (941.0, 1336.0),
+    (697.0, 1209.0),
+    (852.0, 1336.0),
+    (697.0, 1477.0),
+    (770.0, 1209.0),
+    (770.0, 1336.0),
+    (852.0, 1477.0),
+    (697.0, 1336.0),
+];
+
+/// What the modem's line carries at `t` seconds: the frequencies of up to
+/// two tones, and how much noise. `bit` is the data bit sent just now.
+fn modem_line(t: f32, bit: bool) -> (f32, f32, f32) {
+    match t {
+        // Dial tone.
+        t if t < 1.6 => (350.0, 440.0, 0.0),
+        t if t < 1.8 => (0.0, 0.0, 0.0),
+        // Eight keys, each a tenth of a second, a tenth apart.
+        t if t < 3.4 => {
+            let key = ((t - 1.8) / 0.2) as usize;
+            let (low, high) = DIALLED.get(key).copied().unwrap_or((0.0, 0.0));
+            if ((t - 1.8) / 0.2).fract() < 0.5 {
+                (low, high, 0.0)
+            } else {
+                (0.0, 0.0, 0.0)
+            }
+        }
+        t if t < 3.9 => (0.0, 0.0, 0.0),
+        // The other side answers.
+        t if t < 4.9 => (2100.0, 0.0, 0.0),
+        t if t < 5.0 => (0.0, 0.0, 0.0),
+        // One side warbles between two tones, then both sides do.
+        t if t < 6.4 => (if bit { 1180.0 } else { 980.0 }, 0.0, 0.0),
+        t if t < 7.6 => (
+            if bit { 1180.0 } else { 980.0 },
+            if bit { 1650.0 } else { 1850.0 },
+            0.0,
+        ),
+        // Two falling chirps while the line is measured.
+        t if t < 8.4 => (2600.0 - 2300.0 * ((t - 7.6) / 0.4).fract(), 0.0, 0.1),
+        // The screech of the data itself.
+        t if t < 12.3 => (1800.0, if bit { 1200.0 } else { 2400.0 }, 1.0),
+        _ => (0.0, 0.0, 0.0),
+    }
+}
 
 impl Change {
     /// Its length in seconds before `next`.
@@ -664,6 +715,7 @@ impl Change {
         match self {
             Change::Radio => 12.0,
             Change::TapeStop => 7.5 + 4.0 * next.beat(),
+            Change::Modem => 13.0,
         }
     }
 
@@ -726,6 +778,35 @@ impl Change {
                     add(&mut mix, 7.5 + f32::from(count) * beat, &hat, 0.9);
                 }
                 add(&mut mix, 7.5 + 3.5 * beat, &into.drums.kick(), 0.6);
+            }
+            Change::Modem => {
+                let mut noise = Noise(56_000);
+                let mut bit = false;
+                let mut phases = [0.0_f32; 2];
+                let mut level = 0.0_f32;
+                for (i, slot) in mix.iter_mut().enumerate() {
+                    let t = i as f32 / RATE;
+                    // A new data bit 300 times a second.
+                    if i % (RATE as usize / 300) == 0 {
+                        bit = noise.sample() > 0.0;
+                    }
+                    let (one, two, hiss) = modem_line(t, bit);
+                    let mut sum = hiss * noise.sample() * 0.5;
+                    for (phase, frequency) in phases.iter_mut().zip([one, two]) {
+                        *phase = (*phase + frequency / RATE).fract();
+                        if frequency > 0.0 {
+                            sum += (*phase * TAU).sin() * 0.5;
+                        }
+                    }
+                    // Tones come and go without a click.
+                    let target = if one > 0.0 || two > 0.0 || hiss > 0.0 {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    level += 0.01 * (target - level);
+                    *slot = sum * level * 0.5;
+                }
             }
         }
         finish(&mut mix);
@@ -1421,6 +1502,7 @@ mod tests {
             rendered.push(sound);
         }
         assert_ne!(rendered[0], rendered[1]);
+        assert_ne!(rendered[1], rendered[2]);
         // The tape stop is silent between the sinking chord and the count.
         let quiet = &rendered[1][samples(6.3)..samples(7.4)];
         assert!(peak(quiet) < 0.01, "{}", peak(quiet));
@@ -1477,6 +1559,56 @@ mod tests {
         let energy =
             |range: std::ops::Range<usize>| -> f32 { drums[range].iter().map(|s| s * s).sum() };
         assert!(energy(2 * bar..3 * bar) > energy(6 * bar..7 * bar) * 1.5);
+    }
+
+    /// How strongly `sound` holds the tone `frequency` (Goertzel).
+    fn tone(sound: &[f32], frequency: f32) -> f32 {
+        let k = 2.0 * (TAU * frequency / RATE).cos();
+        let (mut a, mut b) = (0.0_f32, 0.0_f32);
+        for sample in sound {
+            let next = sample + k * a - b;
+            b = a;
+            a = next;
+        }
+        (a * a + b * b - k * a * b).max(0.0).sqrt() / sound.len() as f32
+    }
+
+    #[test]
+    fn the_modem_dials_gets_an_answer_shakes_hands_and_screeches() {
+        assert!(CHANGES.contains(&Change::Modem));
+        let next = &RETRO.songs[0];
+        let sound = Change::Modem.render(&JAPAN.kit, &JAPAN.songs[0], &RETRO.kit, next);
+        assert_eq!(sound.len(), samples(13.0));
+        check("modem", &sound);
+        let part = |from: f32, to: f32| &sound[samples(from)..samples(to)];
+        // Dial tone: 350 and 440 Hz together, and no answer tone yet.
+        let dial = part(0.2, 1.5);
+        assert!(tone(dial, 350.0) > 10.0 * tone(dial, 2100.0), "dial tone");
+        assert!(tone(dial, 440.0) > 10.0 * tone(dial, 2100.0), "dial tone");
+        // The first key: 941 and 1336 Hz, with a gap after it.
+        let key = part(1.81, 1.89);
+        assert!(tone(key, 941.0) > 5.0 * tone(key, 440.0), "first key");
+        assert!(peak(part(1.95, 1.99)) < peak(key) / 4.0, "gap between keys");
+        // The answer tone.
+        let answer = part(4.0, 4.8);
+        assert!(tone(answer, 2100.0) > 10.0 * tone(answer, 440.0), "answer");
+        // The handshake warbles between its two tones.
+        let warble = part(5.1, 6.3);
+        assert!(tone(warble, 980.0) > 3.0 * tone(warble, 440.0));
+        assert!(tone(warble, 1180.0) > 3.0 * tone(warble, 440.0));
+        // The screech is noise: no single tone carries it.
+        let screech = part(9.0, 12.0);
+        assert!(peak(screech) > 0.1);
+        assert!(peak(part(12.7, 13.0)) < 0.02, "ends quiet");
+        // The line itself, piece by piece.
+        assert_eq!(modem_line(0.5, true), (350.0, 440.0, 0.0));
+        assert_eq!(modem_line(1.85, true), (941.0, 1336.0, 0.0));
+        assert_eq!(modem_line(1.95, true), (0.0, 0.0, 0.0));
+        assert_eq!(modem_line(4.0, false), (2100.0, 0.0, 0.0));
+        assert_eq!(modem_line(7.0, true), (1180.0, 1650.0, 0.0));
+        assert_eq!(modem_line(7.0, false), (980.0, 1850.0, 0.0));
+        assert_eq!(modem_line(10.0, true).2, 1.0);
+        assert_eq!(modem_line(12.9, true), (0.0, 0.0, 0.0));
     }
 
     static TWO: [Style; 2] = [JAPAN, JAPAN];

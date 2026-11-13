@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- The Kawaii music has three themes, each with its own instruments, songs and breaks: Japanese traditional lofi, retro gaming lofi and Babymetal-style lofi. It changes theme about every five minutes.
+- The Kawaii music has three themes, each with its own instruments, songs and breaks: Japanese traditional lofi, retro gaming lofi and Babymetal-style lofi. It changes theme about every five minutes, with a longer break between two themes; one of them is a modem dialling in.
 
 ### Changed
 

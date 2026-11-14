@@ -165,6 +165,7 @@ mod tests {
         Snapshot::of(Status {
             head: Head::Branch("main".into()),
             upstream,
+            tracking: None,
             counts: Counts::default(),
             changed_paths: vec![],
         })

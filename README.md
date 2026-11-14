@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/github/languages/top/paxel/multigit" alt="Top language"/>
   <img src="https://img.shields.io/github/last-commit/paxel/multigit/summer" alt="Last commit"/>
 </p>
-
+<img src="assets/kawaii.png" alt="you want it" align="center">
 <img src="assets/multigit.svg" alt="multigit icon" width="96" align="right">
 
 A desktop dashboard for many git repositories, for Linux and macOS. Every
@@ -32,6 +32,11 @@ Each card shows:
 - the checked-out commit: short hash and subject
 - the working tree: `clean`, or `+staged ~modified ?untracked !conflicts`
 - `rebasing` or `merging` while one is in progress
+- the remote the branch tracks, as a short URL with the protocol first
+  (`ssh github.com/paxel/multigit`; a click copies the URL as git has it),
+  and `push:` with the name of the remote the branch pushes to when that is
+  another one; a right click lists the remotes, and picking one makes the
+  branch track the branch of the same name there
 - unpushed and unpulled commits, `no upstream`, or `upstream gone`
 - the result of the last command run on it
 - a failed background fetch as one red line (`Error: auth failed`, for
@@ -62,14 +67,40 @@ greyed out, and comes back by itself when the folder returns.
 ## Looking into a repository
 
 A double click on a card, or **Open** in its right-click menu, opens a
-read-only view of that repository over the board: its changed files (staged,
-modified, untracked), the last 100 commits of the current branch, and its
-branches. A click on a file shows its diff, a click on a commit its message
-and diff; a diff of more than 5000 lines is cut. The view reads the repository
+read-only view of that repository over the board. It has three tabs, and
+**Back** and **Forward** step through what was looked at:
+
+- **Files**, where the view opens when the repository has changes: the
+  changed files as a tree with folders that fold. Each file is listed once,
+  with a letter and a color for what happened to it since the last commit
+  (A added, M modified, D deleted, ! conflict), staged or not. A picked file
+  shows its content when it is new, what is gone when it was deleted, and its
+  diff otherwise.
+- **Commits**, where it opens when the repository is clean: the history of
+  the current branch, a row for each commit with the author's initials, the
+  short hash, the tags on it, the title and the age. It reads on when scrolled to its end. A
+  picked commit shows its hash, author, date, whole message and the branches
+  and tags on it, and a click on one of these but the message copies it;
+  it names the committer when that is not the author, and its parents, where
+  a click goes to that commit. Below that, the files it changed with the
+  lines added and removed, and a click on a file shows what the commit did
+  to it.
+- **Graph**: all local and remote branches as a graph of the commits that
+  matter (branch tips, tags, merges, and where branches part). Runs of
+  commits between them are one row that unfolds on a click. Remote branches
+  that nobody has locally and that had no commit for 90 days are left out
+  behind a line that shows them. A click on a commit shows it as in Commits.
+
+A diff of more than 5000 lines is cut. The view reads the repository
 again when its card notices a change and on **Refresh**; **Close** or Esc
 returns to the board. The double click also marks and unmarks the card, so its
 mark ends as it was. A double click on a text that copies (name, branch, tag,
 commit) copies and does not open.
+
+A right click on text in the right pane (a commit message, a diff, the
+content of a file) and on the output of a command in the output panel opens a
+menu: **Copy** copies the marked text and leaves it marked, **Copy all**
+copies the whole text, the lines that are not on screen included.
 
 ## Favorites
 
@@ -94,7 +125,8 @@ emoji. A repository can be in several.
 
 - **+** opens a folder dialog. A repository is added as one card; any other
   folder is scanned for repositories up to two levels deep (configurable),
-  without descending into repositories it finds. Repositories already on the
+  without descending into repositories it finds. A folder whose `.git` is
+  empty or incomplete, like one copied without its content, is no repository. Repositories already on the
   board are skipped.
 - A right click on a card takes it off the board, in two ways; on a marked
   card, both act on all marked cards. Nothing on disk is touched.
@@ -127,9 +159,20 @@ emoji. A repository can be in several.
 - **Card buttons** run in that one repository. The defaults are
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
 - **Marking**: a click on a card marks it, a second click unmarks it; marked
-  cards get a coloured border. The toolbar marks all, none, dirty (changes or
+  cards get a coloured border. The toolbar marks all, dirty (changes or
   an operation in progress), behind (unpulled commits) or ahead (unpushed
-  commits). The toolbar repeats the card buttons
+  commits). These buttons work like the station buttons of a radio: the
+  clicked one stays pressed until another is clicked. A click on the pressed
+  button marks the other cards instead (its text is struck through then), the
+  next click the first ones again; a second click on **all** leaves nothing
+  marked. Marking a card by hand does not release the button. A right click
+  on **dirty**, **behind** or **ahead** filters the board instead: only the
+  cards that fit are shown, cards come and go as their status changes, and
+  the marks stay as they are. The button gets a coloured border and the
+  toolbar says `showing dirty (7)`; a click on that text, a second right
+  click, or a right click on **all** shows all again. This filter works
+  together with the favorite and the filter field, and a card it hides keeps
+  its mark and is left alone like one the filter field hides. The toolbar repeats the card buttons
   for all marked repositories.
 - **Copying**: a click on a card's folder name, branch name (or the sha of a
   detached HEAD) or tag copies it to the clipboard instead of marking the
@@ -157,7 +200,7 @@ and opens it with the system's default program for text files (`xdg-open` on
 Linux, `open` on macOS); the files are in the temp folder and are removed when
 multigit exits. Drag its upper edge to
 make it bigger. The **Output** button left of the command line hides the panel
-completely and brings it back; while it is hidden, a mark on the button tells
+completely and brings it back, and the app starts as it was left; while it is hidden, a mark on the button tells
 about the last command: running, then green or red by its result.
 
 ### Command line keys
@@ -235,18 +278,41 @@ installed.
 
 The **Kawaii** theme is round and pastel, in the Fredoka font, with a rainbow
 drifting behind the cards, hearts and stars floating up, cards that bob, grow
-under the pointer and swing when marked, and a burst of stars on a copy. It
+under the pointer and swing when marked, and a burst of stars on a copy.
+Bunnies and cats sit on the cards: they hop about, sleep while nothing
+happens, look up at a new remote commit, dance for a local one, let their
+ears hang over a failed fetch and jump with a heart when clicked. A command
+that ends well throws hearts and stars out of its card. It
 moves while the window has focus. Without focus the picture stands still and
 the app draws no more often than in the other themes, except for five seconds
 after something changed on a card.
 
 With **Kawaii music** switched on (off at first), the Kawaii theme plays lofi
-beats that multigit makes itself: ten short sequences in random order, joined
-by short breaks (three notes, a drum fill, a hummed "ooh" or "aah"). A
-sequence is slow drums, a soft bass and a melody on a guitar-like or
-piano-like sound that states a four-note theme once and then varies it; under
-it a flute plays the same theme eight times slower, forwards or backwards, or
-a pad holds its chord. No sound
+beats that multigit makes itself, in five themes: Japanese traditional lofi
+(a plucked string, soft keys, a flute), retro gaming lofi (the square and
+triangle waves and noise drums of old consoles), Babymetal-style lofi (an
+overdriven guitar, a high voice, double bass drums), Cajun porch lofi (a
+banjo, a fiddle, a washtub bass, a stomping foot and a washboard, and a jaw
+harp in the breaks) and trip-hop lofi (a theremin that slides from note to
+note over a slow heavy beat, a sub bass and dark keys with an echo, on a
+crackling record; by chance up to three bombs fall far away during a song,
+very quiet and all echo, and now and then something calls out there). Each theme has five
+songs of about a minute, which vary a little every time they play. A song
+has two themes of four notes: most of its parts are made from the first, two
+or three from the second, with melody, chords and bass. Each of the five
+themes also has a motto, one phrase of two bars that is always the same notes
+in the key of the song: it comes in about every second song, where the melody
+rests or at the song's end, played by the lead, the long instrument or the
+bass, and always in one of the theme's long breaks. Between songs come short
+and long breaks between them. After each song chance decides: three times in
+four the music stays in the theme, one time in four a longer break leads
+into another theme: a radio being tuned, a tape that stops, a modem
+dialling in, or a record that is scratched before the needle drops on the
+next one. Under the switch, Settings has a checkbox for each theme: only
+the checked ones play, and with a single one checked the music never leaves
+it. The last checked box cannot be unchecked. Unchecking the theme that plays
+ends its passage at once and starts a song of another; any other change is
+heard when the music next changes its theme. A new volume is heard as soon as the slider is let go. No sound
 files and no network are involved. It plays whenever the app is open in that
 theme, focused or not, through the same player program as the sounds, and has
 its own volume; a change of volume counts from the next passage on.
@@ -314,7 +380,7 @@ To build the bundle yourself:
 
 ```sh
 cargo build --release
-packaging/macos/bundle.sh target/release/multigit 0.3.0 .
+packaging/macos/bundle.sh target/release/multigit 0.4.0 .
 ```
 
 ### From source

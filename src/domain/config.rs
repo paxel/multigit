@@ -119,12 +119,19 @@ pub struct Config {
     /// Its volume, in percent.
     #[serde(default = "default_music_volume")]
     pub music_volume: u8,
+    /// The themes of the music that are switched off, by their labels; a
+    /// theme the app gets later plays until it is switched off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub music_off: Vec<String>,
     /// Beep and boop when commits appear.
     #[serde(default)]
     pub sounds: bool,
     /// Volume of beep and boop, in percent.
     #[serde(default = "default_volume")]
     pub sound_volume: u8,
+    /// The output panel is folded away; the app starts as it was left.
+    #[serde(default)]
+    pub output_hidden: bool,
     /// The user's own sound file for the beep; the app's tone without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beep_file: Option<PathBuf>,
@@ -154,8 +161,10 @@ impl Default for Config {
             terminal: String::new(),
             music: false,
             music_volume: default_music_volume(),
+            music_off: Vec::new(),
             sounds: false,
             sound_volume: default_volume(),
+            output_hidden: false,
             beep_file: None,
             boop_file: None,
             repos: Vec::new(),
@@ -256,6 +265,11 @@ mod tests {
         assert_eq!(config.music_volume, 40);
         config.music = true;
         config.music_volume = 15;
+        assert!(config.music_off.is_empty(), "every theme plays at first");
+        assert!(!config.to_toml().unwrap().contains("music_off"));
+        config.music_off = vec!["Retro".to_owned()];
+        let read = Config::from_toml(&config.to_toml().unwrap()).unwrap();
+        assert_eq!(read.music_off, ["Retro"]);
         assert_eq!(config.sound_volume, 60);
         assert_eq!(config.sound_file(Sound::Beep), None);
         config.sounds = true;
@@ -294,6 +308,17 @@ mod tests {
             Config::from_toml("theme = \"kawaii\"").unwrap().theme,
             Theme::Kawaii
         );
+    }
+
+    #[test]
+    fn hidden_output_panel_survives_the_config_file() {
+        // A file of an older version has no such key: the panel is shown.
+        let mut config = Config::from_toml("concurrency = 2\n").unwrap();
+        assert!(!config.output_hidden);
+        config.output_hidden = true;
+        let back = Config::from_toml(&config.to_toml().unwrap()).unwrap();
+        assert!(back.output_hidden);
+        assert_eq!(back, config);
     }
 
     #[test]

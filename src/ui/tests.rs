@@ -229,6 +229,123 @@ fn card_shows_its_status() {
     assert!(h.query_by_label("Remove marked").is_none());
 }
 
+/// The remote with this name, at example.org.
+fn remote(name: &str, url: &str) -> crate::domain::remote::Remote {
+    crate::domain::remote::Remote {
+        name: name.into(),
+        url: url.into(),
+    }
+}
+
+#[test]
+fn card_shows_the_remote_of_its_branch_and_a_click_copies_its_url() {
+    let app = marked_app(Arc::default(), &[]);
+    let snap = |app: &mut App, change: &dyn Fn(&mut crate::domain::repo::Snapshot)| {
+        let Some(Ok(snap)) = &mut app.cards[0].probe else {
+            panic!("no snapshot");
+        };
+        change(snap);
+    };
+    let mut h = harness(app);
+    h.run();
+    h.get_by_label("no remote");
+
+    // Two remotes; the branch tracks the second one.
+    snap(h.state_mut(), &|snap| {
+        snap.remotes = vec![
+            remote("origin", "https://me:s3cret@example.org/team/multigit.git"),
+            remote("fork", "git@github.com:paxel/multigit.git"),
+        ];
+        snap.status.tracking = Some("fork/main".into());
+    });
+    h.run();
+    h.get_by_label("remote");
+    assert!(h.query_by_label_contains("push:").is_none());
+    h.get_by_label("ssh github.com/paxel/multigit").click();
+    h.step();
+    assert_eq!(
+        copied(&h),
+        vec!["git@github.com:paxel/multigit.git".to_owned()]
+    );
+    assert!(h.state().marked.contains(&PathBuf::from("/repo")));
+    h.event(egui::Event::PointerGone);
+    h.run();
+
+    // It pushes to the other one: the card says so, and shows no password.
+    snap(h.state_mut(), &|snap| {
+        snap.status.tracking = Some("origin/main".into());
+        snap.push = Some("fork".into());
+    });
+    h.run();
+    h.get_by_label("https example.org/team/multigit");
+    h.get_by_label("push:");
+    h.get_by_label("fork");
+    assert!(h.query_by_label_contains("s3cret").is_none());
+
+    // Several remotes, none of them origin, and no upstream.
+    snap(h.state_mut(), &|snap| {
+        snap.remotes = vec![remote("a", "/srv/a.git"), remote("b", "/srv/b.git")];
+        snap.status.tracking = None;
+        snap.push = None;
+    });
+    h.run();
+    h.get_by_label("no remote for this branch");
+}
+
+#[test]
+fn right_click_on_the_remote_moves_the_upstream_to_another_remote() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut app = marked_app(backend.clone(), &[]);
+    let dated = |name: &str| crate::domain::repo::DatedRef {
+        name: name.into(),
+        commit: String::new(),
+        date: 1,
+    };
+    let Some(Ok(snap)) = &mut app.cards[0].probe else {
+        panic!("no snapshot");
+    };
+    snap.remotes = vec![
+        remote("origin", "https://example.org/team/multigit.git"),
+        remote("fork", "git@github.com:paxel/multigit.git"),
+        remote("mirror", "/srv/mirror.git"),
+    ];
+    snap.dated.remote_branches = vec![dated("origin/main"), dated("fork/main")];
+    snap.status.tracking = Some("origin/main".into());
+    // What the next probe reads is the same.
+    *backend.snapshot.lock().unwrap() = Some(snap.clone());
+    let mut h = harness(app);
+    h.run();
+    assert!(h.query_by_label("Remote of main").is_none());
+    h.get_by_label("https example.org/team/multigit")
+        .click_secondary();
+    h.run();
+    h.get_by_label("Remote of main");
+    // The one it tracks and the one without a branch main cannot be picked.
+    let off = |h: &Harness<'static, App>, label: &str| {
+        use egui_kittest::kittest::NodeT;
+        h.get_by_label(label).accesskit_node().is_disabled()
+    };
+    assert!(off(&h, "origin  https example.org/team/multigit"));
+    assert!(off(&h, "mirror  file /srv/mirror"));
+    assert!(!off(&h, "fork  ssh github.com/paxel/multigit"));
+    h.get_by_label("fork  ssh github.com/paxel/multigit")
+        .click();
+    h.run();
+    assert!(
+        h.query_by_label("Remote of main").is_none(),
+        "the menu closed"
+    );
+    settle(&mut h, |a| a.cards[0].last_command == Some(true));
+    let moved = (
+        PathBuf::from("/repo"),
+        vec![
+            "branch".to_owned(),
+            "--set-upstream-to=fork/main".to_owned(),
+        ],
+    );
+    assert_eq!(backend.runs.lock().unwrap().last(), Some(&moved));
+}
+
 #[test]
 fn right_click_removes_or_hides_the_marked_cards_and_settings_unhides() {
     let mut h = favorites_app();
@@ -403,10 +520,87 @@ fn fetch_error_is_one_line_and_a_click_copies_all_of_it_and_removes_it() {
 }
 
 #[test]
+fn mark_buttons_stay_pressed_and_a_second_click_marks_the_others() {
+    use crate::ui::app::MarkBy;
+    let mut app = app_with(Arc::default(), None);
+    app.cards = vec![card("/r/a"), card("/r/b")];
+    let mut h = harness(app);
+    h.run();
+    // The row is all, dirty, behind, ahead: "none" is the second click on "all".
+    assert!(h.query_by_label("none").is_none());
+    for label in ["dirty", "behind", "ahead"] {
+        h.get_by_label(label);
+    }
+    h.get_by_label("all").click();
+    h.run();
+    assert_eq!(h.state().pressed_mark, Some((MarkBy::All, false)));
+    assert_eq!(h.state().marked.len(), 2);
+    h.get_by_label("all").click();
+    h.run();
+    assert_eq!(h.state().pressed_mark, Some((MarkBy::All, true)));
+    assert!(h.state().marked.is_empty());
+    // Another button takes over; nothing here is behind, so its second
+    // click marks every card.
+    h.get_by_label("behind").click();
+    h.run();
+    assert_eq!(h.state().pressed_mark, Some((MarkBy::Behind, false)));
+    assert!(h.state().marked.is_empty());
+    h.get_by_label("behind").click();
+    h.run();
+    assert_eq!(h.state().pressed_mark, Some((MarkBy::Behind, true)));
+    assert_eq!(h.state().marked.len(), 2);
+}
+
+#[test]
+fn a_right_click_on_a_mark_button_shows_only_its_cards_and_says_so() {
+    use crate::ui::app::MarkBy;
+    let mut app = app_with(Arc::default(), None);
+    app.cards = vec![card("/r/alpha"), card("/r/beta")];
+    let mut h = harness(app);
+    h.run();
+    assert!(h.query_by_label_contains("showing").is_none());
+    // Nothing here is behind: the board is empty, and the toolbar says why.
+    h.get_by_label("behind").click_secondary();
+    h.run();
+    assert_eq!(h.state().status_filter, Some(MarkBy::Behind));
+    assert_eq!(
+        h.state().pressed_mark,
+        None,
+        "a right click presses nothing"
+    );
+    assert!(h.state().marked.is_empty(), "and marks nothing");
+    assert!(h.query_by_label("alpha").is_none());
+    h.get_by_label("showing behind (0)");
+    // A left click leaves the filter alone.
+    h.get_by_label("all").click();
+    h.run();
+    assert_eq!(h.state().status_filter, Some(MarkBy::Behind));
+    // A click on the text shows all again.
+    h.get_by_label("showing behind (0)").click();
+    h.run();
+    assert_eq!(h.state().status_filter, None);
+    h.get_by_label("alpha");
+    assert!(h.query_by_label_contains("showing").is_none());
+    // So does a second right click, and a right click on "all".
+    h.get_by_label("ahead").click_secondary();
+    h.run();
+    h.get_by_label("ahead").click_secondary();
+    h.run();
+    assert_eq!(h.state().status_filter, None);
+    h.get_by_label("dirty").click_secondary();
+    h.run();
+    assert_eq!(h.state().status_filter, Some(MarkBy::Dirty));
+    h.get_by_label("all").click_secondary();
+    h.run();
+    assert_eq!(h.state().status_filter, None);
+    assert_eq!(h.state().pressed_mark, Some((MarkBy::All, false)));
+}
+
+#[test]
 fn filter_field_hides_cards_and_counts_the_shown_ones() {
     let mut app = app_with(Arc::default(), None);
     app.cards = vec![card("/r/etl-load"), card("/r/web"), card("/r/Etl-store")];
-    app.mark_all();
+    app.press_mark(crate::ui::app::MarkBy::All);
     let mut h = harness(app);
     h.run();
     assert!(
@@ -557,14 +751,14 @@ fn output_button_folds_the_panel_away_and_marks_unseen_results() {
     };
     toggle(&h);
     h.run();
-    assert!(h.state().output_hidden);
+    assert!(h.state().config.output_hidden);
     assert!(h.query_by_label("Clear").is_none(), "the panel is gone");
 
     // A command leaves the panel hidden; the button tells its result.
     h.state_mut().start_run("status", vec!["/repo".into()]);
     settle(&mut h, |a| a.cards[0].last_command == Some(true));
     h.run();
-    assert!(h.state().output_hidden);
+    assert!(h.state().config.output_hidden);
     assert_eq!(h.state().unseen_outcome(), Some(Some(true)));
     let mark = format!("Output {}", crate::ui::view::OUTPUT_MARK);
     h.get_by_label(&mark).click();
@@ -982,14 +1176,24 @@ fn repo_view_app() -> Harness<'static, App> {
         files: vec![
             FileChange {
                 path: "src/main.rs".into(),
-                kind: ChangeKind::Staged,
+                kind: ChangeKind::Modified,
+            },
+            FileChange {
+                path: "src/ui/deep/new.rs".into(),
+                kind: ChangeKind::Added,
+            },
+            FileChange {
+                path: "src/old.rs".into(),
+                kind: ChangeKind::Deleted,
             },
             FileChange {
                 path: "notes.txt".into(),
-                kind: ChangeKind::Untracked,
+                kind: ChangeKind::Added,
             },
         ],
-        commits: parse_log("aaaabbbb\taaaabbb\tAda\t3 days ago\tFix the thing\n"),
+        commits: parse_log(
+            "aaaabbbb\taaaabbb\tAda Lovelace\t1700000000\t2023-11-14 22:13\t\tFix the thing\n",
+        ),
         branches: vec![
             BranchEntry {
                 name: "main".into(),
@@ -1000,6 +1204,37 @@ fn repo_view_app() -> Harness<'static, App> {
                 current: false,
             },
         ],
+    });
+    // main: tip, two plain commits, base; side-branch: one commit on base.
+    use crate::domain::graph::{GraphCommit, GraphData, GraphRef, RefKind};
+    let commit = |hash: &str, parent: &str, subject: &str| GraphCommit {
+        hash: hash.into(),
+        parents: vec![parent.into()],
+        author: "Ada Lovelace".into(),
+        subject: subject.into(),
+    };
+    let name = |name: &str, kind, hash: &str| GraphRef {
+        name: name.into(),
+        kind,
+        hash: hash.into(),
+        time: 0,
+    };
+    *backend.graph.lock().unwrap() = Some(GraphData {
+        commits: vec![
+            commit("aa01", "aa02", "Tip of main"),
+            commit("aa02", "aa03", "Plain one"),
+            commit("aa03", "ba5e", "Plain two"),
+            commit("51de", "ba5e", "Work on the side"),
+            commit("ba5e", "0000", "Where they part"),
+        ],
+        refs: vec![
+            name("main", RefKind::Local, "aa01"),
+            name("origin/main", RefKind::Remote, "aa01"),
+            name("side-branch", RefKind::Local, "51de"),
+            name("v1", RefKind::Tag, "ba5e"),
+        ],
+        hidden: 2,
+        cut: false,
     });
     // Frames close enough together for two clicks to be a double click.
     let mut h = harness_stepping(marked_app(backend, &[]), 0.05);
@@ -1033,32 +1268,361 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     );
     settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
     h.run();
-    h.get_by_label("Changed files (2)");
-    h.get_by_label("Commits");
-    h.get_by_label("Branches");
-    h.get_by_label("side-branch");
-    h.get_by_label("Pick a file or a commit to see its diff.");
-
-    // A file, then a commit: each shows its diff.
-    h.get_by_label("staged  src/main.rs").click();
+    // A clean repository opens on its history.
+    use crate::domain::details::RepoTab;
+    let tab = |h: &Harness<'static, App>| h.state().repo_view.as_ref().unwrap().tab;
+    assert_eq!(tab(&h), RepoTab::Commits);
+    h.get_by_label("Pick a commit to see it.");
+    assert!(h.query_by_label("Changed files (2)").is_none());
+    // A row: initials, short hash, title; the age stands at the right.
+    h.get_by_label("AL aaaabbb Fix the thing").click();
     h.run();
     settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
     h.run();
-    h.get_by_label("+++ b/src/main.rs");
-    h.get_by_label("+new");
-    h.get_by_label("aaaabbb  Fix the thing").click();
+    // The header of the commit: hash, names on it, author, date, message.
+    h.get_by_label("aaaabbbb");
+    h.get_by_label(" main ");
+    h.get_by_label(" v9 ");
+    h.get_by_label("<ada@example.org>");
+    h.get_by_label("2026-11-12 20:03");
+    h.get_by_label("Fix the thing\n\nBecause it was broken.");
+    // A click on a value of the header copies it, as on a card.
+    for (label, copy) in [
+        ("aaaabbbb", "aaaabbbb"),
+        (" main ", "main"),
+        (" v9 ", "v9"),
+        ("Ada Lovelace", "Ada Lovelace"),
+        ("<ada@example.org>", "ada@example.org"),
+        ("2026-11-12 20:03", "2026-11-12 20:03"),
+    ] {
+        h.get_by_label(label).click();
+        h.step();
+        assert_eq!(copied(&h), vec![copy.to_owned()], "{label}");
+        assert!(h.state().copy_flash.is_some(), "{label}");
+        // Off the value again: a resting pointer would show its tooltip.
+        h.event(egui::Event::PointerGone);
+        // Until "Copied" has faded.
+        for _ in 0..5 {
+            h.step();
+        }
+    }
+    // The message is for marking: a click on it copies nothing.
+    h.get_by_label("Fix the thing\n\nBecause it was broken.")
+        .click();
+    h.step();
+    assert!(copied(&h).is_empty());
+    h.event(egui::Event::PointerGone);
+    h.run();
+    // Its parent is one click away, and Back returns from it.
+    h.get_by_label("parent");
+    h.get_by_label("bbbbcccc").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.run();
+    assert_eq!(
+        h.state().repo_view.as_ref().unwrap().selected,
+        Some(crate::domain::details::DiffTarget::Commit(
+            "bbbbcccc".into()
+        ))
+    );
+    h.get_by_label("committed by Grace Hopper <grace@example.org>");
+    h.event(egui::Event::PointerGone);
+    h.get_by_label("Back").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.event(egui::Event::PointerGone);
+    h.run();
+    assert!(h.query_by_label_contains("committed by").is_none());
+    // Its files, folded; a click unfolds the diff of one in place.
+    h.get_by_label("2 files changed");
+    // The lines added and taken away, in all and for each file.
+    let minus = crate::ui::repo_view::MINUS;
+    h.get_by_label("+15");
+    h.get_by_label("+12");
+    h.get_by_label("+3");
+    assert_eq!(h.get_all_by_label(&format!("{minus}1")).count(), 2);
+    h.get_by_label(&format!("{minus}0"));
+    assert!(bundled_fonts_draw(minus));
+    // The author committed it: no committer is named.
+    assert!(h.query_by_label_contains("committed by").is_none());
+    h.get_by_label("A docs/new.md");
+    assert!(h.query_by_label("+after in src/main.rs").is_none());
+    h.get_by_label("M src/main.rs").click();
     h.run();
     settle(&mut h, |a| {
         let view = a.repo_view.as_ref().unwrap();
-        matches!(&view.diff, Some(Ok(diff)) if diff.contains("commit aaaabbbb"))
+        matches!(view.unfolded.get("src/main.rs"), Some(Some(_)))
     });
     h.run();
-    h.get_by_label("commit aaaabbbb");
+    h.get_by_label("+after in src/main.rs");
+    h.get_by_label("-before");
+    h.get_by_label("A docs/new.md");
+    h.get_by_label("<ada@example.org>");
+    h.get_by_label("M src/main.rs").click();
+    h.run();
+    assert!(h.query_by_label("+after in src/main.rs").is_none());
+
+    // The Files tab has the changed files; a file shows its diff.
+    h.get_by_label("Files").click();
+    h.run();
+    assert_eq!(tab(&h), RepoTab::Files);
+    h.get_by_label("Changed files (4)");
+    h.get_by_label("Pick a file to see its changes.");
+    assert!(h.query_by_label("AL aaaabbb Fix the thing").is_none());
+    // A tree: folders first, a chain of single folders as one row, every
+    // file with the letter of its change.
+    h.get_by_label("src/");
+    h.get_by_label("ui/deep/");
+    h.get_by_label("A new.rs");
+    h.get_by_label("D old.rs");
+    h.get_by_label("A notes.txt");
+    // A folder folds away what is in it, and unfolds again.
+    h.get_by_label("ui/deep/").click();
+    h.run();
+    assert!(h.query_by_label("A new.rs").is_none());
+    h.get_by_label("M main.rs");
+    h.get_by_label("src/").click();
+    h.run();
+    assert!(h.query_by_label("M main.rs").is_none());
+    assert!(h.query_by_label("ui/deep/").is_none());
+    h.get_by_label("A notes.txt");
+    h.get_by_label("src/").click();
+    h.run();
+    h.get_by_label("ui/deep/").click();
+    h.run();
+    let pick = |h: &mut Harness<'static, App>, label: &str| {
+        h.get_by_label(label).click();
+        h.run();
+        settle(h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+        h.run();
+    };
+    // An added file shows its content, a deleted one what is gone, a
+    // modified one its diff.
+    pick(&mut h, "A new.rs");
+    h.get_by_label("added");
+    h.get_by_label("src/ui/deep/new.rs");
+    h.get_by_label("fresh line");
+    assert!(h.query_by_label("+fresh line").is_none());
+    pick(&mut h, "D old.rs");
+    h.get_by_label("deleted");
+    h.get_by_label("gone line");
+    pick(&mut h, "M main.rs");
+    h.get_by_label("modified");
+    h.get_by_label("+++ b/src/main.rs");
+    h.get_by_label("+new");
+
+    // The Graph tab has the branches.
+    h.get_by_label("Graph").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().graph.is_some());
+    h.run();
+    h.get_by_label(" side-branch ");
+
+    // Back goes to the file, on through the files picked before it to the
+    // Files tab without a pick, then to the commit; Forward returns.
+    h.get_by_label("Back").click();
+    h.run();
+    assert_eq!(tab(&h), RepoTab::Files);
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.run();
+    h.get_by_label("+new");
+    for _ in 0..3 {
+        h.get_by_label("Back").click();
+        h.run();
+    }
+    h.get_by_label("Pick a file to see its changes.");
+    h.get_by_label("Back").click();
+    h.run();
+    assert_eq!(tab(&h), RepoTab::Commits);
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.run();
+    h.get_by_label("2 files changed");
+    h.get_by_label("Forward").click();
+    h.run();
+    assert_eq!(tab(&h), RepoTab::Files);
 
     // The board is out of reach while the view is open; Esc returns to it.
     key(&mut h, Key::Escape);
     assert!(h.state().repo_view.is_none());
     assert!(h.query_by_label("Commits").is_none());
+}
+
+/// Hand `events` to the app as the window does, through its input filter,
+/// and run a frame.
+fn send(h: &mut Harness<'static, App>, events: Vec<egui::Event>) {
+    let mut raw = egui::RawInput {
+        events,
+        ..Default::default()
+    };
+    let ctx = h.ctx.clone();
+    h.state_mut().filter_input(&ctx, &mut raw);
+    for event in raw.events {
+        h.event(event);
+    }
+    h.step();
+}
+
+fn pointer_button(pos: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+/// A click of `button` at `pos`, through the input filter.
+fn filtered_click(h: &mut Harness<'static, App>, pos: egui::Pos2, button: egui::PointerButton) {
+    send(h, vec![egui::Event::PointerMoved(pos)]);
+    send(h, vec![pointer_button(pos, button, true)]);
+    send(h, vec![pointer_button(pos, button, false)]);
+}
+
+/// Whether a text is marked.
+fn text_is_marked(h: &Harness<'static, App>) -> bool {
+    h.ctx
+        .plugin::<egui::text_selection::LabelSelectionState>()
+        .lock()
+        .has_selection()
+}
+
+/// Where the open text menu drew `Copy` and `Copy all`.
+fn text_menu_entries(h: &Harness<'static, App>) -> (egui::Pos2, egui::Pos2) {
+    let menu = h.state().text_menu.as_ref().expect("no menu is open");
+    let [_, copy, all] = menu.drawn.expect("the menu was not drawn");
+    (copy.center(), all.center())
+}
+
+#[test]
+fn right_click_on_text_of_the_repository_view_copies_the_marked_text_or_all_of_it() {
+    use crate::ui::text_menu::TextOf;
+    use egui::PointerButton::{Primary, Secondary};
+    let mut h = repo_view_app();
+    h.run();
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.state_mut()
+        .switch_repo_tab(crate::domain::details::RepoTab::Commits);
+    h.run();
+    h.get_by_label("AL aaaabbb Fix the thing").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.event(egui::Event::PointerGone);
+    h.run();
+    let message = "Fix the thing\n\nBecause it was broken.";
+    let text = h.get_by_label(message).rect();
+
+    // Mark the first line of the message by dragging over it.
+    let from = text.left_top() + egui::vec2(0.5, 6.0);
+    let to = egui::pos2(text.right() - 1.0, from.y);
+    send(&mut h, vec![egui::Event::PointerMoved(from)]);
+    send(&mut h, vec![pointer_button(from, Primary, true)]);
+    send(&mut h, vec![egui::Event::PointerMoved(to)]);
+    send(&mut h, vec![pointer_button(to, Primary, false)]);
+    assert!(text_is_marked(&h));
+    assert!(h.state().text_menu.is_none());
+
+    // A right click on it opens the menu, and the text stays marked.
+    let on_text = text.left_top() + egui::vec2(20.0, 6.0);
+    filtered_click(&mut h, on_text, Secondary);
+    h.step();
+    assert!(text_is_marked(&h), "the right click took the selection");
+    assert_eq!(h.state().text_menu.as_ref().unwrap().text, TextOf::Message);
+    h.get_by_label("Copy");
+    h.get_by_label("Copy all");
+
+    // Copy: what is marked, and it stays marked.
+    let (copy, _) = text_menu_entries(&h);
+    send(&mut h, vec![egui::Event::PointerMoved(copy)]);
+    send(&mut h, vec![pointer_button(copy, Primary, true)]);
+    assert_eq!(copied(&h), vec!["Fix the thing".to_owned()]);
+    assert!(h.state().text_menu.is_none(), "the menu closed");
+    send(&mut h, vec![pointer_button(copy, Primary, false)]);
+    assert!(text_is_marked(&h), "the click on Copy took the selection");
+    assert!(h.query_by_label("Copy all").is_none());
+
+    // Copy all: the whole message.
+    filtered_click(&mut h, on_text, Secondary);
+    h.step();
+    let (_, all) = text_menu_entries(&h);
+    send(&mut h, vec![egui::Event::PointerMoved(all)]);
+    send(&mut h, vec![pointer_button(all, Primary, true)]);
+    assert_eq!(copied(&h), vec![message.to_owned()]);
+    send(&mut h, vec![pointer_button(all, Primary, false)]);
+    for _ in 0..5 {
+        h.step();
+    }
+
+    // Under the header: the files of the commit with what is unfolded.
+    let file = h.get_by_label("A docs/new.md").rect().center();
+    filtered_click(&mut h, file, Secondary);
+    h.step();
+    assert_eq!(h.state().text_menu.as_ref().unwrap().text, TextOf::Pane);
+    let (_, all) = text_menu_entries(&h);
+    send(&mut h, vec![egui::Event::PointerMoved(all)]);
+    send(&mut h, vec![pointer_button(all, Primary, true)]);
+    assert_eq!(copied(&h), vec!["M src/main.rs\nA docs/new.md".to_owned()]);
+    send(&mut h, vec![pointer_button(all, Primary, false)]);
+
+    // Esc closes the menu, not the view; a click elsewhere closes it too.
+    filtered_click(&mut h, on_text, Secondary);
+    assert!(h.state().text_menu.is_some());
+    send(&mut h, vec![enter_or_esc(Key::Escape)]);
+    assert!(h.state().text_menu.is_none());
+    assert!(h.state().repo_view.is_some());
+    filtered_click(&mut h, on_text, Secondary);
+    h.step();
+    let row = h.get_by_label("AL aaaabbb Fix the thing").rect().center();
+    filtered_click(&mut h, row, Primary);
+    assert!(h.state().text_menu.is_none());
+    // The list on the left is no text to copy: no menu there.
+    filtered_click(&mut h, row, Secondary);
+    assert!(h.state().text_menu.is_none());
+}
+
+fn enter_or_esc(key: Key) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+#[test]
+fn right_click_on_the_output_of_a_command_copies_all_of_it() {
+    use crate::ui::text_menu::TextOf;
+    use egui::PointerButton::{Primary, Secondary};
+    let mut h = harness(marked_app(Arc::default(), &[]));
+    h.run();
+    h.state_mut().start_run("status", vec!["/repo".into()]);
+    settle(&mut h, |a| a.cards[0].last_command == Some(true));
+    h.run();
+    let output = h.get_by_label("ran status").rect().center();
+    filtered_click(&mut h, output, Secondary);
+    h.step();
+    assert!(matches!(
+        h.state().text_menu.as_ref().unwrap().text,
+        TextOf::Output(_, ref repo) if repo == &PathBuf::from("/repo")
+    ));
+    // Nothing is marked: only Copy all does something.
+    let (copy, all) = text_menu_entries(&h);
+    send(&mut h, vec![egui::Event::PointerMoved(copy)]);
+    send(&mut h, vec![pointer_button(copy, Primary, true)]);
+    assert!(copied(&h).is_empty());
+    assert!(h.state().text_menu.is_some());
+    send(&mut h, vec![pointer_button(copy, Primary, false)]);
+    send(&mut h, vec![egui::Event::PointerMoved(all)]);
+    send(&mut h, vec![pointer_button(all, Primary, true)]);
+    assert_eq!(copied(&h), vec!["ran status".to_owned()]);
+    assert!(h.state().text_menu.is_none());
+    send(&mut h, vec![pointer_button(all, Primary, false)]);
+
+    // A right click on a card is the card's own menu, as before.
+    let card = card_space(&h);
+    filtered_click(&mut h, card, Secondary);
+    assert!(h.state().text_menu.is_none());
 }
 
 #[test]
@@ -1072,13 +1636,176 @@ fn open_in_the_card_menu_and_the_buttons_of_the_view() {
         a.repo_view.as_ref().is_some_and(|v| v.details.is_some())
     });
     h.run();
-    h.get_by_label("untracked  notes.txt");
+    h.get_by_label("Files").click();
+    h.run();
+    h.get_by_label("A notes.txt");
     h.get_by_label("Refresh").click();
     h.run();
     assert!(h.state().repo_view.is_some());
     h.get_by_label("Close").click();
     h.run();
     assert!(h.state().repo_view.is_none());
+}
+
+#[test]
+fn the_graph_tab_keeps_its_width_while_the_graph_is_still_loading() {
+    let mut h = repo_view_app();
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.run();
+    h.get_by_label("Graph").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().graph.is_some());
+    // As on a slow machine: the tab is drawn for the first time before the
+    // graph is read, with nothing in it but "loading".
+    let graph = h.state_mut().repo_view.as_mut().unwrap().graph.take();
+    h.ctx.memory_mut(|memory| *memory = egui::Memory::default());
+    // Steps, not `run`: with its memory gone egui repaints for a while.
+    h.run_steps(4);
+    h.get_by_label("loading");
+    let pane = h.get_by_label("Pick a commit to see it.").rect();
+    assert!(pane.left() > 650.0 && pane.left() < 800.0, "{pane:?}");
+    // Then the graph comes, and the width is what it was.
+    h.state_mut().repo_view.as_mut().unwrap().graph = graph;
+    h.run_steps(4);
+    h.get_by_label("All branches");
+    let pane = h.get_by_label("Pick a commit to see it.").rect();
+    assert!(pane.left() > 650.0 && pane.left() < 800.0, "{pane:?}");
+}
+
+#[test]
+fn the_graph_tab_draws_named_commits_folds_plain_runs_and_picks_a_commit() {
+    let mut h = repo_view_app();
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.run();
+    h.get_by_label("Graph").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().graph.is_some());
+    h.run();
+    h.get_by_label("All branches");
+    // The graph has most of the width: the right pane starts past the middle.
+    let pane = h.get_by_label("Pick a commit to see it.").rect();
+    assert!(pane.left() > 650.0 && pane.left() < 800.0, "{pane:?}");
+    // A local branch and its remote branch on one commit share a label.
+    h.get_by_label(" main = origin ");
+    assert!(h.query_by_label(" origin/main ").is_none());
+    h.get_by_label(" side-branch ");
+    h.get_by_label(" v1 ");
+    h.get_by_label("Tip of main");
+    h.get_by_label("Work on the side");
+    h.get_by_label("Where they part");
+    // The two plain commits between the tip and the fork are one row.
+    assert!(h.query_by_label("Plain one").is_none());
+    h.get_by_label("2 commits").click();
+    h.run();
+    h.get_by_label("Plain one");
+    h.get_by_label("Plain two");
+    assert!(h.query_by_label("2 commits").is_none());
+
+    // A commit of the graph shows on the right like one of the list.
+    h.get_by_label("Work on the side").click();
+    h.run();
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().diff.is_some());
+    h.run();
+    h.get_by_label("2 files changed");
+    h.get_by_label("<ada@example.org>");
+
+    // Old remote branches are left out behind a line that shows them.
+    assert!(h.query_by_label(" origin/ancient ").is_none());
+    h.get_by_label("2 old remote branches hidden").click();
+    h.run();
+    settle(&mut h, |a| {
+        let view = a.repo_view.as_ref().unwrap();
+        matches!(&view.graph, Some(Ok(graph)) if graph.refs.len() == 5)
+    });
+    h.run();
+    h.get_by_label(" origin/ancient ");
+    assert!(h.query_by_label("2 old remote branches hidden").is_none());
+    // The pick is still there, and Back leaves the graph.
+    h.get_by_label("2 files changed");
+    h.get_by_label("Back").click();
+    h.run();
+    h.get_by_label("Back").click();
+    h.run();
+    assert!(h.query_by_label("All branches").is_none());
+}
+
+#[test]
+fn the_commit_list_reads_its_next_page_when_its_end_comes_into_view() {
+    use crate::domain::details::Details;
+    let backend = Arc::new(FakeBackend::default());
+    *backend.details.lock().unwrap() = Some(Details::default());
+    // A history of 130 commits: the first page holds 100.
+    *backend.log_length.lock().unwrap() = 130;
+    let mut h = harness(marked_app(backend, &[]));
+    h.run();
+    let commits = |h: &Harness<'static, App>| {
+        let view = h.state().repo_view.as_ref().unwrap();
+        view.details
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .commits
+            .len()
+    };
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.run();
+    assert_eq!(commits(&h), 100);
+    assert!(h.state().repo_view.as_ref().unwrap().more_commits);
+    // The list is the narrow side.
+    let pane = h.get_by_label("Pick a commit to see it.").rect();
+    assert!(pane.left() < 500.0, "{pane:?}");
+    // A tagged commit carries the name of its tag before its title.
+    h.get_by_label("AL 0000007  v7  Commit number 7");
+    // Every row is one compact line, the first one too.
+    let first = h.get_by_label("AL 0000000 Commit number 0").rect();
+    let second = h.get_by_label("AL 0000001 Commit number 1").rect();
+    assert!(first.height() < 30.0, "{first:?}");
+    let step = second.top() - first.top();
+    assert!(step > 0.0 && step < 40.0, "{first:?} {second:?}");
+    // The end of the list is far below: nothing more is read.
+    for _ in 0..5 {
+        h.step();
+    }
+    assert_eq!(commits(&h), 100);
+    // Scrolled to its end, the list reads the rest, once.
+    let list = h.get_by_label("AL 0000000 Commit number 0").rect().center();
+    h.event(egui::Event::PointerMoved(list));
+    for _ in 0..40 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, -40.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+    }
+    // Off the list again: a pointer resting on a row shows its tooltip.
+    h.event(egui::Event::PointerGone);
+    settle(&mut h, |a| {
+        let view = a.repo_view.as_ref().unwrap();
+        view.details
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .commits
+            .len()
+            == 130
+    });
+    h.run();
+    assert!(!h.state().repo_view.as_ref().unwrap().more_commits);
+    assert!(h.query_by_label_contains("more commits are read").is_none());
+    // A reload keeps the list as long as it was.
+    h.state_mut().refresh_repo_view();
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(5));
+        h.step();
+    }
+    assert_eq!(commits(&h), 130);
 }
 
 #[test]
@@ -1386,6 +2113,89 @@ fn kawaii_theme_animates_with_focus_and_stands_still_without() {
 }
 
 #[test]
+fn bunnies_and_cats_sit_on_the_cards_and_a_click_pets_one_without_marking() {
+    use crate::domain::critters::{Mood, Species};
+    let backend = Arc::new(FakeBackend::default());
+    *backend.snapshot.lock().unwrap() =
+        Some(snapshot(Counts::default(), Upstream::None, &["main"]));
+    let mut app = app_with(backend, None);
+    app.cards = (0..6).map(|i| card(&format!("/r/repo{i}"))).collect();
+    let mut h = harness(app);
+    h.run();
+    settle(&mut h, |a| a.cards.iter().all(|c| c.snapshot().is_some()));
+    h.run();
+    // No critters in a plain theme.
+    assert!(h.query_by_label("bunny").is_none());
+    assert!(h.state().critters.critters.is_empty());
+
+    h.state_mut().config.theme = crate::domain::config::Theme::Kawaii;
+    for _ in 0..4 {
+        h.step();
+    }
+    // Six cards: the fewest, a bunny and a cat, each on a card's top edge.
+    let species: Vec<_> = h
+        .state()
+        .critters
+        .critters
+        .iter()
+        .map(|c| c.species)
+        .collect();
+    assert_eq!(species, [Species::Bunny, Species::Cat]);
+    let bunny = h.get_by_label("bunny").rect();
+    let home = h.state().critters.critters[0].home.clone();
+    let name = home.file_name().unwrap().to_string_lossy().into_owned();
+    let card_name = h.get_by_label(name.as_str()).rect();
+    assert!(
+        bunny.bottom() < card_name.top(),
+        "above what the card shows"
+    );
+    let gap = card_name.top() - bunny.bottom();
+    assert!(gap < 60.0, "and on that card: {gap} above its name");
+    let aside = bunny.center().x - card_name.left();
+    assert!((0.0..300.0).contains(&aside), "{aside}");
+    h.get_by_label("cat");
+
+    // A click on the bunny pets it; the card under it keeps its mark off.
+    let at = bunny.center();
+    h.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.step();
+    h.step();
+    assert_eq!(h.state().critters.critters[0].mood, Mood::Pet);
+    assert!(h.state().marked.is_empty(), "{:?}", h.state().marked);
+    // Confetti out of a card flies for a good second and is gone.
+    let clock = h.state().kawaii_clock;
+    h.state_mut().bursts.push((home.clone(), clock));
+    h.step();
+    assert_eq!(h.state().bursts.len(), 1);
+    for _ in 0..10 {
+        h.step();
+    }
+    assert!(h.state().bursts.is_empty());
+    // Without focus and with nothing happening the picture stands still,
+    // critters and all.
+    h.input_mut().focused = false;
+    for _ in 0..200 {
+        h.step();
+    }
+    assert!(repaint_delay(&h) >= Duration::from_millis(200));
+
+    // Back in a plain theme they are gone.
+    h.state_mut().config.theme = crate::domain::config::Theme::Light;
+    h.input_mut().focused = true;
+    h.run();
+    assert!(h.query_by_label("bunny").is_none());
+    assert!(h.state().critters.critters.is_empty());
+}
+
+#[test]
 fn kawaii_glyphs_and_font_are_there() {
     for glyph in [crate::ui::view::HEART, crate::ui::view::STAR] {
         assert!(glyph.chars().all(bundled_fonts_draw), "{glyph}");
@@ -1398,6 +2208,37 @@ fn kawaii_glyphs_and_font_are_there() {
     }
     let license = include_str!("../../assets/fonts/Fredoka-OFL.txt");
     assert!(license.contains("SIL Open Font License"));
+}
+
+#[test]
+fn every_music_theme_has_a_checkbox_and_the_last_one_stays_on() {
+    use crate::domain::songs::STYLES;
+    let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
+    let mut app = crate::ui::app::tests::app_on(Arc::default(), desktop, None);
+    app.settings_open = true;
+    let mut h = harness(app);
+    h.step();
+    let labels: Vec<&str> = STYLES.iter().map(|s| s.label).collect();
+    assert!(h.state().config.music_off.is_empty(), "all on at first");
+    // Switch off all but the last theme, one by one.
+    for (i, label) in labels.iter().enumerate().take(labels.len() - 1) {
+        h.get_by_label(label).click();
+        h.step();
+        h.step();
+        assert_eq!(h.state().config.music_off, labels[..=i], "{label}");
+    }
+    // The last one cannot be switched off.
+    let last = labels[labels.len() - 1];
+    h.get_by_label(last).click();
+    h.step();
+    h.step();
+    assert_eq!(h.state().config.music_off.len(), labels.len() - 1);
+    assert!(!h.state().config.music_off.iter().any(|l| l == last));
+    // A theme switched on again leaves the list.
+    h.get_by_label(labels[0]).click();
+    h.step();
+    h.step();
+    assert_eq!(h.state().config.music_off, labels[1..labels.len() - 1]);
 }
 
 #[test]

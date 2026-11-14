@@ -131,6 +131,7 @@ mod tests {
                 None => Head::Detached("1a2b3c4".into()),
             },
             upstream: Upstream::Tracking { ahead: 0, behind },
+            tracking: None,
             counts: Counts {
                 modified,
                 ..Counts::default()

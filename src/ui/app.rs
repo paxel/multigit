@@ -9,20 +9,24 @@ use crate::domain::board::{SortKey, Sorted, compare, is_ahead, matches_filter};
 use crate::domain::command::{Job, display, shell_line};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::{Config, Theme};
+use crate::domain::critters::{News, Troupe};
 use crate::domain::destructive::is_destructive;
-use crate::domain::details::{Details, DiffTarget};
+use crate::domain::details::{Details, DiffTarget, LogEntry, Place, RepoTab, Trail};
 use crate::domain::favorites::{FavoriteDraft, active_after_delete, forget};
+use crate::domain::graph::GraphData;
 use crate::domain::history::History;
 use crate::domain::kawaii;
 use crate::domain::naming::{board_order, title};
-use crate::domain::output::OutputLog;
+use crate::domain::output::{OutputLog, SectionState};
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
+use crate::domain::songs::{STYLES, styles_on};
 use crate::domain::status::{RepoState, Upstream};
 use crate::infrastructure::audio::decode;
 use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
-use crate::infrastructure::scan::scan;
+use crate::infrastructure::scan::{is_repo, scan};
 use crate::infrastructure::store::{self, Paths};
 use crate::ui::cli::CliState;
+use crate::ui::text_menu::{self, Picked, TextMenu, TextOf};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -100,12 +104,60 @@ pub struct PendingRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoView {
     pub repo: PathBuf,
+    /// The tab that is shown.
+    pub tab: RepoTab,
     /// The lists; `None` until they were read the first time.
     pub details: Option<Result<Details, String>>,
-    /// The file or commit whose diff is shown.
+    /// The file or commit picked in the shown tab; its diff is shown.
     pub selected: Option<DiffTarget>,
+    /// What is picked in the tabs that are not shown.
+    pub kept: HashMap<RepoTab, DiffTarget>,
+    /// What Back and Forward step through.
+    pub trail: Trail<Place>,
+    /// The folders of the file tree that are folded, by path.
+    pub closed: HashSet<String>,
+    /// The files of the picked commit that are unfolded, by path, each
+    /// with its diff; `None` while it is read.
+    pub unfolded: HashMap<String, Option<Result<String, String>>>,
+    /// The graph of all branches; `None` until the Graph tab asked for it.
+    pub graph: Option<Result<GraphData, String>>,
+    /// The folded runs of the graph that were unfolded, each by the hash
+    /// of its newest commit.
+    pub graph_open: HashSet<String>,
+    /// The graph draws the old remote branches too.
+    pub with_old: bool,
+    /// The history goes on after the commits the list holds.
+    pub more_commits: bool,
+    /// The next page of commits is being read.
+    pub loading_commits: bool,
     /// The diff of `selected`; `None` while it is read.
     pub diff: Option<Result<String, String>>,
+}
+
+impl RepoView {
+    /// Whether what was read still has `target`: a file among the changed
+    /// ones, a commit in the list or in the graph.
+    pub fn holds(&self, target: &DiffTarget) -> bool {
+        let listed = matches!(&self.details, Some(Ok(details)) if details.holds(target));
+        let drawn = match (target, &self.graph) {
+            (DiffTarget::Commit(hash), Some(Ok(graph))) => graph.holds(hash),
+            _ => false,
+        };
+        listed || drawn
+    }
+
+    /// Take off the picks that what was read no longer has, in the shown
+    /// tab and in the others.
+    fn drop_what_is_gone(&mut self) {
+        if self.selected.as_ref().is_some_and(|t| !self.holds(t)) {
+            self.selected = None;
+            self.diff = None;
+            self.unfolded.clear();
+        }
+        let mut kept = std::mem::take(&mut self.kept);
+        kept.retain(|_, target| self.holds(target));
+        self.kept = kept;
+    }
 }
 
 /// What the settings window shows.
@@ -142,6 +194,47 @@ pub struct Toast {
     pub until: Instant,
 }
 
+/// What a mark button of the toolbar stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkBy {
+    All,
+    Dirty,
+    Behind,
+    Ahead,
+}
+
+impl MarkBy {
+    pub const EACH: [MarkBy; 4] = [MarkBy::All, MarkBy::Dirty, MarkBy::Behind, MarkBy::Ahead];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MarkBy::All => "all",
+            MarkBy::Dirty => "dirty",
+            MarkBy::Behind => "behind",
+            MarkBy::Ahead => "ahead",
+        }
+    }
+
+    /// The repositories it is about, for a hover text.
+    pub fn what(self) -> &'static str {
+        match self {
+            MarkBy::All => "all repositories",
+            MarkBy::Dirty => "the repositories with changes or an operation in progress",
+            MarkBy::Behind => "the repositories with unpulled commits",
+            MarkBy::Ahead => "the repositories with unpushed commits",
+        }
+    }
+
+    pub fn fits(self, card: &Card) -> bool {
+        match self {
+            MarkBy::All => true,
+            MarkBy::Dirty => card.is_dirty(),
+            MarkBy::Behind => card.is_behind(),
+            MarkBy::Ahead => card.is_ahead(),
+        }
+    }
+}
+
 /// The whole application state.
 pub struct App {
     pub config: Config,
@@ -153,6 +246,12 @@ pub struct App {
     pub cards: Vec<Card>,
     /// Marks of all cards, also of the ones the filter hides.
     pub marked: BTreeSet<PathBuf>,
+    /// The mark button that is pressed, and whether it was clicked again
+    /// and marks the cards that do not fit it; not saved.
+    pub pressed_mark: Option<(MarkBy, bool)>,
+    /// The mark button the board is filtered by: only the cards that fit
+    /// it are shown. Never `All`; not saved.
+    pub status_filter: Option<MarkBy>,
     /// Text of the filter field; not saved.
     pub filter: String,
     /// What the board is sorted by; not saved.
@@ -170,8 +269,6 @@ pub struct App {
     schedule: Schedule,
     applied_concurrency: usize,
     pub log: OutputLog,
-    /// The output panel is folded away; not saved.
-    pub output_hidden: bool,
     /// The last run the open output panel showed.
     output_seen: Option<u64>,
     pub history: History,
@@ -182,9 +279,18 @@ pub struct App {
     commands_requested: bool,
     pub toasts: Vec<Toast>,
     pub copy_flash: Option<CopyFlash>,
+    /// The open right-click menu on a text.
+    pub text_menu: Option<TextMenu>,
+    /// What was picked in it, until the next frame does it.
+    pub text_picked: Option<Picked>,
     /// The clock of the Kawaii theme's motion, in seconds; it runs only
     /// while the window has focus.
     pub kawaii_clock: f64,
+    /// The bunnies and cats of the Kawaii theme.
+    pub critters: Troupe,
+    /// Bursts of confetti that are in the air: the card each comes out of
+    /// and the clock time it started at.
+    pub bursts: Vec<(PathBuf, f64)>,
     /// Seconds a change in a repository still keeps the Kawaii theme moving
     /// in a window without focus.
     kawaii_awake: f32,
@@ -210,6 +316,9 @@ pub struct App {
     player_missing_said: bool,
     /// The Kawaii theme's music while it plays.
     music: Option<Music>,
+    /// A mouse button is down. A volume slider that is still dragged does
+    /// not retune the music; the volume is taken when it is let go.
+    pub pointer_held: bool,
     /// The music ended with an error; it is not started again until it was
     /// switched off once.
     music_failed: bool,
@@ -240,6 +349,8 @@ impl App {
             paths,
             cards,
             marked: BTreeSet::new(),
+            pressed_mark: None,
+            status_filter: None,
             filter: String::new(),
             sort: SortKey::default(),
             active_favorite: None,
@@ -251,7 +362,6 @@ impl App {
             events,
             schedule: Schedule::default(),
             log: OutputLog::default(),
-            output_hidden: false,
             output_seen: None,
             history,
             cli: CliState::default(),
@@ -261,7 +371,11 @@ impl App {
             commands_requested: false,
             toasts: Vec::new(),
             copy_flash: None,
+            text_menu: None,
+            text_picked: None,
             kawaii_clock: 0.0,
+            critters: Troupe::default(),
+            bursts: Vec::new(),
             kawaii_awake: 0.0,
             wobbles: HashMap::new(),
             confirm: None,
@@ -275,6 +389,7 @@ impl App {
             sound_made: HashMap::new(),
             player_missing_said: false,
             music: None,
+            pointer_held: false,
             music_failed: false,
         }
     }
@@ -354,6 +469,11 @@ impl App {
         self.music.is_some()
     }
 
+    /// The volume the playing music was last given.
+    pub fn music_volume_playing(&self) -> Option<u8> {
+        self.music.as_ref().map(Music::volume)
+    }
+
     /// Start, stop or tune the music so it fits the settings: it plays in
     /// the Kawaii theme with music switched on, and nowhere else.
     pub fn sync_music(&mut self) {
@@ -362,9 +482,13 @@ impl App {
             self.music_failed = false;
             return;
         }
+        let themes = styles_on(&STYLES, &self.config.music_off);
         match &self.music {
             Some(music) => {
-                music.set_volume(self.config.music_volume);
+                music.set_themes(&themes);
+                if !self.pointer_held {
+                    music.set_volume(self.config.music_volume);
+                }
                 if let Some(error) = music.take_error() {
                     self.music = None;
                     self.music_failed = true;
@@ -378,7 +502,13 @@ impl App {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(1, |d| d.as_nanos() as u64);
                 let volume = self.config.music_volume;
-                self.music = Some(Music::start(self.desktop.clone(), write, volume, seed));
+                self.music = Some(Music::start(
+                    self.desktop.clone(),
+                    write,
+                    volume,
+                    themes,
+                    seed,
+                ));
             }
             None => {}
         }
@@ -450,6 +580,43 @@ impl App {
         self.config.repos = self.cards.iter().map(|c| c.path.clone()).collect();
     }
 
+    /// Before egui reads the input of a frame: the clicks that belong to
+    /// the right-click menu on a text are taken out of it.
+    pub fn filter_input(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        let areas = text_menu::take_areas(ctx);
+        let picked = text_menu::filter(&mut self.text_menu, input, |pos| {
+            // Only what lies on top at that point is meant.
+            let layer = ctx.layer_id_at(pos)?;
+            let hit = |area: &&text_menu::Area| area.layer == layer && area.rect.contains(pos);
+            areas.iter().rev().find(hit).map(|area| area.text.clone())
+        });
+        if picked.is_some() {
+            self.text_picked = picked;
+        }
+    }
+
+    /// The whole text behind `text`, as the menu's `Copy all` copies it;
+    /// `None` when it is not there any more.
+    pub fn text_of(&self, text: &TextOf) -> Option<String> {
+        match text {
+            TextOf::Message | TextOf::Pane => self.repo_view.as_ref()?.text_of(text),
+            TextOf::Output(run, repo) => {
+                let run = self.log.run(*run)?;
+                let section = run.sections.iter().find(|s| &s.repo == repo)?;
+                match &section.state {
+                    SectionState::Done(out) => {
+                        let parts = [out.stdout.trim_end(), out.stderr.trim_end()];
+                        let parts: Vec<&str> =
+                            parts.into_iter().filter(|part| !part.is_empty()).collect();
+                        Some(parts.join("\n"))
+                    }
+                    SectionState::SpawnFailed(error) => Some(error.clone()),
+                    SectionState::Queued | SectionState::Running => None,
+                }
+            }
+        }
+    }
+
     /// (+): add a repository, or every repository found below a folder.
     pub fn add_folder(&mut self, folder: &Path) {
         let found = scan(folder, self.config.scan_depth);
@@ -459,7 +626,7 @@ impl App {
         }
         // Picking a hidden repository itself, not a folder above it, asks
         // for it by name: that unhides it.
-        let picked_itself = found.len() == 1 && folder.join(".git").exists();
+        let picked_itself = found.len() == 1 && is_repo(folder);
         let (mut duplicates, mut hidden) = (0, 0);
         for path in found {
             if self.cards.iter().any(|c| c.path == path) {
@@ -532,15 +699,33 @@ impl App {
         self.sync_repos_to_config();
     }
 
-    /// Open the read-only view of `repo` and read its lists.
+    /// Open the read-only view of `repo` and read its lists. It opens on
+    /// the changes of a repository that has some, else on its history.
     pub fn open_repo_view(&mut self, repo: &Path) {
+        let dirty = self
+            .cards
+            .iter()
+            .find(|c| c.path == repo)
+            .and_then(Card::snapshot)
+            .is_some_and(|s| !s.status.counts.is_clean());
+        let tab = RepoTab::opening(dirty);
         self.repo_view = Some(RepoView {
             repo: repo.to_path_buf(),
+            tab,
             details: None,
             selected: None,
+            kept: HashMap::new(),
+            trail: Trail::new((tab, None)),
+            closed: HashSet::new(),
+            unfolded: HashMap::new(),
+            graph: None,
+            graph_open: HashSet::new(),
+            with_old: false,
+            more_commits: true,
+            loading_commits: false,
             diff: None,
         });
-        self.engine.load_details(repo.to_path_buf());
+        self.engine.load_details(repo.to_path_buf(), 0);
     }
 
     pub fn close_repo_view(&mut self) {
@@ -550,16 +735,187 @@ impl App {
     /// Read the lists of the open view again.
     pub fn refresh_repo_view(&mut self) {
         if let Some(view) = &self.repo_view {
-            self.engine.load_details(view.repo.clone());
+            // As many commits as the list holds, so it does not shrink.
+            let commits = view
+                .details
+                .as_ref()
+                .and_then(|d| d.as_ref().ok())
+                .map_or(0, |d| d.commits.len());
+            self.engine.load_details(view.repo.clone(), commits);
+            if view.graph.is_some() || view.tab == RepoTab::Graph {
+                self.engine.load_graph(view.repo.clone(), view.with_old);
+            }
+        }
+    }
+
+    /// Show `place` in the open view: its tab, and its pick with the diff.
+    /// A pick the lists no longer hold is left out.
+    fn show_place(&mut self, (tab, target): Place) {
+        let Some(view) = &mut self.repo_view else {
+            return;
+        };
+        if let Some(old) = view.selected.take() {
+            view.kept.insert(view.tab, old);
+        }
+        view.kept.remove(&tab);
+        let held = target.filter(|t| view.holds(t));
+        view.tab = tab;
+        if tab == RepoTab::Graph && view.graph.is_none() {
+            self.engine.load_graph(view.repo.clone(), view.with_old);
+        }
+        view.selected = held.clone();
+        view.diff = None;
+        view.unfolded.clear();
+        if let Some(target) = held {
+            self.engine.load_diff(view.repo.clone(), target);
         }
     }
 
     /// A click on a file or commit in the view: show its diff.
     pub fn select_in_repo_view(&mut self, target: DiffTarget) {
         if let Some(view) = &mut self.repo_view {
+            let place = (view.tab, Some(target.clone()));
+            view.trail.visit(place);
             view.selected = Some(target.clone());
             view.diff = None;
+            view.unfolded.clear();
             self.engine.load_diff(view.repo.clone(), target);
+        }
+    }
+
+    /// A click on a file of the picked commit: unfold its diff, or fold it.
+    pub fn toggle_commit_file(&mut self, path: &str) {
+        let Some(view) = &mut self.repo_view else {
+            return;
+        };
+        let Some(DiffTarget::Commit(hash)) = &view.selected else {
+            return;
+        };
+        if view.unfolded.remove(path).is_some() {
+            return;
+        }
+        view.unfolded.insert(path.to_owned(), None);
+        let target = DiffTarget::CommitFile {
+            hash: hash.clone(),
+            path: path.to_owned(),
+        };
+        self.engine.load_diff(view.repo.clone(), target);
+    }
+
+    /// The commit list was scrolled to its end: read the next page, once.
+    pub fn load_more_commits(&mut self) {
+        let Some(view) = &mut self.repo_view else {
+            return;
+        };
+        let Some(Ok(details)) = &view.details else {
+            return;
+        };
+        if view.more_commits && !view.loading_commits {
+            view.loading_commits = true;
+            self.engine
+                .load_log(view.repo.clone(), details.commits.len());
+        }
+    }
+
+    /// A page of commits was read: it goes to the end of the list when it
+    /// is the page that follows it.
+    fn commits_loaded(
+        &mut self,
+        repo: &Path,
+        skip: usize,
+        result: Result<Vec<LogEntry>, String>,
+        more: bool,
+    ) {
+        let Some(view) = self.repo_view.as_mut().filter(|v| v.repo == repo) else {
+            return;
+        };
+        let Some(Ok(details)) = &mut view.details else {
+            return;
+        };
+        if details.commits.len() != skip {
+            return;
+        }
+        view.loading_commits = false;
+        match result {
+            Ok(page) => {
+                details.commits.extend(page);
+                view.more_commits = more;
+            }
+            Err(error) => {
+                view.more_commits = false;
+                self.toast(format!("Cannot read more commits: {error}"));
+            }
+        }
+    }
+
+    /// The graph of the open view was read.
+    fn graph_loaded(&mut self, repo: &Path, result: Result<GraphData, String>) {
+        let Some(view) = self.repo_view.as_mut().filter(|v| v.repo == repo) else {
+            return;
+        };
+        view.graph = Some(result);
+        view.drop_what_is_gone();
+    }
+
+    /// A click on a folded run of the graph: show its commits.
+    pub fn unfold_graph_run(&mut self, first: &str) {
+        if let Some(view) = &mut self.repo_view {
+            view.graph_open.insert(first.to_owned());
+        }
+    }
+
+    /// A click on the line that counts the old remote branches left out of
+    /// the graph: draw them too.
+    pub fn show_old_branches(&mut self) {
+        if let Some(view) = &mut self.repo_view
+            && !view.with_old
+        {
+            view.with_old = true;
+            self.engine.load_graph(view.repo.clone(), true);
+        }
+    }
+
+    /// A click on a folder of the file tree: fold it, or unfold it.
+    pub fn toggle_repo_folder(&mut self, path: &str) {
+        if let Some(view) = &mut self.repo_view
+            && !view.closed.remove(path)
+        {
+            view.closed.insert(path.to_owned());
+        }
+    }
+
+    /// A click on a tab of the view: show it, with what was picked in it.
+    pub fn switch_repo_tab(&mut self, tab: RepoTab) {
+        let Some(view) = &mut self.repo_view else {
+            return;
+        };
+        if view.tab == tab {
+            return;
+        }
+        let place = (tab, view.kept.get(&tab).cloned());
+        view.trail.visit(place.clone());
+        self.show_place(place);
+    }
+
+    /// Back in the view: the place looked at before this one.
+    pub fn repo_view_back(&mut self) {
+        let place = self
+            .repo_view
+            .as_mut()
+            .and_then(|v| v.trail.back().cloned());
+        if let Some(place) = place {
+            self.show_place(place);
+        }
+    }
+
+    /// Forward in the view: the place Back was pressed on.
+    pub fn repo_view_forward(&mut self) {
+        let place = self
+            .repo_view
+            .as_mut()
+            .and_then(|v| v.trail.forward().cloned());
+        if let Some(place) = place {
+            self.show_place(place);
         }
     }
 
@@ -570,15 +926,14 @@ impl App {
         let Some(view) = self.repo_view.as_mut().filter(|v| v.repo == repo) else {
             return;
         };
-        let held = match (&result, &view.selected) {
-            (Ok(details), Some(target)) => details.holds(target),
-            _ => false,
-        };
-        if !held {
-            view.selected = None;
-            view.diff = None;
-        }
         view.details = Some(result);
+        view.drop_what_is_gone();
+        // A page asked for before this reload no longer fits the list.
+        view.loading_commits = false;
+        if let Some(Ok(details)) = &view.details {
+            let page = crate::domain::details::LOG_PAGE;
+            view.more_commits = details.commits.len() >= page && details.commits.len() % page == 0;
+        }
         if let Some(target) = view.selected.clone() {
             self.engine.load_diff(repo.to_path_buf(), target);
         }
@@ -605,6 +960,8 @@ impl App {
     pub fn advance_kawaii(&mut self, dt: f32, focused: bool) -> bool {
         if !self.is_kawaii() {
             self.wobbles.clear();
+            self.critters = Troupe::default();
+            self.bursts.clear();
             self.kawaii_awake = 0.0;
             return false;
         }
@@ -614,6 +971,8 @@ impl App {
         let clock = self.kawaii_clock;
         self.wobbles
             .retain(|_, marked_at| kawaii::wobble(clock, *marked_at).is_some());
+        self.bursts
+            .retain(|(_, started)| kawaii::burst(clock, *started).is_some());
         running
     }
 
@@ -621,6 +980,39 @@ impl App {
     /// in a window without focus.
     fn wake_kawaii(&mut self) {
         if self.is_kawaii() {
+            self.kawaii_awake = kawaii::WAKE_SECS;
+            self.critters.stir(self.kawaii_clock);
+        }
+    }
+
+    /// The paths of the cards the board shows, in its order.
+    fn board_order(&self) -> Vec<PathBuf> {
+        self.shown_cards().iter().map(|c| c.path.clone()).collect()
+    }
+
+    /// One frame of the critters: as many as the shown cards have, each on
+    /// a shown card, now and then one hopping.
+    pub fn tend_critters(&mut self) {
+        if self.is_kawaii() {
+            let shown = self.board_order();
+            self.critters.sync(&shown, self.kawaii_clock);
+            self.critters.tick(&shown, self.kawaii_clock);
+        }
+    }
+
+    /// Tell the critters what happened on the card of `repo`.
+    fn critter_news(&mut self, news: News, repo: &Path) {
+        if self.is_kawaii() {
+            let shown = self.board_order();
+            self.critters.news(news, repo, &shown, self.kawaii_clock);
+            self.kawaii_awake = kawaii::WAKE_SECS;
+        }
+    }
+
+    /// A click on the critter at this position: it jumps, with a heart.
+    pub fn pet_critter(&mut self, index: usize) {
+        if self.is_kawaii() {
+            self.critters.pet(index, self.kawaii_clock);
             self.kawaii_awake = kawaii::WAKE_SECS;
         }
     }
@@ -718,7 +1110,8 @@ impl App {
             .active_favorite
             .and_then(|i| self.config.favorites.get(i))
             .is_none_or(|f| f.contains(&card.path));
-        in_active && matches_filter(&card.path, &self.filter)
+        let fits = self.status_filter.is_none_or(|by| by.fits(card));
+        in_active && fits && matches_filter(&card.path, &self.filter)
     }
 
     /// The cards the board shows, in the order of the sort key. Everything that acts on
@@ -756,20 +1149,23 @@ impl App {
         self.marked.extend(picked);
     }
 
-    pub fn mark_all(&mut self) {
-        self.mark_where(|_| true);
+    /// A right click on a mark button: show only the cards that fit it,
+    /// as they fit it now and later. On the button that filters, and on
+    /// `All`, it shows all again. The marks and the pressed button stay.
+    pub fn filter_by(&mut self, by: MarkBy) {
+        self.status_filter = (by != MarkBy::All && self.status_filter != Some(by)).then_some(by);
     }
-    pub fn mark_none(&mut self) {
-        self.mark_where(|_| false);
-    }
-    pub fn mark_dirty(&mut self) {
-        self.mark_where(Card::is_dirty);
-    }
-    pub fn mark_behind(&mut self) {
-        self.mark_where(Card::is_behind);
-    }
-    pub fn mark_ahead(&mut self) {
-        self.mark_where(Card::is_ahead);
+
+    /// A click on a mark button. The first click marks the shown cards that
+    /// fit it and unmarks the other shown ones; a click on the pressed
+    /// button turns that round, and the next one back. The button stays
+    /// pressed until another one is clicked, whatever happens to the marks
+    /// in between.
+    pub fn press_mark(&mut self, by: MarkBy) {
+        let inverted =
+            matches!(self.pressed_mark, Some((pressed, inverted)) if pressed == by && !inverted);
+        self.pressed_mark = Some((by, inverted));
+        self.mark_where(|card| by.fits(card) != inverted);
     }
 
     /// The marked repositories the board shows, in board order.
@@ -953,6 +1349,13 @@ impl App {
                 self.sound_news(&sounds, Instant::now());
                 if changed {
                     self.wake_kawaii();
+                    for sound in &sounds {
+                        let news = match sound {
+                            Sound::Beep => News::RemoteCommit,
+                            Sound::Boop => News::LocalCommit,
+                        };
+                        self.critter_news(news, &repo);
+                    }
                     // The open view of that repository follows its card.
                     if self.repo_view.as_ref().is_some_and(|v| v.repo == repo) {
                         self.refresh_repo_view();
@@ -967,6 +1370,7 @@ impl App {
                 }
                 if appeared {
                     self.wake_kawaii();
+                    self.critter_news(News::FetchError, &repo);
                 }
             }
             Event::Section { run, repo, state } => {
@@ -974,6 +1378,11 @@ impl App {
                     && let Some(card) = self.card_mut(&repo)
                 {
                     card.last_command = Some(outcome);
+                    // A command that ended well is worth confetti.
+                    if outcome && self.is_kawaii() {
+                        self.bursts.push((repo.clone(), self.kawaii_clock));
+                        self.wake_kawaii();
+                    }
                 }
                 self.log.update(run, &repo, state);
             }
@@ -985,17 +1394,29 @@ impl App {
                 self.vocab.options.insert(command, options);
             }
             Event::Details { repo, result } => self.repo_view_loaded(&repo, result),
+            Event::Log {
+                repo,
+                skip,
+                result,
+                more,
+            } => self.commits_loaded(&repo, skip, result, more),
+            Event::Graph { repo, result } => self.graph_loaded(&repo, result),
             Event::Diff {
                 repo,
                 target,
                 result,
             } => {
                 // A diff that is no longer asked for is dropped.
-                if let Some(view) = &mut self.repo_view
-                    && view.repo == repo
-                    && view.selected.as_ref() == Some(&target)
-                {
+                let Some(view) = self.repo_view.as_mut().filter(|v| v.repo == repo) else {
+                    return;
+                };
+                if view.selected.as_ref() == Some(&target) {
                     view.diff = Some(result);
+                } else if let DiffTarget::CommitFile { hash, path } = target
+                    && view.selected == Some(DiffTarget::Commit(hash))
+                    && let Some(slot) = view.unfolded.get_mut(&path)
+                {
+                    *slot = Some(result);
                 }
             }
         }
@@ -1118,6 +1539,15 @@ pub(crate) mod tests {
         pub details: Mutex<Option<Details>>,
         /// How often the lists were read.
         pub details_read: Mutex<usize>,
+        /// What the Graph tab gets; an error while `None`. Asked for the
+        /// old remote branches too, it has `origin/ancient` on its last
+        /// commit.
+        pub graph: Mutex<Option<GraphData>>,
+        /// How often the graph was read.
+        pub graphs_read: Mutex<usize>,
+        /// How many commits the history has; 0 leaves the commits of
+        /// `details` as they are, `usize::MAX` makes reading a page fail.
+        pub log_length: Mutex<usize>,
         pub snapshot: Mutex<Option<Snapshot>>,
     }
 
@@ -1125,6 +1555,7 @@ pub(crate) mod tests {
         let mut snap = Snapshot::of(Status {
             head: Head::Branch("main".into()),
             upstream,
+            tracking: None,
             counts,
             changed_paths: vec![],
         });
@@ -1140,6 +1571,24 @@ pub(crate) mod tests {
             })
             .collect();
         snap
+    }
+
+    /// Commit number `i` of a made-up history, newest first.
+    pub fn fake_commit(i: usize) -> LogEntry {
+        LogEntry {
+            hash: format!("{i:040x}"),
+            short: format!("{i:07x}"),
+            author: "Ada Lovelace".into(),
+            time: 1_700_000_000 - i as i64 * 3600,
+            date: "2023-11-14 22:13".into(),
+            // Every fiftieth commit is a release.
+            tags: if i % 50 == 7 {
+                vec![format!("v{i}")]
+            } else {
+                Vec::new()
+            },
+            subject: format!("Commit number {i}"),
+        }
     }
 
     impl Backend for FakeBackend {
@@ -1185,15 +1634,71 @@ pub(crate) mod tests {
         fn options(&self, _dir: &Path, _command: &str) -> Vec<String> {
             vec!["--rebase".into()]
         }
-        fn details(&self, _dir: &Path) -> Result<Details, String> {
+        fn details(&self, _dir: &Path, commits: usize) -> Result<Details, String> {
             *self.details_read.lock().unwrap() += 1;
-            let details = self.details.lock().unwrap().clone();
+            let mut details = self.details.lock().unwrap().clone();
+            // A history as long as `log_length`, when that is set.
+            if let Some(details) = &mut details
+                && let length = *self.log_length.lock().unwrap()
+                && length > 0
+            {
+                let count = commits.max(crate::domain::details::LOG_PAGE).min(length);
+                details.commits = (0..count).map(fake_commit).collect();
+            }
             details.ok_or_else(|| "not a git repository".to_owned())
+        }
+        fn graph(&self, _dir: &Path, with_old: bool) -> Result<GraphData, String> {
+            *self.graphs_read.lock().unwrap() += 1;
+            let mut graph = self.graph.lock().unwrap().clone();
+            if let Some(graph) = &mut graph
+                && with_old
+            {
+                graph.refs.push(crate::domain::graph::GraphRef {
+                    name: "origin/ancient".into(),
+                    kind: crate::domain::graph::RefKind::Remote,
+                    hash: graph
+                        .commits
+                        .last()
+                        .map(|c| c.hash.clone())
+                        .unwrap_or_default(),
+                    time: 0,
+                });
+            }
+            graph.ok_or_else(|| "no graph".to_owned())
+        }
+        fn log(&self, _dir: &Path, skip: usize) -> Result<Vec<LogEntry>, String> {
+            let length = *self.log_length.lock().unwrap();
+            if length == usize::MAX {
+                return Err("history unreadable".to_owned());
+            }
+            let end = length.min(skip + crate::domain::details::LOG_PAGE);
+            Ok((skip..end).map(fake_commit).collect())
         }
         fn diff(&self, _dir: &Path, target: &DiffTarget) -> Result<String, String> {
             Ok(match target {
-                DiffTarget::File(file) => format!("--- a/{0}\n+++ b/{0}\n-old\n+new", file.path),
-                DiffTarget::Commit(hash) => format!("commit {hash}\n\n    subject\n"),
+                DiffTarget::File(file) => match file.kind {
+                    crate::domain::details::ChangeKind::Added => {
+                        "+++ b/new\n@@ -0,0 +1 @@\n+fresh line".to_owned()
+                    }
+                    crate::domain::details::ChangeKind::Deleted => {
+                        "--- a/old\n@@ -1 +0,0 @@\n-gone line".to_owned()
+                    }
+                    _ => format!("--- a/{0}\n+++ b/{0}\n-old\n+new", file.path),
+                },
+                // The commit `bbbbcccc` was committed by somebody else.
+                DiffTarget::Commit(hash) => {
+                    let committer = if hash == "bbbbcccc" {
+                        "Grace Hopper\0grace@example.org"
+                    } else {
+                        "Ada Lovelace\0ada@example.org"
+                    };
+                    format!(
+                        "{hash}\0bbbbcccc\0Ada Lovelace\0ada@example.org\0{committer}\x002026-11-12 20:03\0HEAD -> main, tag: v9\0Fix the thing\n\nBecause it was broken.\n\0\0\n:100644 100644 1111111 2222222 M\0src/main.rs\0:000000 100644 0000000 3333333 A\0docs/new.md\x003\t1\tsrc/main.rs\x0012\t0\tdocs/new.md\0"
+                    )
+                }
+                DiffTarget::CommitFile { path, .. } => {
+                    format!("--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-before\n+after in {path}")
+                }
             })
         }
     }
@@ -1297,6 +1802,7 @@ pub(crate) mod tests {
             .map(|n| {
                 let p = dir.path().join(n);
                 std::fs::create_dir_all(p.join(".git")).unwrap();
+                std::fs::write(p.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
                 p.canonicalize().unwrap()
             })
             .collect();
@@ -1464,16 +1970,133 @@ pub(crate) mod tests {
             card.probe = Some(Ok(snap));
             app.cards.push(card);
         }
-        app.mark_dirty();
+        app.press_mark(MarkBy::Dirty);
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/dirty")]);
-        app.mark_behind();
+        app.press_mark(MarkBy::Behind);
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/behind")]);
-        app.mark_ahead();
+        app.press_mark(MarkBy::Ahead);
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/ahead")]);
-        app.mark_all();
+        app.press_mark(MarkBy::All);
         assert_eq!(app.marked.len(), 4);
-        app.mark_none();
+        app.press_mark(MarkBy::All);
         assert!(app.marked.is_empty());
+    }
+
+    #[test]
+    fn a_right_click_on_a_mark_button_filters_the_board_and_leaves_the_marks() {
+        let mut app = app_with(Arc::default(), None);
+        let dirty = Counts {
+            staged: 1,
+            ..Counts::default()
+        };
+        for (name, counts) in [("a", dirty), ("b", Counts::default()), ("web", dirty)] {
+            let mut card = Card::new(PathBuf::from(format!("/{name}")));
+            card.probe = Some(Ok(snapshot(counts, Upstream::None, &[])));
+            app.cards.push(card);
+        }
+        let shown = |app: &App| -> Vec<String> {
+            app.shown_cards()
+                .iter()
+                .map(|c| c.path.display().to_string())
+                .collect()
+        };
+        app.press_mark(MarkBy::All);
+        app.filter_by(MarkBy::Dirty);
+        assert_eq!(app.status_filter, Some(MarkBy::Dirty));
+        assert_eq!(shown(&app), ["/a", "/web"]);
+        // The marks and the pressed button are as they were; the hidden
+        // card keeps its mark, and nothing acts on it.
+        assert_eq!(app.marked.len(), 3);
+        assert_eq!(app.pressed_mark, Some((MarkBy::All, false)));
+        assert_eq!(app.marked_repos().len(), 2);
+        // A left click never changes the filter and marks what is shown.
+        app.press_mark(MarkBy::All);
+        assert_eq!(app.status_filter, Some(MarkBy::Dirty));
+        assert_eq!(app.marked, BTreeSet::from([PathBuf::from("/b")]));
+        app.press_mark(MarkBy::All);
+        assert_eq!(app.marked.len(), 3);
+
+        // Live: a card that is clean now leaves, still marked.
+        app.cards[0].probe = Some(Ok(snapshot(Counts::default(), Upstream::None, &[])));
+        assert_eq!(shown(&app), ["/web"]);
+        assert!(app.marked.contains(&PathBuf::from("/a")));
+        app.cards[1].probe = Some(Ok(snapshot(dirty, Upstream::None, &[])));
+        assert_eq!(shown(&app), ["/b", "/web"]);
+
+        // It works together with the text filter and the favorite.
+        app.filter = "we".into();
+        assert_eq!(shown(&app), ["/web"]);
+        app.filter.clear();
+
+        // Another button takes the filter over; the same one, or all,
+        // shows all again.
+        app.filter_by(MarkBy::Behind);
+        assert_eq!(app.status_filter, Some(MarkBy::Behind));
+        assert!(shown(&app).is_empty());
+        app.filter_by(MarkBy::Behind);
+        assert_eq!(app.status_filter, None);
+        assert_eq!(shown(&app).len(), 3);
+        app.filter_by(MarkBy::Ahead);
+        app.filter_by(MarkBy::All);
+        assert_eq!(app.status_filter, None);
+        app.filter_by(MarkBy::All);
+        assert_eq!(app.status_filter, None);
+    }
+
+    #[test]
+    fn a_pressed_mark_button_turns_its_marks_round_at_every_click() {
+        let mut app = app_with(Arc::default(), None);
+        let dirty = Counts {
+            staged: 1,
+            ..Counts::default()
+        };
+        for (name, counts) in [
+            ("a", dirty),
+            ("b", Counts::default()),
+            ("c", Counts::default()),
+        ] {
+            let mut card = Card::new(PathBuf::from(format!("/{name}")));
+            card.probe = Some(Ok(snapshot(counts, Upstream::None, &[])));
+            app.cards.push(card);
+        }
+        let marked = |app: &App| -> Vec<String> {
+            app.marked_repos()
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect()
+        };
+        assert_eq!(app.pressed_mark, None);
+        app.press_mark(MarkBy::Dirty);
+        assert_eq!(app.pressed_mark, Some((MarkBy::Dirty, false)));
+        assert_eq!(marked(&app), ["/a"]);
+        // Again: the ones that are not dirty, and the button stays pressed.
+        app.press_mark(MarkBy::Dirty);
+        assert_eq!(app.pressed_mark, Some((MarkBy::Dirty, true)));
+        assert_eq!(marked(&app), ["/b", "/c"]);
+        app.press_mark(MarkBy::Dirty);
+        assert_eq!(app.pressed_mark, Some((MarkBy::Dirty, false)));
+        assert_eq!(marked(&app), ["/a"]);
+
+        // A card clicked by hand leaves the button pressed, and the next
+        // click goes by what is dirty, not by what is marked.
+        app.toggle_mark("/b".into());
+        assert_eq!(app.pressed_mark, Some((MarkBy::Dirty, false)));
+        assert_eq!(marked(&app), ["/a", "/b"]);
+        app.press_mark(MarkBy::Dirty);
+        assert_eq!(marked(&app), ["/b", "/c"]);
+
+        // Another button unpresses it and starts with its first action.
+        app.press_mark(MarkBy::All);
+        assert_eq!(app.pressed_mark, Some((MarkBy::All, false)));
+        assert_eq!(marked(&app), ["/a", "/b", "/c"]);
+        app.press_mark(MarkBy::Dirty);
+        assert_eq!(app.pressed_mark, Some((MarkBy::Dirty, false)));
+        assert_eq!(marked(&app), ["/a"]);
+        // All, turned round: nothing is marked.
+        app.press_mark(MarkBy::All);
+        app.press_mark(MarkBy::All);
+        assert_eq!(app.pressed_mark, Some((MarkBy::All, true)));
+        assert!(marked(&app).is_empty());
     }
 
     #[test]
@@ -1484,7 +2107,7 @@ pub(crate) mod tests {
             .into_iter()
             .map(|p| Card::new(p.into()))
             .collect();
-        app.mark_all();
+        app.press_mark(MarkBy::All);
         app.filter = "ETL".into();
         let etl = vec![PathBuf::from("/x/etl-load"), PathBuf::from("/x/etl-store")];
         assert_eq!(app.marked_repos(), etl);
@@ -1503,10 +2126,10 @@ pub(crate) mod tests {
         assert_eq!(ran, etl.iter().cloned().collect());
 
         // Marking touches the shown cards only: the hidden mark stays.
-        app.mark_none();
+        app.press_mark(MarkBy::All);
         assert_eq!(app.marked, BTreeSet::from([PathBuf::from("/x/web")]));
         app.marked.clear();
-        app.mark_all();
+        app.press_mark(MarkBy::All);
         assert_eq!(app.marked, etl.iter().cloned().collect());
 
         // Removing the marked cards leaves a marked card the filter hides.
@@ -1714,6 +2337,133 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn critters_show_what_happens_on_the_cards() {
+        use crate::domain::critters::Mood;
+        let mut app = app_with(Arc::default(), None);
+        app.cards = (0..8)
+            .map(|i| Card::new(format!("/x/{i}").into()))
+            .collect();
+        let tracking = |ahead, behind| {
+            snapshot(
+                Counts::default(),
+                Upstream::Tracking { ahead, behind },
+                &["main"],
+            )
+        };
+        let probed = |repo: &str, snap: Snapshot, cause| Event::Probed {
+            repo: repo.into(),
+            result: Box::new(Ok(snap)),
+            cause,
+        };
+        for card in 0..8 {
+            let repo = format!("/x/{card}");
+            app.handle_event(probed(&repo, tracking(0, 0), ProbeCause::Poll));
+        }
+        // No critters outside the Kawaii theme, whatever happens.
+        app.tend_critters();
+        app.pet_critter(0);
+        app.handle_event(probed("/x/3", tracking(0, 1), ProbeCause::Fetch));
+        assert!(app.critters.critters.is_empty());
+
+        app.config.theme = Theme::Kawaii;
+        app.tend_critters();
+        assert_eq!(app.critters.critters.len(), 2);
+        let on = |app: &App, repo: &str| -> Vec<Mood> {
+            let at = |c: &&crate::domain::critters::Critter| c.home == Path::new(repo);
+            app.critters
+                .critters
+                .iter()
+                .filter(at)
+                .map(|c| c.mood)
+                .collect()
+        };
+        // A remote commit: one hops onto that card and looks up.
+        app.handle_event(probed("/x/3", tracking(0, 2), ProbeCause::Fetch));
+        assert_eq!(on(&app, "/x/3"), [Mood::LookUp]);
+        assert!(app.advance_kawaii(0.033, false), "and the picture moves");
+        // A local commit on the card it sits on: a dance.
+        app.handle_event(probed("/x/3", tracking(1, 2), ProbeCause::Poll));
+        assert_eq!(on(&app, "/x/3"), [Mood::Dance]);
+        // What the user's own command did is no news.
+        app.handle_event(probed("/x/3", tracking(2, 2), ProbeCause::Command));
+        assert_eq!(on(&app, "/x/3"), [Mood::Dance]);
+        // A failed fetch: hanging ears.
+        app.handle_event(Event::Fetched {
+            repo: "/x/3".into(),
+            error: Some(FetchError::from_message("auth failed".into())),
+        });
+        assert_eq!(on(&app, "/x/3"), [Mood::Droop]);
+        // A click pets, and keeps the picture moving without focus.
+        while app.advance_kawaii(0.033, false) {}
+        app.pet_critter(1);
+        assert_eq!(app.critters.critters[1].mood, Mood::Pet);
+        assert!(app.advance_kawaii(0.033, false));
+
+        // A filter that hides its card moves a critter to one that shows.
+        app.filter = "7".into();
+        app.tend_critters();
+        assert!(
+            app.critters
+                .critters
+                .iter()
+                .all(|c| c.home == Path::new("/x/7"))
+        );
+        // Another theme sends them away.
+        app.config.theme = Theme::Dark;
+        app.advance_kawaii(0.033, true);
+        assert!(app.critters.critters.is_empty());
+    }
+
+    #[test]
+    fn a_command_that_ends_well_throws_confetti_in_the_kawaii_theme() {
+        use crate::domain::output::SectionState;
+        let mut app = app_with(Arc::default(), None);
+        app.cards = vec![Card::new("/x/a".into()), Card::new("/x/b".into())];
+        let ended = |repo: &str, exit_code| Event::Section {
+            run: 1,
+            repo: repo.into(),
+            state: SectionState::Done(ProcessOutput {
+                exit_code: Some(exit_code),
+                stdout: String::new(),
+                stderr: String::new(),
+            }),
+        };
+        app.handle_event(ended("/x/a", 0));
+        assert!(app.bursts.is_empty(), "not in a plain theme");
+
+        app.config.theme = Theme::Kawaii;
+        app.handle_event(Event::Section {
+            run: 1,
+            repo: "/x/a".into(),
+            state: SectionState::Running,
+        });
+        app.handle_event(ended("/x/a", 1));
+        app.handle_event(Event::Section {
+            run: 1,
+            repo: "/x/a".into(),
+            state: SectionState::SpawnFailed("no git".into()),
+        });
+        app.handle_event(ended("/x/gone", 0));
+        assert!(app.bursts.is_empty(), "nothing to celebrate");
+        app.handle_event(ended("/x/b", 0));
+        assert_eq!(app.bursts, [(PathBuf::from("/x/b"), app.kawaii_clock)]);
+        // It flies also in a window without focus, and is over after a
+        // good second.
+        let mut frames = 0;
+        while !app.bursts.is_empty() {
+            assert!(app.advance_kawaii(0.033, false));
+            frames += 1;
+        }
+        assert!((30..=36).contains(&frames), "{frames}");
+        // A failed fetch in the background throws none; another theme
+        // sweeps up.
+        app.handle_event(ended("/x/a", 0));
+        app.config.theme = Theme::Light;
+        app.advance_kawaii(0.033, true);
+        assert!(app.bursts.is_empty());
+    }
+
+    #[test]
     fn a_change_on_a_card_wakes_the_kawaii_theme_without_focus() {
         let mut app = app_with(Arc::default(), None);
         app.config.theme = Theme::Kawaii;
@@ -1783,7 +2533,7 @@ pub(crate) mod tests {
         };
         let lists = |files: &[&str]| Details {
             files: files.iter().map(|f| file(f)).collect(),
-            commits: parse_log("aaaa\taa\tAda\tnow\tone\n"),
+            commits: parse_log("aaaa\taa\tAda\t1\tthen\t\tone\n"),
             branches: vec![],
         };
         let view = |app: &App| app.repo_view.clone().unwrap();
@@ -1852,6 +2602,75 @@ pub(crate) mod tests {
         settle(&mut app, |a| view(a).selected.is_none());
         assert_eq!(view(&app).diff, None);
 
+        // Tabs keep what was picked in them; Back and Forward step
+        // through tabs and picks.
+        assert_eq!(
+            view(&app).tab,
+            RepoTab::Commits,
+            "no changes known: history"
+        );
+        let commit = DiffTarget::Commit("aaaa".into());
+        let one = DiffTarget::File(file("one.rs"));
+        app.select_in_repo_view(commit.clone());
+        app.switch_repo_tab(RepoTab::Files);
+        assert_eq!(
+            (view(&app).tab, view(&app).selected),
+            (RepoTab::Files, None)
+        );
+        app.switch_repo_tab(RepoTab::Files);
+        app.select_in_repo_view(one.clone());
+        app.switch_repo_tab(RepoTab::Commits);
+        assert_eq!(view(&app).selected, Some(commit.clone()), "kept in its tab");
+        assert_eq!(view(&app).diff, None);
+        settle(&mut app, |a| view(a).diff.is_some());
+        app.switch_repo_tab(RepoTab::Files);
+        assert_eq!(view(&app).selected, Some(one.clone()));
+        // Commits+aaaa, Files, Files+one, Commits+aaaa, Files+one.
+        assert!(!view(&app).trail.can_forward());
+        app.repo_view_back();
+        assert_eq!(
+            (view(&app).tab, view(&app).selected),
+            (RepoTab::Commits, Some(commit.clone()))
+        );
+        app.repo_view_back();
+        assert_eq!(view(&app).selected, Some(one.clone()));
+        app.repo_view_back();
+        assert_eq!(
+            (view(&app).tab, view(&app).selected),
+            (RepoTab::Files, None)
+        );
+        app.repo_view_forward();
+        assert_eq!(view(&app).selected, Some(one.clone()));
+        // A place whose pick is gone shows its tab without a pick.
+        *backend.details.lock().unwrap() = Some(lists(&[]));
+        app.refresh_repo_view();
+        settle(&mut app, |a| view(a).selected.is_none());
+        app.repo_view_back();
+        app.repo_view_forward();
+        assert_eq!(
+            (view(&app).tab, view(&app).selected),
+            (RepoTab::Files, None)
+        );
+        for _ in 0..9 {
+            app.repo_view_back();
+        }
+        assert_eq!(view(&app).tab, RepoTab::Commits);
+        assert!(!view(&app).trail.can_back());
+        app.repo_view_forward();
+
+        // Folders of the tree fold and unfold.
+        app.toggle_repo_folder("src/");
+        assert!(view(&app).closed.contains("src/"));
+        app.toggle_repo_folder("src/");
+        assert!(view(&app).closed.is_empty());
+
+        // A repository with changes opens on them.
+        app.handle_event(probed("/x/b", 2));
+        app.open_repo_view(Path::new("/x/b"));
+        assert_eq!(view(&app).tab, RepoTab::Files);
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| view(a).details.is_some());
+
         // Lists of a repository whose view is not open are dropped.
         app.handle_event(Event::Details {
             repo: "/x/b".into(),
@@ -1861,11 +2680,194 @@ pub(crate) mod tests {
         app.close_repo_view();
         app.refresh_repo_view();
         app.select_in_repo_view(DiffTarget::Commit("aaaa".into()));
+        app.switch_repo_tab(RepoTab::Graph);
+        app.toggle_repo_folder("src/");
+        app.repo_view_back();
+        app.repo_view_forward();
         app.handle_event(Event::Details {
             repo: "/x/a".into(),
             result: Err("closed".into()),
         });
         assert!(app.repo_view.is_none());
+    }
+
+    #[test]
+    fn commits_come_in_pages_and_a_commit_unfolds_its_files() {
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details::default());
+        *backend.log_length.lock().unwrap() = 230;
+        let mut app = app_with(backend.clone(), None);
+        let view = |app: &App| app.repo_view.clone().unwrap();
+        let commits = |app: &App| view(app).details.unwrap().unwrap().commits.len();
+        app.load_more_commits();
+        app.toggle_commit_file("a.rs");
+        app.open_repo_view(Path::new("/x/a"));
+        app.load_more_commits();
+        assert!(!view(&app).loading_commits, "nothing to add to yet");
+        settle(&mut app, |a| view(a).details.is_some());
+        assert_eq!(commits(&app), 100);
+        assert!(view(&app).more_commits);
+
+        // The next page is asked for once, however often the end shows.
+        app.load_more_commits();
+        app.load_more_commits();
+        assert!(view(&app).loading_commits);
+        settle(&mut app, |a| !view(a).loading_commits);
+        assert_eq!(commits(&app), 200);
+        // A page that does not follow the list is dropped.
+        app.handle_event(Event::Log {
+            repo: "/x/a".into(),
+            skip: 100,
+            result: Ok(vec![fake_commit(1)]),
+            more: true,
+        });
+        app.handle_event(Event::Log {
+            repo: "/x/other".into(),
+            skip: 200,
+            result: Ok(vec![fake_commit(1)]),
+            more: true,
+        });
+        assert_eq!(commits(&app), 200);
+        app.load_more_commits();
+        settle(&mut app, |a| !view(a).loading_commits);
+        assert_eq!(commits(&app), 230);
+        assert!(!view(&app).more_commits, "a short page ends the history");
+        app.load_more_commits();
+        assert!(!view(&app).loading_commits);
+        // A reload reads as many as the list held.
+        app.refresh_repo_view();
+        let read = *backend.details_read.lock().unwrap();
+        settle(&mut app, |_| *backend.details_read.lock().unwrap() > read);
+        app.handle_events();
+        assert_eq!(commits(&app), 230);
+        assert!(!view(&app).more_commits);
+
+        // A file of the picked commit unfolds with its diff and folds.
+        let hash = fake_commit(3).hash;
+        app.toggle_commit_file("src/main.rs");
+        assert!(view(&app).unfolded.is_empty(), "no commit picked");
+        app.select_in_repo_view(DiffTarget::Commit(hash.clone()));
+        settle(&mut app, |a| view(a).diff.is_some());
+        app.toggle_commit_file("src/main.rs");
+        assert_eq!(view(&app).unfolded.get("src/main.rs"), Some(&None));
+        settle(&mut app, |a| view(a).unfolded["src/main.rs"].is_some());
+        let diff = view(&app).unfolded["src/main.rs"].clone().unwrap().unwrap();
+        assert!(diff.contains("+after in src/main.rs"), "{diff}");
+        assert!(view(&app).diff.unwrap().unwrap().contains("Ada Lovelace"));
+        // The diff of a file of another commit, or of a folded file, is
+        // dropped.
+        for (hash, path) in [("ffff", "src/main.rs"), (hash.as_str(), "other.rs")] {
+            app.handle_event(Event::Diff {
+                repo: "/x/a".into(),
+                target: DiffTarget::CommitFile {
+                    hash: hash.into(),
+                    path: path.into(),
+                },
+                result: Ok("stale".into()),
+            });
+        }
+        assert_eq!(view(&app).unfolded.len(), 1);
+        assert!(
+            !view(&app).unfolded["src/main.rs"]
+                .clone()
+                .unwrap()
+                .unwrap()
+                .contains("stale")
+        );
+        app.toggle_commit_file("src/main.rs");
+        assert!(view(&app).unfolded.is_empty());
+        // Another pick folds everything.
+        app.toggle_commit_file("docs/new.md");
+        app.select_in_repo_view(DiffTarget::Commit(fake_commit(4).hash));
+        assert!(view(&app).unfolded.is_empty());
+
+        // A page that cannot be read ends the list with a word about it.
+        *backend.log_length.lock().unwrap() = 100;
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| view(a).details.is_some());
+        *backend.log_length.lock().unwrap() = usize::MAX;
+        app.load_more_commits();
+        settle(&mut app, |a| !view(a).loading_commits);
+        assert!(!view(&app).more_commits);
+        assert_eq!(app.toasts.len(), 1);
+        assert!(app.toasts[0].text.contains("history unreadable"));
+    }
+
+    #[test]
+    fn the_graph_is_read_for_its_tab_and_keeps_its_pick_while_it_holds_it() {
+        use crate::domain::graph::GraphCommit;
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details::default());
+        let commit = |hash: &str| GraphCommit {
+            hash: hash.into(),
+            parents: vec![],
+            author: String::new(),
+            subject: String::new(),
+        };
+        let mut app = app_with(backend.clone(), None);
+        let view = |app: &App| app.repo_view.clone().unwrap();
+        let read = || *backend.graphs_read.lock().unwrap();
+        app.unfold_graph_run("aa");
+        app.show_old_branches();
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| view(a).details.is_some());
+        app.refresh_repo_view();
+        settle(&mut app, |_| *backend.details_read.lock().unwrap() == 2);
+        assert_eq!(read(), 0, "nobody looked at the graph yet");
+
+        // The tab reads the graph, once; an unreadable one shows why.
+        app.switch_repo_tab(RepoTab::Graph);
+        assert_eq!(view(&app).graph, None);
+        settle(&mut app, |a| view(a).graph.is_some());
+        assert_eq!(view(&app).graph, Some(Err("no graph".into())));
+        *backend.graph.lock().unwrap() = Some(GraphData {
+            commits: vec![commit("aa"), commit("bb")],
+            ..GraphData::default()
+        });
+        app.switch_repo_tab(RepoTab::Commits);
+        app.switch_repo_tab(RepoTab::Graph);
+        assert_eq!(read(), 1);
+        app.refresh_repo_view();
+        settle(&mut app, |a| matches!(view(a).graph, Some(Ok(_))));
+        assert_eq!(read(), 2);
+
+        // A commit only the graph has can be picked and outlives a reload.
+        let target = DiffTarget::Commit("bb".into());
+        app.select_in_repo_view(target.clone());
+        app.refresh_repo_view();
+        settle(&mut app, |_| read() == 3);
+        app.handle_events();
+        assert_eq!(view(&app).selected, Some(target.clone()));
+        app.unfold_graph_run("aa");
+        assert!(view(&app).graph_open.contains("aa"));
+
+        // The old remote branches are asked for once.
+        app.show_old_branches();
+        app.show_old_branches();
+        assert!(view(&app).with_old);
+        settle(
+            &mut app,
+            |a| matches!(&view(a).graph, Some(Ok(graph)) if graph.refs.len() == 1),
+        );
+        assert_eq!(read(), 4);
+
+        // The pick goes when its commit left the graph, in whatever tab.
+        app.switch_repo_tab(RepoTab::Files);
+        *backend.graph.lock().unwrap() = Some(GraphData {
+            commits: vec![commit("aa")],
+            ..GraphData::default()
+        });
+        app.refresh_repo_view();
+        settle(&mut app, |_| read() == 5);
+        app.handle_events();
+        app.switch_repo_tab(RepoTab::Graph);
+        assert_eq!(view(&app).selected, None);
+        // A graph of a repository whose view is not open is dropped.
+        app.handle_event(Event::Graph {
+            repo: "/x/other".into(),
+            result: Err("other".into()),
+        });
+        assert!(matches!(view(&app).graph, Some(Ok(_))));
     }
 
     /// An app with sounds on, one card, and what its fake player was given.
@@ -2017,8 +3019,18 @@ pub(crate) mod tests {
         app.sync_music();
         assert!(app.music_plays());
         wait_for_passage(1);
+        // A slider that is still dragged changes nothing yet; let go, the
+        // passage goes on at the new volume in a player of its own.
         app.config.music_volume = 5;
+        app.pointer_held = true;
         app.sync_music();
+        assert_eq!(app.music_volume_playing(), Some(40));
+        app.pointer_held = false;
+        app.sync_music();
+        assert_eq!(app.music_volume_playing(), Some(5));
+        wait_for_passage(2);
+        let passages = desktop.music.lock().unwrap().clone();
+        assert!(passages[1] <= passages[0], "the rest: {passages:?}");
 
         // Another theme ends it; back in Kawaii it starts again.
         app.config.theme = Theme::Dark;
@@ -2026,10 +3038,10 @@ pub(crate) mod tests {
         assert!(!app.music_plays());
         app.config.theme = Theme::Kawaii;
         app.sync_music();
-        wait_for_passage(2);
+        wait_for_passage(3);
         assert_eq!(
             desktop.music.lock().unwrap().len(),
-            2,
+            3,
             "one player at a time"
         );
         assert!(app.toasts.is_empty());
@@ -2237,6 +3249,28 @@ pub(crate) mod tests {
             store::load_config(&paths.config_file).unwrap().concurrency,
             3
         );
+    }
+
+    #[test]
+    fn the_app_starts_with_the_output_panel_as_it_was_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::in_dirs(dir.path(), dir.path());
+        let mut app = app_with(Arc::default(), Some(paths.clone()));
+        assert!(!app.config.output_hidden, "shown at the first start");
+        app.config.output_hidden = true;
+        app.tick(Instant::now());
+        let stored = store::load_config(&paths.config_file).unwrap();
+        assert!(stored.output_hidden);
+        // The next start reads it.
+        let next = App::new(
+            Ok(stored),
+            Some(paths),
+            History::default(),
+            Arc::new(FakeBackend::default()),
+            Arc::new(FakeDesktop::default()),
+            Arc::new(|| {}),
+        );
+        assert!(next.config.output_hidden);
     }
 
     #[test]

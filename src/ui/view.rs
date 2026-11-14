@@ -2,18 +2,24 @@
 
 use crate::domain::board::SortKey;
 use crate::domain::command::{Job, display, shell_name, shell_program};
-use crate::domain::details::{Details, DiffTarget, LineKind, line_kind};
+use crate::domain::critters::{self, Troupe};
 use crate::domain::favorites::{EMOJIS, Favorite, PALETTE, color_rgb, dark_text_on, favorites_of};
 use crate::domain::kawaii;
 use crate::domain::naming::{parent_line, title};
 use crate::domain::output::{Run, SectionState};
+use crate::domain::remote::remote_of;
+use crate::domain::remote::{safe_url, short_url};
 use crate::domain::repo::Snapshot;
 use crate::domain::status::{Head, RepoState, Upstream};
-use crate::domain::switch::{Choice, branch_choices, matching, new_branch_command, tag_choices};
-use crate::ui::app::{App, Card, CopyFlash, RepoView};
+use crate::domain::switch::{
+    Choice, branch_choices, matching, new_branch_command, remote_choices, tag_choices,
+};
+use crate::ui::app::{App, Card, CopyFlash, MarkBy};
 use crate::ui::cli::{CliAction, CliContext};
+use crate::ui::critter;
 use crate::ui::settings;
 use crate::ui::style::{KAWAII_PINK, KAWAII_YELLOW};
+use crate::ui::text_menu::{self, Picked, TextOf};
 use egui::{Color32, RichText, Ui};
 use std::path::{Path, PathBuf};
 
@@ -66,6 +72,37 @@ fn swatch(ui: &mut Ui, text: &str, rgb: [u8; 3], picked: bool, small: bool) -> e
     ui.add(button)
 }
 
+/// A mark button of the toolbar: filled while it is pressed, its text
+/// struck through while it marks the cards that do not fit it, and with a
+/// coloured border while the board shows only the cards that fit it.
+fn mark_button(
+    ui: &mut Ui,
+    by: MarkBy,
+    (pressed, inverted): (bool, bool),
+    filtering: bool,
+) -> egui::Response {
+    let mut text = RichText::new(by.label());
+    if inverted {
+        text = text.strikethrough();
+    }
+    let hint = if by == MarkBy::All {
+        "Click: mark all repositories. Again: mark none.\nRight click: show all again.".to_owned()
+    } else {
+        format!(
+            "Click: mark {what}. Again: mark all others instead.\n\
+             Right click: show only {what}. Again: show all.",
+            what = by.what()
+        )
+    };
+    // Not `Button::selectable`: that one has no frame until it is pressed,
+    // so the row would read as words and the filter's border would not show.
+    let mut button = egui::Button::new(text).selected(pressed);
+    if filtering {
+        button = button.stroke(egui::Stroke::new(2.0, ui.visuals().warn_fg_color));
+    }
+    ui.add(button).on_hover_text(hint)
+}
+
 fn favorite_button(ui: &mut Ui, favorite: &Favorite, active: bool) -> egui::Response {
     swatch(
         ui,
@@ -101,6 +138,8 @@ enum BoardAction {
     Open(PathBuf),
     /// A chip of the favorite at this position was clicked.
     ToggleFavorite(usize),
+    /// The critter at this position was clicked.
+    Pet(usize),
     /// A card text was clicked at this pointer position.
     Copy(String, egui::Pos2),
     /// The fetch error of this card was clicked at this pointer position.
@@ -154,7 +193,7 @@ fn repositories(count: usize) -> String {
     }
 }
 
-fn ok_color(ui: &Ui) -> Color32 {
+pub(super) fn ok_color(ui: &Ui) -> Color32 {
     if ui.visuals().dark_mode {
         Color32::from_rgb(0x6c, 0xc6, 0x6c)
     } else {
@@ -188,6 +227,7 @@ impl App {
             self.add_folder(&folder);
         }
         self.take_picked_sound();
+        self.pointer_held = ui.input(|i| i.pointer.any_down());
         let mut next = self.tick(std::time::Instant::now());
         if !self.toasts.is_empty() {
             // Repaint soon enough to take expired toasts down.
@@ -210,7 +250,7 @@ impl App {
             self.cli_line(ui);
             ui.add_space(4.0);
         });
-        if !self.output_hidden {
+        if !self.config.output_hidden {
             self.output_shown();
             egui::Panel::bottom("output")
                 .resizable(true)
@@ -225,6 +265,7 @@ impl App {
         self.confirm_dialog(ui, enter_confirms);
         self.favorite_dialog(ui);
         self.repo_view_dialog(ui);
+        self.text_menu_overlay(ui);
         settings::show(self, ui.ctx());
     }
 
@@ -333,61 +374,6 @@ impl App {
         }
     }
 
-    /// The read-only view of one repository, over the board: its changed
-    /// files, last commits and branches, and the diff of what is picked.
-    fn repo_view_dialog(&mut self, ui: &Ui) {
-        let Some(view) = &self.repo_view else {
-            return;
-        };
-        let mut act = None;
-        let screen = ui.ctx().content_rect();
-        egui::Modal::new(egui::Id::new("repo-view")).show(ui.ctx(), |ui| {
-            ui.set_width((screen.width() - 80.0).max(400.0));
-            ui.set_height((screen.height() - 80.0).max(300.0));
-            ui.horizontal(|ui| {
-                ui.heading(title(&view.repo));
-                ui.weak(view.repo.display().to_string());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        act = Some(RepoViewAct::Close);
-                    }
-                    if ui
-                        .button("Refresh")
-                        .on_hover_text("Read the repository again now")
-                        .clicked()
-                    {
-                        act = Some(RepoViewAct::Refresh);
-                    }
-                });
-            });
-            ui.separator();
-            match &view.details {
-                None => {
-                    ui.weak("loading");
-                }
-                Some(Err(error)) => {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
-                }
-                Some(Ok(details)) => {
-                    egui::Panel::left("repo-view-lists")
-                        .resizable(true)
-                        .default_size(380.0)
-                        .show(ui, |ui| repo_lists(ui, details, view, &mut act));
-                    egui::CentralPanel::default().show(ui, |ui| diff_pane(ui, view));
-                }
-            }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                act = Some(RepoViewAct::Close);
-            }
-        });
-        match act {
-            Some(RepoViewAct::Close) => self.close_repo_view(),
-            Some(RepoViewAct::Refresh) => self.refresh_repo_view(),
-            Some(RepoViewAct::Select(target)) => self.select_in_repo_view(target),
-            None => {}
-        }
-    }
-
     /// The dialog that makes a favorite or changes one: name, color, emoji.
     fn favorite_dialog(&mut self, ui: &Ui) {
         let Some(dialog) = &mut self.favorite_dialog else {
@@ -462,28 +448,31 @@ impl App {
         }
         ui.separator();
         ui.label("Mark:");
-        if ui.button("all").clicked() {
-            self.mark_all();
+        for by in MarkBy::EACH {
+            let (pressed, inverted) = match self.pressed_mark {
+                Some((button, inverted)) if button == by => (true, inverted),
+                _ => (false, false),
+            };
+            let filtering = self.status_filter == Some(by);
+            let button = mark_button(ui, by, (pressed, inverted), filtering);
+            if button.clicked() {
+                self.press_mark(by);
+            }
+            if button.secondary_clicked() {
+                self.filter_by(by);
+            }
         }
-        if ui.button("none").clicked() {
-            self.mark_none();
-        }
-        if ui.button("dirty").clicked() {
-            self.mark_dirty();
-        }
-        if ui
-            .button("behind")
-            .on_hover_text("Mark the repositories with unpulled commits")
-            .clicked()
-        {
-            self.mark_behind();
-        }
-        if ui
-            .button("ahead")
-            .on_hover_text("Mark the repositories with unpushed commits")
-            .clicked()
-        {
-            self.mark_ahead();
+        if let Some(by) = self.status_filter {
+            // Cards are missing from the board: say why, in plain words.
+            let showing = format!("showing {} ({})", by.label(), self.shown_cards().len());
+            let text = RichText::new(showing).color(ui.visuals().warn_fg_color);
+            if ui
+                .add(egui::Button::new(text).frame(false))
+                .on_hover_text("Only these repositories are shown. Click to show all again.")
+                .clicked()
+            {
+                self.status_filter = None;
+            }
         }
         ui.separator();
         let marked = self.marked_repos().len();
@@ -535,13 +524,20 @@ impl App {
         };
         if kawaii {
             kawaii_background(ui, self.kawaii_clock);
+            self.tend_critters();
         }
         let mut index = 0;
+        // Where each card is, for the critters that sit on them.
+        let mut places: Vec<(PathBuf, egui::Rect)> = Vec::new();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 // Containers do not wrap inside `horizontal_wrapped`, so lay out
                 // fixed rows: as many columns as fit the width.
+                if kawaii {
+                    // Room for a critter on the cards of the first row.
+                    ui.add_space(critter::HEIGHT);
+                }
                 let card_width = CARD_OUTER_WIDTH + play;
                 let columns =
                     (((ui.available_width() + gap) / (card_width + gap)).floor() as usize).max(1);
@@ -563,7 +559,10 @@ impl App {
                             };
                             if kawaii {
                                 let offset = self.card_offset(&card.path, index);
-                                moved(ui, offset, |ui| view.show(ui, &mut actions));
+                                moved(ui, offset, |ui| {
+                                    let shown = ui.scope(|ui| view.show(ui, &mut actions));
+                                    places.push((card.path.clone(), shown.response.rect));
+                                });
                             } else {
                                 view.show(ui, &mut actions);
                             }
@@ -571,6 +570,18 @@ impl App {
                         }
                     });
                     ui.add_space(gap);
+                }
+                if kawaii {
+                    let asleep = self.critters.asleep(self.kawaii_clock);
+                    critters(
+                        ui,
+                        &self.critters,
+                        self.kawaii_clock,
+                        asleep,
+                        &places,
+                        &mut actions,
+                    );
+                    confetti(ui, &self.bursts, self.kawaii_clock, &places);
                 }
             });
         for action in actions {
@@ -596,6 +607,7 @@ impl App {
                 }
                 BoardAction::Open(p) => self.open_repo_view(&p),
                 BoardAction::ToggleFavorite(i) => self.toggle_favorite(i),
+                BoardAction::Pet(i) => self.pet_critter(i),
                 BoardAction::NewFavorite(p) => {
                     let targets = self.menu_targets(&p);
                     self.new_favorite(targets);
@@ -612,7 +624,7 @@ impl App {
     }
 
     /// Put `text` on the clipboard and start the "Copied" animation at `at`.
-    fn copy(&mut self, ui: &Ui, text: String, at: egui::Pos2) {
+    pub(super) fn copy(&mut self, ui: &Ui, text: String, at: egui::Pos2) {
         ui.ctx().copy_text(text);
         self.copy_flash = Some(CopyFlash {
             at,
@@ -632,14 +644,14 @@ impl App {
         };
         let mut cli = std::mem::take(&mut self.cli);
         let unseen = self.unseen_outcome();
-        let mut hidden = self.output_hidden;
+        let mut hidden = self.config.output_hidden;
         let actions = ui
             .horizontal(|ui| {
                 output_toggle(ui, &mut hidden, unseen);
                 cli.show(ui, &cx)
             })
             .inner;
-        self.output_hidden = hidden;
+        self.config.output_hidden = hidden;
         self.cli = cli;
         for action in actions {
             match action {
@@ -670,6 +682,37 @@ impl App {
             });
         for (run, repo) in opened {
             self.open_output(run, repo.as_deref());
+        }
+    }
+
+    /// The right-click menu on a text, and what was picked in it.
+    fn text_menu_overlay(&mut self, ui: &Ui) {
+        match self.text_picked.take() {
+            // egui copies what is marked; only the animation is left to do.
+            Some(Picked::Copy(at)) => {
+                self.copy_flash = Some(CopyFlash {
+                    at,
+                    started: ui.input(|i| i.time),
+                });
+            }
+            Some(Picked::CopyAll(text, at)) => {
+                if let Some(text) = self.text_of(&text) {
+                    self.copy(ui, text, at);
+                }
+            }
+            None => {}
+        }
+        // The text went away under the menu: the view closed, the panel
+        // was folded away.
+        let gone = self.text_menu.as_ref().is_some_and(|menu| match menu.text {
+            TextOf::Message | TextOf::Pane => self.repo_view.is_none(),
+            TextOf::Output(..) => self.config.output_hidden || self.repo_view.is_some(),
+        });
+        if gone {
+            self.text_menu = None;
+        }
+        if let Some(menu) = &mut self.text_menu {
+            text_menu::show(ui.ctx(), menu);
         }
     }
 
@@ -808,115 +851,6 @@ fn output_toggle(ui: &mut Ui, hidden: &mut bool, unseen: Option<Option<bool>>) {
     }
 }
 
-/// What was clicked in the repository view.
-enum RepoViewAct {
-    Close,
-    Refresh,
-    Select(DiffTarget),
-}
-
-/// One of the three lists of the repository view, scrolling on its own in
-/// `height`.
-fn repo_list(ui: &mut Ui, heading: &str, height: f32, rows: impl FnOnce(&mut Ui)) {
-    ui.strong(heading);
-    egui::ScrollArea::vertical()
-        .id_salt(heading)
-        .max_height(height)
-        .auto_shrink([false, true])
-        .show(ui, rows);
-    ui.add_space(4.0);
-}
-
-/// Changed files, commits and branches; a click on a file or commit picks
-/// it for the diff pane.
-fn repo_lists(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<RepoViewAct>) {
-    let room = (ui.available_height() - 110.0).max(150.0);
-    let mut row = |ui: &mut Ui, target: DiffTarget, text: RichText, hover: &str| {
-        let picked = view.selected.as_ref() == Some(&target);
-        let entry = egui::Button::selectable(picked, text).truncate();
-        if ui.add(entry).on_hover_text(hover).clicked() {
-            *act = Some(RepoViewAct::Select(target));
-        }
-    };
-    let files = format!("Changed files ({})", details.files.len());
-    repo_list(ui, &files, room * 0.3, |ui| {
-        if details.files.is_empty() {
-            ui.weak("none: the working tree is clean");
-        }
-        for file in &details.files {
-            let text = format!("{}  {}", file.kind.label(), file.path);
-            row(
-                ui,
-                DiffTarget::File(file.clone()),
-                RichText::new(text),
-                &file.path,
-            );
-        }
-    });
-    repo_list(ui, "Commits", room * 0.45, |ui| {
-        if details.commits.is_empty() {
-            ui.weak("no commits yet");
-        }
-        for commit in &details.commits {
-            let text = format!("{}  {}", commit.short, commit.subject);
-            let hover = format!("{}, {}\n{}", commit.author, commit.age, commit.subject);
-            let target = DiffTarget::Commit(commit.hash.clone());
-            row(ui, target, RichText::new(text).monospace(), &hover);
-        }
-    });
-    repo_list(ui, "Branches", room * 0.25, |ui| {
-        for branch in &details.branches {
-            let name = RichText::new(&branch.name).monospace();
-            if branch.current {
-                ui.label(name.strong()).on_hover_text("checked out");
-            } else {
-                ui.label(name);
-            }
-        }
-    });
-}
-
-/// The diff of the picked file or commit, colored by line.
-fn diff_pane(ui: &mut Ui, view: &RepoView) {
-    let diff = match (&view.selected, &view.diff) {
-        (None, _) => {
-            ui.weak("Pick a file or a commit to see its diff.");
-            return;
-        }
-        (Some(_), None) => {
-            ui.weak("loading");
-            return;
-        }
-        (Some(_), Some(Err(error))) => {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-            return;
-        }
-        (Some(_), Some(Ok(diff))) => diff,
-    };
-    if diff.trim().is_empty() {
-        ui.weak("no difference");
-        return;
-    }
-    let lines: Vec<&str> = diff.lines().collect();
-    let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
-    let (added, removed) = (ok_color(ui), ui.visuals().error_fg_color);
-    egui::ScrollArea::both()
-        .auto_shrink([false, false])
-        .show_rows(ui, row_height, lines.len(), |ui, rows| {
-            // Rows keep their width: a long line must not wrap.
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-            for line in lines.get(rows).unwrap_or_default() {
-                let text = RichText::new(*line).monospace();
-                ui.label(match line_kind(line) {
-                    LineKind::Added => text.color(added),
-                    LineKind::Removed => text.color(removed),
-                    LineKind::Header => text.strong(),
-                    LineKind::Plain => text,
-                });
-            }
-        });
-}
-
 /// Heart and star of the Kawaii theme.
 pub const HEART: &str = "\u{2665}";
 pub const STAR: &str = "\u{2605}";
@@ -956,6 +890,77 @@ fn kawaii_background(ui: &Ui, clock: f64) {
             egui::FontId::proportional(p.size),
             color.gamma_multiply(0.8 * p.alpha),
         );
+    }
+}
+
+/// The bursts of confetti: hearts and stars out of the top of their cards.
+fn confetti(ui: &Ui, bursts: &[(PathBuf, f64)], clock: f64, places: &[(PathBuf, egui::Rect)]) {
+    for (card, started) in bursts {
+        let Some(t) = kawaii::burst(clock, *started) else {
+            continue;
+        };
+        let Some((_, rect)) = places.iter().find(|(path, _)| path == card) else {
+            continue;
+        };
+        for index in 0..kawaii::CONFETTI {
+            let piece = kawaii::confetto(t, index);
+            let (glyph, color) = if piece.heart {
+                (HEART, KAWAII_PINK)
+            } else {
+                (STAR, KAWAII_YELLOW)
+            };
+            ui.painter().text(
+                rect.center_top() + egui::vec2(piece.dx, piece.dy),
+                egui::Align2::CENTER_CENTER,
+                glyph,
+                egui::FontId::proportional(piece.size),
+                color.gamma_multiply(piece.alpha),
+            );
+        }
+    }
+}
+
+/// The critters, each on the top edge of its card or in the air between
+/// two. One under the pointer looks at it; a click on one pets it and does
+/// not reach the card.
+fn critters(
+    ui: &mut Ui,
+    troupe: &Troupe,
+    clock: f64,
+    asleep: bool,
+    places: &[(PathBuf, egui::Rect)],
+    actions: &mut Vec<BoardAction>,
+) {
+    let pointer = ui.input(|i| i.pointer.hover_pos());
+    for (index, one) in troupe.critters.iter().enumerate() {
+        // Where it stands on a card: along the top edge, each critter at a
+        // place of its own so two on one card do not hide each other.
+        let stand = |card: &Path| {
+            let rect = places.iter().find(|(path, _)| path == card)?.1;
+            let along = 26.0 + (index % 4) as f32 * 34.0;
+            Some(egui::pos2(rect.left() + along, rect.top() + 2.0))
+        };
+        let Some(home) = stand(&one.home) else {
+            continue;
+        };
+        let pose = critters::pose(one, clock, asleep);
+        let from = stand(&one.from).unwrap_or(home);
+        let feet = from.lerp(home, pose.along) - egui::vec2(0.0, pose.lift * critter::HOP_HEIGHT);
+        let body = egui::Rect::from_min_max(
+            feet - egui::vec2(critter::HALF_WIDTH, critter::HEIGHT),
+            feet + egui::vec2(critter::HALF_WIDTH, 0.0),
+        );
+        let touch = ui.interact(body, ui.id().with(("critter", index)), egui::Sense::click());
+        let name = one.species.label();
+        touch.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+        if touch.clicked() {
+            actions.push(BoardAction::Pet(index));
+        }
+        let face = body.center();
+        let look = pointer
+            .map(|at| at - face)
+            .filter(|to| to.length() < 120.0 && to.length() > 1.0);
+        critter::paint(ui.painter(), feet, one, &pose, look);
     }
 }
 
@@ -1483,6 +1488,102 @@ fn tag_texts(
     }
 }
 
+/// The right-click menu of a card's remote line: the remotes of the
+/// repository. Picking one makes the branch track its namesake there; a
+/// remote without that branch cannot be picked.
+fn remote_menu(
+    anchor: &egui::Response,
+    path: &Path,
+    snap: &Snapshot,
+    actions: &mut Vec<BoardAction>,
+) {
+    egui::Popup::context_menu(anchor).show(|ui| {
+        ui.set_min_width(240.0);
+        let branch = match &snap.status.head {
+            Head::Branch(branch) => Some(branch.as_str()),
+            Head::Unborn(_) | Head::Detached(_) => None,
+        };
+        ui.strong(match branch {
+            Some(branch) => format!("Remote of {branch}"),
+            None => "Remotes".to_owned(),
+        });
+        let tracking = snap.status.tracking.as_deref();
+        let tracked = tracking
+            .and_then(|upstream| remote_of(&snap.remotes, upstream))
+            .map(|remote| remote.name.as_str());
+        for choice in remote_choices(branch, tracked, &snap.remotes, &snap.dated) {
+            let text = RichText::new(&choice.label).monospace();
+            match choice.command {
+                Some(command) => {
+                    if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                        actions.push(BoardAction::Run(path.to_path_buf(), command));
+                        ui.close();
+                    }
+                }
+                None => {
+                    let why = match (choice.current, branch) {
+                        (true, _) => "The branch tracks this remote".to_owned(),
+                        (false, Some(branch)) => format!("This remote has no branch {branch}"),
+                        (false, None) => "No branch is checked out".to_owned(),
+                    };
+                    let entry = egui::Button::selectable(choice.current, text);
+                    ui.add_enabled(false, entry).on_disabled_hover_text(why);
+                }
+            }
+        }
+    });
+}
+
+/// The card's remote line: the remote the branch tracks, its URL written
+/// short with the protocol first; a click copies the URL as git has it, a
+/// right click lists the remotes to switch to. A second line only when the
+/// branch pushes to another remote.
+fn remote_lines(ui: &mut Ui, path: &Path, snap: &Snapshot, actions: &mut Vec<BoardAction>) {
+    ui.horizontal(|ui| {
+        let Some(remote) = snap.remote() else {
+            if snap.remotes.is_empty() {
+                menu_anchor(ui, weak("no remote"), path, actions);
+            } else {
+                let none = menu_anchor(ui, weak("no remote for this branch"), path, actions);
+                remote_menu(&none, path, snap, actions);
+            }
+            return;
+        };
+        let word = menu_anchor(ui, weak("remote"), path, actions);
+        remote_menu(&word, path, snap, actions);
+        let text = RichText::new(short_url(&remote.url)).monospace();
+        let line = egui::Label::new(text)
+            .truncate()
+            .show_tooltip_when_elided(false)
+            .sense(egui::Sense::click());
+        let hover = format!("{}: {}", remote.name, safe_url(&remote.url));
+        let url = ui
+            .add(line)
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(hover);
+        if url.clicked() {
+            let at = url
+                .interact_pointer_pos()
+                .unwrap_or_else(|| url.rect.center());
+            actions.push(BoardAction::Copy(remote.url.clone(), at));
+        }
+        remote_menu(&url, path, snap, actions);
+    });
+    if let Some(push) = snap.push_remote() {
+        ui.horizontal(|ui| {
+            let hover = format!(
+                "This branch pushes to {}: {}",
+                push.name,
+                safe_url(&push.url)
+            );
+            let warn = ui.visuals().warn_fg_color;
+            menu_anchor(ui, weak("push:"), path, actions).on_hover_text(&hover);
+            let name = RichText::new(&push.name).monospace().color(warn);
+            menu_anchor(ui, name, path, actions).on_hover_text(&hover);
+        });
+    }
+}
+
 /// The status of a card. Only names a user pastes somewhere copy themselves
 /// (branch, sha, tag); a click on anything else reaches the card.
 fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
@@ -1570,6 +1671,7 @@ fn status_lines(ui: &mut Ui, card: &Card, actions: &mut Vec<BoardAction>) {
                 .on_hover_text("+staged ~modified ?untracked !conflicts");
         }
     });
+    remote_lines(ui, &card.path, snap, actions);
     ui.horizontal(|ui| match snap.status.upstream {
         Upstream::None => {
             ui.label(weak("no upstream"));
@@ -1623,7 +1725,9 @@ fn run_ui(ui: &mut Ui, run: &Run, opened: &mut Vec<OpenOutput>) {
                 if open_in_editor(ui, done, "this repository's output") {
                     opened.push((run.id, Some(section.repo.clone())));
                 }
-                section_output(ui, &section.state);
+                let shown = ui.scope(|ui| section_output(ui, &section.state));
+                let text = TextOf::Output(run.id, section.repo.clone());
+                text_menu::area(ui, shown.response.rect, text);
             });
     }
 }

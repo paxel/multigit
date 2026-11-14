@@ -5,6 +5,7 @@ use crate::domain::about;
 use crate::domain::audio::Sound;
 use crate::domain::config::{ButtonDef, Theme, button_presets};
 use crate::domain::naming::title;
+use crate::domain::songs::{STYLES, styles_on};
 use crate::infrastructure::launcher::ICON_PNG;
 use crate::ui::app::{App, SettingsPage};
 use crate::ui::view::pick_sound_file;
@@ -176,6 +177,39 @@ fn settings_page(app: &mut App, ui: &mut Ui) {
                 .suffix(" %")
                 .text("volume"),
         );
+    });
+    ui.horizontal(|ui| {
+        ui.label("Music themes:");
+        let on = styles_on(&STYLES, &config.music_off);
+        for (i, style) in STYLES.iter().enumerate() {
+            let mut checked = on.contains(&i);
+            // The last theme stays: the switch above turns the music off.
+            let last = checked && on.len() == 1;
+            let hint = if last {
+                "The last theme stays on; the Kawaii music switch turns the music off"
+            } else {
+                style.name
+            };
+            if ui
+                .add_enabled(!last, egui::Checkbox::new(&mut checked, style.label))
+                .on_hover_text(hint)
+                .on_disabled_hover_text(hint)
+                .changed()
+            {
+                config.music_off = STYLES
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, _)| {
+                        if *other == i {
+                            !checked
+                        } else {
+                            !on.contains(other)
+                        }
+                    })
+                    .map(|(_, style)| style.label.to_owned())
+                    .collect();
+            }
+        }
     });
     ui.horizontal(|ui| {
         ui.checkbox(&mut config.sounds, "Sounds")

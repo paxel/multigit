@@ -1,6 +1,7 @@
 //! What the board knows about one repository after a probe.
 
 use crate::domain::completion::RepoRefs;
+use crate::domain::remote::{Remote, remote_of};
 use crate::domain::status::{RepoState, Status};
 use std::cmp::Ordering;
 
@@ -61,6 +62,11 @@ pub struct Snapshot {
     pub tags: Vec<String>,
     /// `None` before the first commit.
     pub commit: Option<Commit>,
+    /// The remotes, each with its URL.
+    pub remotes: Vec<Remote>,
+    /// The name of the remote the branch pushes to. Only asked for with
+    /// more than one remote: with one it cannot be another.
+    pub push: Option<String>,
 }
 
 impl Snapshot {
@@ -74,7 +80,30 @@ impl Snapshot {
             dated: DatedRefs::default(),
             tags: Vec::new(),
             commit: None,
+            remotes: Vec::new(),
+            push: None,
         }
+    }
+
+    /// The remote the card shows: the one the branch tracks; without an
+    /// upstream `origin`, or the only remote there is.
+    pub fn remote(&self) -> Option<&Remote> {
+        let tracked = self.status.tracking.as_deref();
+        tracked
+            .and_then(|branch| remote_of(&self.remotes, branch))
+            .or_else(|| self.remotes.iter().find(|remote| remote.name == "origin"))
+            .or(match self.remotes.as_slice() {
+                [only] => Some(only),
+                _ => None,
+            })
+    }
+
+    /// The remote the branch pushes to, when that is another one than the
+    /// card shows.
+    pub fn push_remote(&self) -> Option<&Remote> {
+        let name = self.push.as_deref()?;
+        let push = self.remotes.iter().find(|remote| remote.name == name)?;
+        (Some(push) != self.remote()).then_some(push)
     }
 }
 
@@ -210,6 +239,48 @@ mod tests {
             commit: commit.into(),
             date: 0,
         }
+    }
+
+    #[test]
+    fn a_card_shows_the_remote_its_branch_tracks() {
+        use crate::domain::status::{Counts, Head, Status, Upstream};
+        let remote = |name: &str| Remote {
+            name: name.into(),
+            url: format!("https://example.org/{name}.git"),
+        };
+        let mut snap = Snapshot::of(Status {
+            head: Head::Branch("main".into()),
+            upstream: Upstream::None,
+            tracking: None,
+            counts: Counts::default(),
+            changed_paths: vec![],
+        });
+        let shown = |snap: &Snapshot| snap.remote().map(|r| r.name.clone());
+        let pushes = |snap: &Snapshot| snap.push_remote().map(|r| r.name.clone());
+        assert_eq!(shown(&snap), None, "no remote at all");
+        // Without an upstream: the only remote, or origin among several.
+        snap.remotes = vec![remote("fork")];
+        assert_eq!(shown(&snap).as_deref(), Some("fork"));
+        snap.remotes = vec![remote("fork"), remote("upstream")];
+        assert_eq!(shown(&snap), None);
+        snap.remotes.push(remote("origin"));
+        assert_eq!(shown(&snap).as_deref(), Some("origin"));
+        // The upstream decides, also when its branch is gone.
+        snap.status.tracking = Some("upstream/main".into());
+        assert_eq!(shown(&snap).as_deref(), Some("upstream"));
+        // An upstream that is a local branch names no remote.
+        snap.status.tracking = Some("develop".into());
+        assert_eq!(shown(&snap).as_deref(), Some("origin"));
+
+        // Pushing elsewhere is told; pushing to the same remote is not.
+        snap.status.tracking = Some("upstream/main".into());
+        assert_eq!(pushes(&snap), None);
+        snap.push = Some("upstream".into());
+        assert_eq!(pushes(&snap), None);
+        snap.push = Some("fork".into());
+        assert_eq!(pushes(&snap).as_deref(), Some("fork"));
+        snap.push = Some("gone".into());
+        assert_eq!(pushes(&snap), None);
     }
 
     #[test]

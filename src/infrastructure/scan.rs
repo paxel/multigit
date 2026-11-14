@@ -1,11 +1,28 @@
 //! Finds repositories below a folder picked with (+).
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// A folder is a repository when it contains `.git` (a directory, or a file for
-/// worktrees and submodules).
+/// What the `.git` file of a worktree or submodule starts with.
+const GIT_FILE_START: &[u8] = b"gitdir:";
+
+/// A folder is a repository when its `.git` is a directory that holds `HEAD`,
+/// or a file that points to the real one (worktrees and submodules). A `.git`
+/// that is empty or something else, like one copied without its content, is
+/// none. git is not run for this.
 pub fn is_repo(dir: &Path) -> bool {
-    dir.join(".git").exists()
+    let git = dir.join(".git");
+    if git.is_dir() {
+        return git.join("HEAD").is_file();
+    }
+    let Ok(file) = std::fs::File::open(&git) else {
+        return false;
+    };
+    let mut start = Vec::new();
+    let read = file
+        .take(GIT_FILE_START.len() as u64)
+        .read_to_end(&mut start);
+    read.is_ok() && start == GIT_FILE_START
 }
 
 /// `root` itself if it is a repository; otherwise every repository at most `depth`
@@ -55,6 +72,29 @@ mod tests {
 
     fn mkrepo(path: &Path) {
         fs::create_dir_all(path.join(".git")).unwrap();
+        fs::write(path.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    }
+
+    #[test]
+    fn a_git_folder_without_its_content_is_no_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        mkrepo(&root.join("good"));
+        // Copied without the content of `.git`.
+        fs::create_dir_all(root.join("empty/.git")).unwrap();
+        // `.git` holds something, but no HEAD.
+        fs::create_dir_all(root.join("half/.git/objects")).unwrap();
+        // A `.git` file that points nowhere.
+        fs::create_dir_all(root.join("file")).unwrap();
+        fs::write(root.join("file/.git"), "left over").unwrap();
+        fs::create_dir_all(root.join("short")).unwrap();
+        fs::write(root.join("short/.git"), "git").unwrap();
+        // A repository below a broken one is still found.
+        mkrepo(&root.join("empty/inner"));
+        let canon = |p: &str| root.join(p).canonicalize().unwrap();
+        assert_eq!(scan(root, 2), vec![canon("empty/inner"), canon("good")]);
+        assert!(!is_repo(&root.join("empty")));
+        assert!(scan(&root.join("half"), 2).is_empty());
     }
 
     #[test]

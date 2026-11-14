@@ -4,25 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.3.0]
+## [0.4.0]
 
 ### Added
 
-- Kawaii music, switched on in Settings: lofi beats made by multigit itself play while the Kawaii theme is on.
-- Sounds, switched on in Settings: a beep when a remote commit appears on a card, a boop when a local one does. Volume and a sound file of your own per sound can be set.
-- Read-only repository view: a double click on a card, or "Open" in its right-click menu, shows the repository's changed files, last commits and branches, and the diff of a picked file or commit.
-- "Hide" in a card's right-click menu takes the card off the board but remembers the repository, so adding its parent folder again does not bring it back. Settings lists the hidden repositories and unhides them.
-- "ahead" beside the toolbar's mark buttons marks the repositories with unpushed commits, and "ahead first" is a sort key.
+- The Kawaii music has five themes, each with its own instruments, songs and breaks: Japanese traditional lofi, retro gaming lofi, Babymetal-style lofi, Cajun porch lofi (a banjo, a fiddle, a washtub bass, a washboard, a jaw harp) and trip-hop lofi (a theremin over a slow beat on a crackling record, with bombs and a call far away). After each song it stays in the theme or, one time in four, changes to another with a longer break between the two; among those breaks are a modem dialling in and a record scratch.
+- Every theme of the Kawaii music has a motto: one short phrase that returns in about every second song and in one of the theme's long breaks, always the same notes, in the key of the song.
+- Settings has a checkbox for each theme of the Kawaii music: only the checked themes play, and with a single one checked the music never leaves it.
+- Bunnies and cats live on the cards in the Kawaii theme. They blink, wiggle their ears, hop from card to card and sleep while nothing happens; they look up at a new remote commit, dance for a local one, let their ears hang over a failed fetch, look at the pointer and jump with a heart when clicked.
+- In the Kawaii theme a card throws a burst of hearts and stars when a command on it ends well.
+- Every card shows the remote its branch tracks, as a short URL with the protocol first (`ssh github.com/paxel/multigit`); a click copies the URL. A branch that pushes to another remote says so.
+- A right click on a card's remote lists the remotes of the repository; picking one makes the branch track the branch of the same name there.
+- A right click on a mark button of the toolbar (dirty, behind, ahead) shows only the cards that fit it, and the toolbar says so; a second right click, or one on "all", shows all again.
+- A right click on text in the repository view (commit message, diff, file content) and on the output of a command opens a menu: `Copy` copies what is marked and leaves it marked, `Copy all` copies the whole text, the lines that are not on screen included.
 
 ### Changed
 
-- Cards are removed with "Remove from board" in the card's right-click menu, for all marked cards at once when the card is marked; the × on the card and the toolbar's "Remove marked" are gone.
-- A card shows its favorites as chips under its name, each in the favorite's color with its emoji and name, instead of stripes at the left edge and emojis before the name. A click on a chip shows only that favorite's cards.
-- The Sort button opens a list of the sort keys instead of stepping to the next one with every click.
+- The repository view has three tabs, Files, Commits and Graph, with Back and Forward through what was looked at. It opens on Files when the repository has changes and on Commits when it is clean.
+- The Files tab of the repository view shows the changed files as a tree with folders that fold, each file once and colored by what happened to it since the last commit, staged or not. A picked file shows its content when it is new, what is gone when it was deleted, and its diff otherwise.
+- The Commits tab of the repository view lists the history in compact rows (the author's initials in the author's color, short hash, the tags on the commit, title, age) and reads on when scrolled to its end. A picked commit shows its hash, author, date, parents, whole message and the branches and tags on it above the files it changed with the lines added and removed; a click on a parent goes to it, a click on the hash, the author, the mail address, the date or a name copies it, and a click on a file shows what the commit did to it.
+- The Graph tab of the repository view draws all local and remote branches as a graph that shows only the commits that matter (branch tips, tags, merges, and where branches part) and folds the runs of commits between them into one row that unfolds on a click. Remote branches nobody has locally and that are older than 90 days are left out behind a line that shows them.
+- The toolbar's mark buttons stay pressed like the station buttons of a radio: a second click on the pressed button marks the other cards instead, a click on another button releases it. "none" is gone: it is the second click on "all".
+- The Kawaii music plays songs of about a minute, each with two themes of its own, that vary each time they play, with short and long breaks between them, instead of ten short passages.
 
 ### Fixed
 
-- The tooltip of a card's commit line shows the commit message once, not twice.
+- The volume of the Kawaii music changes as soon as the slider is let go, not only after the music was switched off and on.
+- The app starts with the output panel as it was left: hidden stays hidden.
+- (+) on a folder no longer adds folders whose `.git` is empty or incomplete, like a repository copied without its content.
 
 ---
 

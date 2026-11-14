@@ -2,8 +2,9 @@
 
 use crate::domain::completion::RepoRefs;
 use crate::domain::output::ProcessOutput;
+use crate::domain::remote::parse_remotes;
 use crate::domain::repo::{Commit, DatedRef, DatedRefs, ProbeError, Snapshot, tags_on_commit_of};
-use crate::domain::status::{RepoState, parse_porcelain_v2};
+use crate::domain::status::{Head, RepoState, parse_porcelain_v2};
 use crate::infrastructure::git::GitRunner;
 use std::path::{Path, PathBuf};
 
@@ -61,11 +62,13 @@ pub fn probe(runner: &GitRunner, dir: &Path) -> Result<Snapshot, ProbeError> {
 
 /// The cheap probe: one `git status`. While HEAD is where `previous` saw
 /// it, the branches, tags and commit line of `previous` are taken as they
-/// are. `None` when HEAD moved or the status failed: then only
-/// [`probe_full`] knows.
+/// are. `None` when HEAD moved, the branch got another upstream or the
+/// status failed: then only [`probe_full`] knows.
 pub fn probe_light(runner: &GitRunner, dir: &Path, previous: &Probed) -> Option<Probed> {
     let (status, head) = status(runner, dir).ok()?;
-    if head != previous.head {
+    // The remotes of the card hang on the upstream: with another one, the
+    // remote the branch pushes to has to be asked for again.
+    if head != previous.head || status.tracking != previous.snapshot.status.tracking {
         return None;
     }
     let mut snapshot = previous.snapshot.clone();
@@ -79,7 +82,7 @@ pub fn probe_light(runner: &GitRunner, dir: &Path, previous: &Probed) -> Option<
     })
 }
 
-/// The whole probe: six git processes.
+/// The whole probe: six git processes, seven with more than one remote.
 #[tracing::instrument(skip_all, fields(dir = %dir.display()))]
 pub fn probe_full(runner: &GitRunner, dir: &Path) -> Result<Probed, ProbeError> {
     if !dir.is_dir() {
@@ -102,9 +105,26 @@ pub fn probe_full(runner: &GitRunner, dir: &Path) -> Result<Probed, ProbeError> 
             "refs/tags",
         ],
     )?;
-    let remotes_out = query(runner, dir, &["remote"])?;
+    let remotes_out = query(runner, dir, &["remote", "-v"])?;
+    let remotes = parse_remotes(&remotes_out.stdout);
     let (mut refs, dated) = parse_refs(&refs_out.stdout);
-    refs.remotes = remotes_out.stdout.lines().map(str::to_owned).collect();
+    refs.remotes = remotes.iter().map(|remote| remote.name.clone()).collect();
+    // The remote the branch pushes to can only be another one when there
+    // are several. git names it also before anything was pushed there.
+    let push = match &status.head {
+        Head::Branch(branch) if remotes.len() > 1 => {
+            let branch = format!("refs/heads/{branch}");
+            query(
+                runner,
+                dir,
+                &["for-each-ref", "--format=%(push:remotename)", &branch],
+            )
+            .ok()
+            .map(|out| out.stdout.trim().to_owned())
+            .filter(|name| !name.is_empty())
+        }
+        _ => None,
+    };
     refs.files = status.changed_paths.clone();
 
     // Fails without a reachable tag (and on an unborn branch): no tag, not an
@@ -139,6 +159,8 @@ pub fn probe_full(runner: &GitRunner, dir: &Path) -> Result<Probed, ProbeError> 
         dated,
         tags,
         commit,
+        remotes,
+        push,
     };
     Ok(Probed {
         snapshot,
@@ -294,6 +316,9 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         repo.git(&["config", "gpg.program", &script.to_string_lossy()]);
         repo.git(&["config", "log.showSignature", "true"]);
+        // Two remotes: the probe asks where the branch pushes to as well.
+        repo.git(&["remote", "add", "one", "/does/not/exist/one.git"]);
+        repo.git(&["remote", "add", "two", "/does/not/exist/two.git"]);
         let runner = isolated_runner();
 
         // A plain `git log` as a user command runs it: the setting is live.
@@ -309,6 +334,7 @@ mod tests {
             !marker.exists(),
             "the probe ran the repository's gpg.program"
         );
+        assert_eq!(snap.remotes.len(), 2);
         assert_eq!(snap.commit.unwrap().hash, hash.trim());
     }
 
@@ -337,6 +363,18 @@ mod tests {
         // HEAD moved: the light probe gives up.
         repo.git(&["commit", "-q", "-am", "two"]);
         assert_eq!(probe_light(&runner, repo.path(), &light), None);
+
+        // So it does when the branch gets another upstream while HEAD stays.
+        let full = probe_full(&runner, repo.path()).unwrap();
+        assert!(probe_light(&runner, repo.path(), &full).is_some());
+        let head = repo.git(&["rev-parse", "HEAD"]);
+        repo.git(&["remote", "add", "fork", "/does/not/exist.git"]);
+        repo.git(&["update-ref", "refs/remotes/fork/main", head.trim()]);
+        repo.git(&["branch", "-q", "--set-upstream-to=fork/main"]);
+        assert_eq!(probe_light(&runner, repo.path(), &full), None);
+        let full = probe_full(&runner, repo.path()).unwrap();
+        assert_eq!(full.snapshot.remote().unwrap().name, "fork");
+        assert!(probe_light(&runner, repo.path(), &full).is_some());
         // The repository is gone: it gives up as well.
         std::fs::remove_dir_all(repo.path().join(".git")).unwrap();
         assert_eq!(probe_light(&runner, repo.path(), &light), None);
@@ -368,6 +406,27 @@ mod tests {
         assert_eq!(snap.refs.branches, vec!["main".to_owned()]);
         assert_eq!(snap.refs.remote_branches, vec!["origin/main".to_owned()]);
         assert_eq!(snap.refs.remotes, vec!["origin".to_owned()]);
+        // The remote of the branch, with its URL; it pushes there too.
+        assert_eq!(snap.status.tracking.as_deref(), Some("origin/main"));
+        let shown = snap.remote().unwrap();
+        assert_eq!(shown.name, "origin");
+        assert_eq!(shown.url, remote.path().to_string_lossy());
+        assert_eq!(snap.push, None, "not asked for with one remote");
+
+        // A second remote that the branch pushes to.
+        let fork = TestRepo::bare();
+        b.git(&["remote", "add", "fork", &fork.path().to_string_lossy()]);
+        b.git(&["config", "remote.pushDefault", "fork"]);
+        let snap = probe(&isolated_runner(), b.path()).unwrap();
+        assert_eq!(snap.remotes.len(), 2);
+        assert_eq!(snap.remote().unwrap().name, "origin");
+        assert_eq!(snap.push.as_deref(), Some("fork"));
+        assert_eq!(snap.push_remote().unwrap().name, "fork");
+        // Detached, there is no branch that pushes anywhere.
+        b.git(&["switch", "-q", "--detach"]);
+        let snap = probe(&isolated_runner(), b.path()).unwrap();
+        assert_eq!(snap.push, None);
+        assert_eq!(snap.remote().unwrap().name, "origin");
         assert_eq!(snap.refs.tags, vec!["v1".to_owned()]);
     }
 

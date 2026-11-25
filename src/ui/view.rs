@@ -626,7 +626,7 @@ impl App {
     /// Put `text` on the clipboard and start the "Copied" animation at `at`.
     pub(super) fn copy(&mut self, ui: &Ui, text: String, at: egui::Pos2) {
         ui.ctx().copy_text(text);
-        self.copy_flash = Some(CopyFlash {
+        self.gui.copy_flash = Some(CopyFlash {
             at,
             started: ui.input(|i| i.time),
         });
@@ -642,7 +642,7 @@ impl App {
             auto_insert_single: self.config.auto_insert_single_match,
             shell: login_shell_name(),
         };
-        let mut cli = std::mem::take(&mut self.cli);
+        let mut cli = std::mem::take(&mut self.gui.cli);
         let unseen = self.unseen_outcome();
         let mut hidden = self.config.output_hidden;
         let actions = ui
@@ -652,7 +652,7 @@ impl App {
             })
             .inner;
         self.config.output_hidden = hidden;
-        self.cli = cli;
+        self.gui.cli = cli;
         for action in actions {
             match action {
                 CliAction::Run(line) => self.run_cli_line(&line),
@@ -687,10 +687,10 @@ impl App {
 
     /// The right-click menu on a text, and what was picked in it.
     fn text_menu_overlay(&mut self, ui: &Ui) {
-        match self.text_picked.take() {
+        match self.gui.text_picked.take() {
             // egui copies what is marked; only the animation is left to do.
             Some(Picked::Copy(at)) => {
-                self.copy_flash = Some(CopyFlash {
+                self.gui.copy_flash = Some(CopyFlash {
                     at,
                     started: ui.input(|i| i.time),
                 });
@@ -704,14 +704,18 @@ impl App {
         }
         // The text went away under the menu: the view closed, the panel
         // was folded away.
-        let gone = self.text_menu.as_ref().is_some_and(|menu| match menu.text {
-            TextOf::Message | TextOf::Pane => self.repo_view.is_none(),
-            TextOf::Output(..) => self.config.output_hidden || self.repo_view.is_some(),
-        });
+        let gone = self
+            .gui
+            .text_menu
+            .as_ref()
+            .is_some_and(|menu| match menu.text {
+                TextOf::Message | TextOf::Pane => self.repo_view.is_none(),
+                TextOf::Output(..) => self.config.output_hidden || self.repo_view.is_some(),
+            });
         if gone {
-            self.text_menu = None;
+            self.gui.text_menu = None;
         }
-        if let Some(menu) = &mut self.text_menu {
+        if let Some(menu) = &mut self.gui.text_menu {
             text_menu::show(ui.ctx(), menu);
         }
     }
@@ -719,11 +723,11 @@ impl App {
     /// "Copied" floating up from the pointer and fading out; repaints only
     /// while it runs.
     fn copy_flash_overlay(&mut self, ui: &Ui) {
-        let Some(flash) = self.copy_flash else {
+        let Some(flash) = self.gui.copy_flash else {
             return;
         };
         let Some(t) = flash_progress(flash.started, ui.input(|i| i.time)) else {
-            self.copy_flash = None;
+            self.gui.copy_flash = None;
             return;
         };
         let painter = ui.ctx().layer_painter(egui::LayerId::new(

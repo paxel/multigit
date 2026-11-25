@@ -6,21 +6,9 @@
 //! the clicks on its entries are taken out of the input before egui reads
 //! it, and `Copy` is handed to egui as the copy key press it knows.
 
-use std::path::PathBuf;
-
 use egui::{Event, Key, PointerButton, Pos2, RawInput, Rect, Ui};
 
-/// A text of the app that the menu copies whole.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TextOf {
-    /// The message of the picked commit.
-    Message,
-    /// What the right pane of the repository view shows under its header:
-    /// a diff, a file, or the files of a commit with the unfolded diffs.
-    Pane,
-    /// What a command printed in one repository: the run and the folder.
-    Output(u64, PathBuf),
-}
+pub use crate::app::TextOf;
 
 /// A place on screen where a right click opens the menu.
 #[derive(Debug, Clone, PartialEq)]

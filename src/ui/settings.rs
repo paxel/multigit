@@ -50,13 +50,13 @@ pub fn show(app: &mut App, ctx: &Context) {
 
 /// The app's icon as a texture, made once.
 fn icon_texture(app: &mut App, ctx: &Context) -> Option<egui::TextureHandle> {
-    if app.icon.is_none() {
+    if app.gui.icon.is_none() {
         let icon = eframe::icon_data::from_png_bytes(ICON_PNG).ok()?;
         let size = [icon.width as usize, icon.height as usize];
         let image = egui::ColorImage::from_rgba_unmultiplied(size, &icon.rgba);
-        app.icon = Some(ctx.load_texture("app-icon", image, egui::TextureOptions::default()));
+        app.gui.icon = Some(ctx.load_texture("app-icon", image, egui::TextureOptions::default()));
     }
-    app.icon.clone()
+    app.gui.icon.clone()
 }
 
 /// Icon, name, version and tagline, then the rows that open the project's

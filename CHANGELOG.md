@@ -23,6 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Settings and About in the terminal (`S`): the values, the card buttons and the hidden repositories; a link is copied, as there is no browser ([mgit-1013](https://github.com/paxel/multigit/issues/84)).
 - The Kawaii theme in the terminal: pastel colors, bunnies and cats in text in front of the rows, and hearts and stars from a row whose command ended well ([mgit-1014](https://github.com/paxel/multigit/issues/85)).
 
+### Security
+
+- The `url` crate is updated to 2.5.9, which fixes a stack overflow on nested `blob:` URLs (RUSTSEC-2026-0592).
+
 ---
 
 Historical changes have been moved to [OLDER_CHANGES.md](OLDER_CHANGES.md).

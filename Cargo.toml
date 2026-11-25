@@ -10,6 +10,8 @@ publish = false
 [dependencies]
 eframe = "0.35"
 egui = "0.35"
+# The terminal front end (--tui), with crossterm as its backend.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 rfd = "0.17"
 serde = { version = "1", features = ["derive"] }
 shell-words = "1"

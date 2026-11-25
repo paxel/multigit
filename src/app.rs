@@ -391,6 +391,9 @@ pub struct App<G = ()> {
     /// The music ended with an error; it is not started again until it was
     /// switched off once.
     music_failed: bool,
+    /// Sounds and music never play: set by a front end that has no
+    /// speakers of its own, such as the terminal over SSH.
+    pub silent: bool,
     /// What only the front end that drives this app keeps.
     pub gui: G,
 }
@@ -457,6 +460,7 @@ impl<G: Default> App<G> {
             music: None,
             pointer_held: false,
             music_failed: false,
+            silent: false,
             gui: G::default(),
         }
     }
@@ -544,7 +548,7 @@ impl<G: Default> App<G> {
     /// Start, stop or tune the music so it fits the settings: it plays in
     /// the Kawaii theme with music switched on, and nowhere else.
     pub fn sync_music(&mut self) {
-        if !(self.is_kawaii() && self.config.music) {
+        if self.silent || !(self.is_kawaii() && self.config.music) {
             self.music = None;
             self.music_failed = false;
             return;
@@ -623,7 +627,7 @@ impl<G: Default> App<G> {
     /// News on a card at `now`: play each of `sounds` unless it played a
     /// moment ago. Nothing while sounds are switched off.
     pub fn sound_news(&mut self, sounds: &[Sound], now: Instant) {
-        if !self.config.sounds {
+        if self.silent || !self.config.sounds {
             return;
         }
         for &sound in sounds {

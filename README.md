@@ -257,6 +257,32 @@ So the board is no sandbox: add only folders whose origin you know.
 
 Buttons and the command line run git as you would in a terminal, hooks and all.
 
+## In a terminal
+
+`multigit --tui` runs the board in the terminal instead of a window, for a
+machine without a display, over SSH for example. It uses the same config,
+history and repositories as the window.
+
+The board is a table with one row per repository: its name, branch, tag,
+working tree, unpushed (`↑`) and unpulled (`↓`) commits and the last
+command's result. A `!` before the name is a failed fetch. Under the table
+the selected row shows everything its card shows in the window. Statuses
+refresh and fetches run as in the window. No sounds and no music play in
+the terminal.
+
+Plain keys act on the board; `?` shows them all:
+
+| Key               | Action                         |
+|-------------------|--------------------------------|
+| j / k, arrows     | Select a row (the wheel too)   |
+| g / G, Home / End | First / last row               |
+| ?                 | Show or hide the keys          |
+| q, Ctrl+C         | Quit                           |
+
+A click selects a row. In the terminal multigit writes no menu entry and no
+icon. With `RUST_LOG` set, its log goes to `tui.log` in
+`~/.local/state/multigit` instead of the screen.
+
 ## Settings and files
 
 **Settings** in the toolbar changes the fetch interval, the number of parallel

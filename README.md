@@ -490,7 +490,7 @@ To build the bundle yourself:
 
 ```sh
 cargo build --release
-packaging/macos/bundle.sh target/release/multigit 0.4.0 .
+packaging/macos/bundle.sh target/release/multigit 0.5.0 .
 ```
 
 ### From source

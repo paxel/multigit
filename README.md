@@ -355,7 +355,12 @@ or red.
 or opens. The card buttons are edited there (Enter the label, `a` the git
 arguments, ← and → move one, `d` removes it), and hidden repositories are
 unhidden. Sounds, the Kawaii music and the terminal command are not shown.
-In the terminal System, Light and Dark all use the terminal's own colors.
+In the terminal System, Light and Dark all use the terminal's own colors;
+Kawaii paints everything in pastels and puts the bunnies and cats in front
+of the rows, as text: they sleep, look up, dance, let their ears hang and
+jump with a heart when clicked, as in the window, and a command that ends
+well throws hearts and stars out of its row. It moves while the terminal
+has focus (where the terminal reports focus). No sounds and no music.
 About shows the version and the links; Enter copies a link, as there is no
 browser.
 

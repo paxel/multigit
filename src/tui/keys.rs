@@ -290,6 +290,16 @@ pub fn on_mouse(app: &mut App, mouse: MouseEvent) {
         MouseEventKind::ScrollUp => move_selection(app, -1),
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(path) = row_at(app, mouse.column, mouse.row) {
+                let on_critters = app.is_kawaii()
+                    && mouse.column < app.gui.table.x.saturating_add(super::board::KAWAII_WIDTH);
+                let petted = super::kawaii::critters_on(app, &path)
+                    .first()
+                    .map(|(i, _)| *i);
+                if on_critters && let Some(index) = petted {
+                    // A click on a critter: it jumps, with a heart.
+                    app.pet_critter(index);
+                    return;
+                }
                 app.gui.selected = Some(path.clone());
                 app.toggle_mark(path.clone());
                 // The second click of a double click marks back, as in the

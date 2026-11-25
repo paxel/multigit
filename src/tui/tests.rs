@@ -1107,3 +1107,64 @@ fn about_copies_its_links_and_lists_the_licenses() {
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.settings_page, crate::app::SettingsPage::Settings);
 }
+
+#[test]
+fn kawaii_puts_critters_and_confetti_on_the_rows_in_pastels() {
+    let mut app = board_app();
+    app.config.theme = crate::domain::config::Theme::Kawaii;
+    app.advance_kawaii(0.1, true);
+    app.tend_critters();
+    assert!(!app.critters.critters.is_empty());
+    app.bursts
+        .push((PathBuf::from("/repos/beta"), app.kawaii_clock));
+    let mut terminal = Terminal::new(TestBackend::new(110, 24)).unwrap();
+    terminal.draw(|frame| board::draw(frame, &mut app)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let text: String = buffer.content.iter().map(|c| c.symbol()).collect();
+    assert!(
+        text.contains("'.'") || text.contains("-.-"),
+        "a critter's face"
+    );
+    assert!(
+        text.contains('\u{2665}') || text.contains('\u{2726}'),
+        "confetti"
+    );
+    assert!(
+        buffer.content.iter().all(|c| !matches!(
+            c.fg,
+            ratatui::style::Color::Green | ratatui::style::Color::Cyan
+        )),
+        "no plain terminal colors left"
+    );
+}
+
+#[test]
+fn a_click_on_a_critter_pets_it_and_marks_nothing() {
+    let mut app = board_app();
+    app.config.theme = crate::domain::config::Theme::Kawaii;
+    app.advance_kawaii(0.1, true);
+    app.tend_critters();
+    screen(&mut app, 110, 24);
+    let home = app.critters.critters[0].home.clone();
+    let (y, _) = app
+        .gui
+        .rows_at
+        .iter()
+        .find(|(_, path)| *path == home)
+        .cloned()
+        .unwrap();
+    keys::on_mouse(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(app.marked.is_empty());
+    assert_eq!(
+        app.critters.critters[0].mood,
+        crate::domain::critters::Mood::Pet
+    );
+}

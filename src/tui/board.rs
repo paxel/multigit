@@ -18,6 +18,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 
+/// Columns of the Kawaii theme's critters in front of the rows.
+pub const KAWAII_WIDTH: u16 = 16;
+
 /// Lines of the detail strip, its frame included.
 const DETAIL_HEIGHT: u16 = 8;
 
@@ -88,6 +91,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.gui.help {
         draw_help(frame, &mut app.gui.help_scroll);
+    }
+    if app.is_kawaii() {
+        super::kawaii::tint(frame.buffer_mut());
     }
 }
 
@@ -304,7 +310,18 @@ fn table_row(app: &App, card: &Card) -> Row<'static> {
         Span::styled(fetch, bad()),
         Span::styled(title(&card.path), Style::new().add_modifier(Modifier::BOLD)),
     ]));
-    let cells = match &card.probe {
+    let mut cells = Vec::new();
+    if app.is_kawaii() {
+        // The bunnies and cats sit in front of the row, the confetti flies
+        // out of it.
+        let mut friends: Vec<Span> = super::kawaii::critters_on(app, &card.path)
+            .into_iter()
+            .map(|(_, span)| span)
+            .collect();
+        friends.extend(super::kawaii::confetti_on(app, &card.path));
+        cells.push(Cell::from(Line::from(friends)));
+    }
+    cells.extend(match &card.probe {
         None => vec![name, Cell::from(Span::styled("loading", dim()))],
         Some(Err(e)) => vec![name, Cell::from(Span::styled(e.to_string(), bad()))],
         Some(Ok(snap)) => {
@@ -322,7 +339,7 @@ fn table_row(app: &App, card: &Card) -> Row<'static> {
                 Cell::from(Span::styled(last, last_style)),
             ]
         }
-    };
+    });
     let row = Row::new(cells);
     if card.snapshot().is_none() {
         row.style(dim())
@@ -335,20 +352,24 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let cards = app.shown_cards();
     let rows: Vec<Row> = cards.iter().map(|c| table_row(app, c)).collect();
     let paths: Vec<_> = cards.iter().map(|c| c.path.clone()).collect();
-    let header = Row::new(["  repository", "branch", "tag", "tree", "sync", "last"]).style(dim());
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Fill(3),
-            Constraint::Fill(3),
-            Constraint::Fill(2),
-            Constraint::Length(18),
-            Constraint::Length(13),
-            Constraint::Length(7),
-        ],
-    )
-    .header(header)
-    .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+    let kawaii = app.is_kawaii();
+    let mut names = vec!["  repository", "branch", "tag", "tree", "sync", "last"];
+    let mut widths = vec![
+        Constraint::Fill(3),
+        Constraint::Fill(3),
+        Constraint::Fill(2),
+        Constraint::Length(18),
+        Constraint::Length(13),
+        Constraint::Length(7),
+    ];
+    if kawaii {
+        names.insert(0, "");
+        widths.insert(0, Constraint::Length(KAWAII_WIDTH));
+    }
+    let header = Row::new(names).style(dim());
+    let table = Table::new(rows, widths)
+        .header(header)
+        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED));
     let mut state = TableState::default()
         .with_offset(app.gui.offset)
         .with_selected(selected_index(app));

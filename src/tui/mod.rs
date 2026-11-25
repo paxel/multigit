@@ -12,6 +12,7 @@ pub mod desktop;
 pub mod favorites;
 pub mod folders;
 pub mod graph;
+pub mod kawaii;
 pub mod keys;
 pub mod output;
 pub mod repo;
@@ -70,12 +71,25 @@ fn run_loop(
     app: &mut App,
     desktop: &TerminalDesktop,
 ) -> io::Result<()> {
+    let mut last_frame = Instant::now();
     while !app.gui.quit {
         app.handle_events();
-        let next = app.tick(Instant::now());
+        let now = Instant::now();
+        let next = app.tick(now);
+        // The Kawaii theme moves while the terminal has focus, and a few
+        // seconds after a repository changed.
+        let dt = now.duration_since(last_frame).as_secs_f32();
+        last_frame = now;
+        let moving = app.advance_kawaii(dt, app.gui.focused);
+        app.tend_critters();
+        let frame = if moving {
+            Duration::from_secs_f32(1.0 / crate::domain::kawaii::FPS)
+        } else {
+            FRAME
+        };
         terminal.draw(|frame| board::draw(frame, app))?;
         send_copies(app)?;
-        if event::poll(next.min(FRAME))? {
+        if event::poll(next.min(frame))? {
             on_event(app, event::read()?);
         }
         for program in desktop.take() {

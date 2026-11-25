@@ -1102,7 +1102,8 @@ fn about_copies_its_links_and_lists_the_licenses() {
     settings_to(&mut app, Row::Licenses);
     press(&mut app, KeyCode::Enter);
     let lines = screen(&mut app, 100, 30);
-    assert!(shown(&lines, "ratatui"));
+    let first = crate::domain::about::crate_licenses()[0].krate;
+    assert!(shown(&lines, first), "the list starts with the first crate");
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.settings_page, crate::app::SettingsPage::Settings);

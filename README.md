@@ -277,6 +277,7 @@ Plain keys act on the board; `?` shows them all:
 | j / k, arrows     | Select a row (the wheel too)                           |
 | g / G, Home / End | First / last row                                       |
 | space             | Mark or unmark the row                                 |
+| Enter             | Open the repository view (a double click too)          |
 | a, d, b, p        | Mark button all, dirty, behind, ahead (p for push)     |
 | D, B, P           | Show only the dirty, behind, ahead rows                |
 | A                 | Show all rows again                                    |
@@ -308,6 +309,14 @@ Copying asks the terminal to put the text on its clipboard (the OSC 52
 escape), so it reaches the clipboard of the machine in front of you, also
 over SSH. Terminals that do not support it copy nothing; in tmux it takes
 `set-clipboard on`.
+
+The repository view fills the terminal: the list on the left, what is
+picked in it on the right. `1`, `2` and `3` pick the tabs Files, Commits and
+Graph, `[` and `]` are Back and Forward, `j`/`k` and Enter (or a click) move
+and pick, `J`/`K` and PgDn/PgUp scroll the right side, `r` reads the
+repository again, `y` copies all of the right side, and Esc or `q` closes
+it. To copy a part, mark it with the terminal's own selection (Shift and drag
+where the terminal leaves the mouse to multigit).
 
 `+` asks for the folder instead of a folder dialog: `~` is the home folder,
 a relative path starts where multigit was started, and Tab completes a

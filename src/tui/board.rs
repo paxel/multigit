@@ -26,6 +26,12 @@ pub const HELP: &[(&str, &str)] = &[
     ("j / k, arrows", "select a row (the wheel too)"),
     ("g / G, Home / End", "first / last row"),
     ("space, click", "mark or unmark the row"),
+    ("Enter, double click", "open the repository view"),
+    ("  1 2 3", "tabs Files, Commits, Graph"),
+    ("  j / k, Enter", "move / pick or fold (a click too)"),
+    ("  J / K, PgDn / PgUp", "scroll the right pane"),
+    ("  [ / ]", "back / forward"),
+    ("  r / y / Esc", "refresh / copy the pane / close"),
     ("a d b p", "mark all / dirty / behind / ahead"),
     ("D B P", "show only dirty / behind / ahead"),
     ("A", "show all again"),
@@ -57,6 +63,32 @@ pub const HELP: &[(&str, &str)] = &[
 
 /// Draw everything.
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    if app.repo_view.is_some() {
+        super::repo::draw(frame, app);
+    } else {
+        draw_board(frame, app);
+    }
+    if let Mode::Menu(menu) = &app.gui.mode {
+        let menu = menu.clone();
+        app.gui.menu_rows = draw_menu(frame, &menu);
+    }
+    if let Mode::Prompt(prompt) = &app.gui.mode {
+        draw_prompt(frame, &prompt.title, &prompt.input);
+    }
+    if let Mode::Favorite(form) = &app.gui.mode {
+        draw_favorite_form(frame, app, form);
+    }
+    if app.confirm.is_some() {
+        draw_confirm(frame, app);
+    }
+    if app.gui.help {
+        draw_help(frame);
+    }
+}
+
+/// The board: toolbar, favorites, table, detail strip, output, command
+/// line and status line.
+fn draw_board(frame: &mut Frame, app: &mut App) {
     // Nothing to show yet: the panel takes no room from the table.
     let panel = if app.config.output_hidden || app.log.is_empty() {
         0
@@ -97,22 +129,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.gui.output_area = Rect::default();
     }
     draw_cli(frame, app, command);
-    if let Mode::Menu(menu) = &app.gui.mode {
-        let menu = menu.clone();
-        app.gui.menu_rows = draw_menu(frame, &menu);
-    }
-    if let Mode::Prompt(prompt) = &app.gui.mode {
-        draw_prompt(frame, &prompt.title, &prompt.input);
-    }
-    if let Mode::Favorite(form) = &app.gui.mode {
-        draw_favorite_form(frame, app, form);
-    }
-    if app.confirm.is_some() {
-        draw_confirm(frame, app);
-    }
-    if app.gui.help {
-        draw_help(frame);
-    }
 }
 
 fn toolbar_lines(app: &App) -> Vec<Line<'static>> {

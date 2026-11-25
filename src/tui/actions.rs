@@ -44,6 +44,8 @@ pub enum Action {
     AddToFavorite(usize, Vec<PathBuf>),
     RemoveFromFavorite(usize, Vec<PathBuf>),
     DeleteFavorite(usize),
+    /// The read-only view of this repository.
+    Open(PathBuf),
     /// Off the board; nothing on disk is touched.
     Remove(Vec<PathBuf>),
     /// Off the board and remembered, so a scan leaves them out.
@@ -146,6 +148,7 @@ pub fn perform(app: &mut App, action: Action) {
         Action::AddToFavorite(index, repos) => app.add_to_favorite(index, &repos),
         Action::RemoveFromFavorite(index, repos) => app.remove_from_favorite(index, &repos),
         Action::DeleteFavorite(index) => app.delete_favorite(index),
+        Action::Open(path) => app.open_repo_view(&path),
         Action::Remove(repos) => app.remove_cards(&repos),
         Action::Hide(repos) => app.hide_cards(&repos),
     }

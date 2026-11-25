@@ -5,9 +5,11 @@ use super::actions::Prompt;
 use super::cli::Cli;
 use super::favorites::Form;
 use super::widgets::Menu;
+use crate::domain::details::RepoTab;
 use ratatui::layout::Rect;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::Instant;
 
 /// The terminal's own state: selection, what has the keys, what was drawn
 /// where (for the mouse).
@@ -48,6 +50,16 @@ pub struct Tui {
     /// Where the favorites line was drawn: its screen line, and each
     /// favorite's first and past-last column.
     pub favorites_at: (u16, Vec<(u16, u16, usize)>),
+    /// The repository view's cursor row in each tab.
+    pub view_cursor: HashMap<RepoTab, usize>,
+    /// How far the repository view's right pane is scrolled.
+    pub pane_scroll: usize,
+    /// The repository view's list as last drawn, its frame left out.
+    pub list_area: Rect,
+    /// The list's first drawn row.
+    pub list_top: usize,
+    /// The last click on a board row, for a double click.
+    pub last_click: Option<(PathBuf, Instant)>,
 }
 
 /// What has the keys.
@@ -89,6 +101,11 @@ impl Default for Tui {
             output_top: 0,
             copies: Vec::new(),
             favorites_at: (0, Vec::new()),
+            view_cursor: HashMap::new(),
+            pane_scroll: 0,
+            list_area: Rect::default(),
+            list_top: 0,
+            last_click: None,
         }
     }
 }

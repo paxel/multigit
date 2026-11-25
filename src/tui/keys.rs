@@ -13,6 +13,9 @@ use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
+/// Two clicks on the same row within this time are a double click.
+const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// A key press.
 pub fn on_key(app: &mut App, key: KeyEvent) {
     if key.kind == KeyEventKind::Release {
@@ -38,6 +41,7 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
         return;
     }
     match std::mem::take(&mut app.gui.mode) {
+        Mode::Board if app.repo_view.is_some() => super::repo::key(app, key),
         Mode::Board => board_key(app, key),
         Mode::Prompt(mut prompt) => match key.code {
             KeyCode::Esc => {}
@@ -93,6 +97,11 @@ fn board_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') => {
             if let Some(path) = selected(app) {
                 app.toggle_mark(path);
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(path) = selected(app) {
+                app.open_repo_view(&path);
             }
         }
         KeyCode::Char('a') => app.press_mark(MarkBy::All),
@@ -221,6 +230,16 @@ pub fn on_mouse(app: &mut App, mouse: MouseEvent) {
         }
         return;
     }
+    if app.repo_view.is_some() {
+        let kind = match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => super::repo::MouseAt::Click,
+            MouseEventKind::ScrollDown => super::repo::MouseAt::Down,
+            MouseEventKind::ScrollUp => super::repo::MouseAt::Up,
+            _ => return,
+        };
+        super::repo::mouse(app, mouse.column, mouse.row, kind);
+        return;
+    }
     if !app.config.output_hidden && contains(app.gui.output_area, mouse.column, mouse.row) {
         output_mouse(app, mouse);
         return;
@@ -249,7 +268,19 @@ pub fn on_mouse(app: &mut App, mouse: MouseEvent) {
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(path) = row_at(app, mouse.column, mouse.row) {
                 app.gui.selected = Some(path.clone());
-                app.toggle_mark(path);
+                app.toggle_mark(path.clone());
+                // The second click of a double click marks back, as in the
+                // window, and opens the repository.
+                let now = std::time::Instant::now();
+                let double = app.gui.last_click.as_ref().is_some_and(|(last, at)| {
+                    *last == path && now.duration_since(*at) < DOUBLE_CLICK
+                });
+                if double {
+                    app.gui.last_click = None;
+                    app.open_repo_view(&path);
+                } else {
+                    app.gui.last_click = Some((path, now));
+                }
             }
         }
         MouseEventKind::Down(MouseButton::Right) => {

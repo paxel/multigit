@@ -726,3 +726,131 @@ fn the_card_menu_hides_or_removes_the_marked_rows() {
     pick(&mut app, "Remove from board");
     assert!(app.cards.is_empty());
 }
+
+/// An app with one row `alpha` whose repository view has changed files and
+/// one commit.
+fn repo_app() -> (App, Arc<FakeBackend>) {
+    use crate::domain::details::{ChangeKind, Details, FileChange, parse_log};
+    let backend = Arc::new(FakeBackend::default());
+    *backend.details.lock().unwrap() = Some(Details {
+        files: vec![
+            FileChange {
+                path: "src/main.rs".into(),
+                kind: ChangeKind::Modified,
+            },
+            FileChange {
+                path: "src/ui/deep/new.rs".into(),
+                kind: ChangeKind::Added,
+            },
+            FileChange {
+                path: "notes.txt".into(),
+                kind: ChangeKind::Added,
+            },
+        ],
+        commits: parse_log(
+            "aaaabbbb\taaaabbb\tAda Lovelace\t1700000000\t2023-11-14 22:13\t\tFix the thing\n",
+        ),
+        branches: Vec::new(),
+    });
+    let mut app = app_on_front::<Tui>(backend.clone(), Arc::new(FakeDesktop::default()), None);
+    app.cards
+        .push(card("alpha", Counts::default(), Upstream::None));
+    (app, backend)
+}
+
+fn open_view(app: &mut App) {
+    press(app, KeyCode::Enter);
+    crate::app::tests::settle(app, |app| {
+        app.repo_view.as_ref().is_some_and(|v| v.details.is_some())
+    });
+}
+
+fn settle_diff(app: &mut App) {
+    crate::app::tests::settle(app, |app| {
+        app.repo_view.as_ref().is_some_and(|v| v.diff.is_some())
+    });
+}
+
+#[test]
+fn enter_opens_the_repository_view_on_its_files_as_a_tree() {
+    let (mut app, _) = repo_app();
+    app.cards[0].probe = Some(Ok(snapshot(
+        Counts {
+            modified: 1,
+            ..Counts::default()
+        },
+        Upstream::None,
+        &["main"],
+    )));
+    open_view(&mut app);
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, " 1 Files "));
+    assert!(shown(&lines, " Changed files (3) "));
+    assert!(shown(&lines, "\u{25be} src/"));
+    assert!(shown(&lines, "M main.rs"));
+    assert!(shown(&lines, "Pick a file to see its changes."));
+    press(&mut app, KeyCode::Enter);
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, "\u{25b8} src/"), "Enter folds the folder");
+    assert!(!shown(&lines, "M main.rs"));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.repo_view.is_none());
+}
+
+#[test]
+fn a_picked_file_shows_its_diff_and_y_copies_it() {
+    let (mut app, _) = repo_app();
+    app.cards[0].probe = Some(Ok(snapshot(
+        Counts {
+            modified: 1,
+            ..Counts::default()
+        },
+        Upstream::None,
+        &["main"],
+    )));
+    open_view(&mut app);
+    press(&mut app, KeyCode::Char('G'));
+    press(&mut app, KeyCode::Enter);
+    settle_diff(&mut app);
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, "modified src/main.rs"));
+    assert!(shown(&lines, "+new"));
+    press(&mut app, KeyCode::Char('y'));
+    assert_eq!(app.gui.copies.len(), 1);
+    assert!(app.gui.copies[0].contains("+new"));
+}
+
+#[test]
+fn number_keys_switch_tabs_and_brackets_go_back_and_forward() {
+    let (mut app, _) = repo_app();
+    open_view(&mut app);
+    let tab = |app: &App| app.repo_view.as_ref().unwrap().tab;
+    assert_eq!(
+        tab(&app),
+        crate::domain::details::RepoTab::Commits,
+        "a clean repository"
+    );
+    press(&mut app, KeyCode::Char('1'));
+    assert_eq!(tab(&app), crate::domain::details::RepoTab::Files);
+    press(&mut app, KeyCode::Char('['));
+    assert_eq!(tab(&app), crate::domain::details::RepoTab::Commits);
+    press(&mut app, KeyCode::Char(']'));
+    assert_eq!(tab(&app), crate::domain::details::RepoTab::Files);
+}
+
+#[test]
+fn a_double_click_on_a_row_opens_it_and_keeps_its_mark() {
+    let (mut app, _) = repo_app();
+    screen(&mut app, 100, 24);
+    let (y, _) = app.gui.rows_at[0].clone();
+    let click = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 5,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    };
+    keys::on_mouse(&mut app, click);
+    keys::on_mouse(&mut app, click);
+    assert!(app.repo_view.is_some());
+    assert!(app.marked.is_empty());
+}

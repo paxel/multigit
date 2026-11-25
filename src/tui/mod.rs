@@ -12,6 +12,7 @@ pub mod favorites;
 pub mod folders;
 pub mod keys;
 pub mod output;
+pub mod repo;
 pub mod state;
 pub mod widgets;
 

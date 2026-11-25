@@ -58,6 +58,7 @@ pub fn card_menu(app: &App, path: &Path) -> Menu {
             ));
         }
     }
+    items.push(Item::new("Open", Action::Open(path.to_path_buf())));
     items.push(Item::new("Hide", Action::Hide(targets.clone())));
     items.push(Item::new("Remove from board", Action::Remove(targets)));
     items.extend(copy_items(app, path));

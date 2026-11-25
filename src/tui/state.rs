@@ -4,6 +4,7 @@ use super::App;
 use super::cli::Cli;
 use super::widgets::Menu;
 use ratatui::layout::Rect;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// The terminal's own state: selection, what has the keys, what was drawn
@@ -32,6 +33,14 @@ pub struct Tui {
     pub menu_rows: Vec<(u16, usize)>,
     /// The command line.
     pub cli: Cli,
+    /// The folded sections of the output panel: run and repository.
+    pub folded: HashSet<(u64, PathBuf)>,
+    /// The output panel's cursor line; `None` follows the newest line.
+    pub output_cursor: Option<usize>,
+    /// The output panel's lines as last drawn, its frame left out.
+    pub output_area: Rect,
+    /// The first output line drawn.
+    pub output_top: usize,
 }
 
 /// What has the keys.
@@ -46,6 +55,8 @@ pub enum Mode {
     Menu(Menu),
     /// The command line.
     Command,
+    /// The output panel.
+    Output,
 }
 
 impl Default for Tui {
@@ -61,6 +72,10 @@ impl Default for Tui {
             mode: Mode::Board,
             menu_rows: Vec::new(),
             cli: Cli::default(),
+            folded: HashSet::new(),
+            output_cursor: None,
+            output_area: Rect::default(),
+            output_top: 0,
         }
     }
 }

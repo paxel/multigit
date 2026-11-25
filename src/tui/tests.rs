@@ -365,3 +365,69 @@ fn tab_completes_a_branch_of_the_marked_rows() {
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.gui.cli.input.text, "switch feature-b ");
 }
+
+/// An app whose one marked row ran `status`, settled.
+fn ran_status() -> (App, Arc<FakeDesktop>) {
+    let backend = Arc::new(FakeBackend::default());
+    let desktop = Arc::new(FakeDesktop::default());
+    let mut app = app_on_front::<Tui>(backend, desktop.clone(), None);
+    app.cards
+        .push(card("alpha", Counts::default(), Upstream::None));
+    app.marked.insert(PathBuf::from("/repos/alpha"));
+    app.run_cli_line("status");
+    crate::app::tests::settle(&mut app, |app| {
+        app.log.last().is_some_and(|run| run.outcome().is_some())
+    });
+    (app, desktop)
+}
+
+#[test]
+fn the_output_panel_shows_each_run_and_section() {
+    let (mut app, _) = ran_status();
+    let lines = screen(&mut app, 100, 40);
+    assert!(shown(&lines, " output "));
+    assert!(shown(&lines, "$ git status"));
+    assert!(shown(&lines, "\u{25be} alpha  exit 0"));
+    press(&mut app, KeyCode::Char('o'));
+    assert!(app.config.output_hidden);
+    let lines = screen(&mut app, 100, 40);
+    assert!(!shown(&lines, "$ git status"));
+    press(&mut app, KeyCode::Char('o'));
+    assert!(!app.config.output_hidden);
+}
+
+#[test]
+fn tab_focuses_the_output_where_enter_folds_and_e_opens_the_pager() {
+    let (mut app, desktop) = ran_status();
+    screen(&mut app, 100, 40);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.gui.mode, super::state::Mode::Output);
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Enter);
+    let lines = screen(&mut app, 100, 40);
+    assert!(shown(&lines, "\u{25b8} alpha  exit 0"), "folded");
+    press(&mut app, KeyCode::Char('e'));
+    assert_eq!(
+        desktop.files.lock().unwrap().len(),
+        1,
+        "the run went to the pager"
+    );
+    press(&mut app, KeyCode::Char('C'));
+    assert!(app.log.is_empty());
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.gui.mode, super::state::Mode::Board);
+}
+
+#[test]
+fn the_hidden_panel_marks_news_on_the_command_line() {
+    let (mut app, _) = ran_status();
+    app.config.output_hidden = true;
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "\u{2022} git"));
+    app.config.output_hidden = false;
+    screen(&mut app, 100, 24);
+    app.config.output_hidden = true;
+    let lines = screen(&mut app, 100, 24);
+    assert!(!shown(&lines, "\u{2022} git"), "the panel showed it");
+}

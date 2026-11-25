@@ -283,6 +283,8 @@ Plain keys act on the board; `?` shows them all:
 | /                 | Type into the filter field; Enter or Esc leaves it     |
 | s                 | Sort                                                   |
 | :                 | Go to the command line; Esc goes back to the board     |
+| o                 | Hide or show the output panel                          |
+| Tab               | Go to the output panel and back                        |
 | ?                 | Show or hide the keys                                  |
 | q, Ctrl+C         | Quit                                                   |
 
@@ -294,7 +296,15 @@ The command line works as in the window, with the same keys (see
 [Command line keys](#command-line-keys)): Enter runs the line in the marked
 rows, Tab completes, Ctrl+R searches the history. A shell line, or a
 destructive command for more than one repository, asks first in a box:
-Enter runs, Esc cancels. In the terminal multigit writes no menu entry and no
+Enter runs, Esc cancels.
+
+The output panel shows the last commands, a section per repository with
+its exit code. In the panel `j` and `k` move, Enter (or a click on the
+header) folds a section, `C` clears the output, and `e` opens the command's
+output, `E` the section's, in `$PAGER` (`less` when it is not set); the
+board comes back when the pager ends. While the panel is hidden, a dot in
+front of the command line tells about the last command: running, then green
+or red. In the terminal multigit writes no menu entry and no
 icon. With `RUST_LOG` set, its log goes to `tui.log` in
 `~/.local/state/multigit` instead of the screen.
 

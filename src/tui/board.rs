@@ -3,6 +3,7 @@
 
 use super::App;
 use super::cli;
+use super::output;
 use super::state::{Mode, selected_index};
 use super::widgets::Menu;
 use crate::app::{Card, MarkBy};
@@ -18,7 +19,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 
 /// Lines of the detail strip, its frame included.
-const DETAIL_HEIGHT: u16 = 9;
+const DETAIL_HEIGHT: u16 = 8;
 
 /// The keys, as the help shows them.
 pub const HELP: &[(&str, &str)] = &[
@@ -30,6 +31,11 @@ pub const HELP: &[(&str, &str)] = &[
     ("A", "show all again"),
     ("/", "filter by name (Enter, Esc: done)"),
     ("s", "sort"),
+    ("o", "hide or show the output panel"),
+    ("Tab", "to the output panel and back"),
+    ("  j / k, Enter", "move / fold a section (a click too)"),
+    ("  e / E", "open the command / the section in $PAGER"),
+    ("  C", "clear the output"),
     (":", "command line: git arguments, ! for a shell line"),
     ("  Tab", "complete; in the list: next"),
     ("  Up / Down", "history entries with the typed text"),
@@ -45,10 +51,17 @@ pub const HELP: &[(&str, &str)] = &[
 
 /// Draw everything.
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let [top, table, detail, command, status] = Layout::vertical([
+    // Nothing to show yet: the panel takes no room from the table.
+    let panel = if app.config.output_hidden || app.log.is_empty() {
+        0
+    } else {
+        (frame.area().height / 4).max(5)
+    };
+    let [top, table, detail, out, command, status] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(3),
         Constraint::Length(DETAIL_HEIGHT),
+        Constraint::Length(panel),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -63,6 +76,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_table(frame, app, table);
     draw_detail(frame, app, detail);
     frame.render_widget(Paragraph::new(status_line(app)), status);
+    if panel > 0 {
+        draw_output(frame, app, out);
+    } else {
+        app.gui.output_area = Rect::default();
+    }
     draw_cli(frame, app, command);
     if let Mode::Menu(menu) = &app.gui.mode {
         let menu = menu.clone();
@@ -345,10 +363,16 @@ pub fn detail_lines(app: &App, card: &Card) -> Vec<Line<'static>> {
             Span::raw(format!("{} {}", commit.short, commit.subject)),
         ]));
     }
-    lines.push(Line::from(vec![
+    let mut status = vec![
         label("status"),
         Span::raw(tree_text(snap)),
-    ]));
+        Span::raw(format!("   {}", sync_text(snap))),
+    ];
+    let (last, style) = last_text(card, app.is_busy(&card.path));
+    if !last.is_empty() {
+        status.push(Span::styled(format!("   last command: {last}"), style));
+    }
+    lines.push(Line::from(status));
     let mut remote = vec![label("remote")];
     match snap.remote() {
         Some(r) => remote.push(Span::raw(short_url(&r.url))),
@@ -359,12 +383,6 @@ pub fn detail_lines(app: &App, card: &Card) -> Vec<Line<'static>> {
         remote.push(Span::styled(format!("  push: {}", push.name), warn()));
     }
     lines.push(Line::from(remote));
-    let mut sync = vec![label("sync"), Span::raw(sync_text(snap))];
-    let (last, style) = last_text(card, app.is_busy(&card.path));
-    if !last.is_empty() {
-        sync.push(Span::styled(format!("  last command: {last}"), style));
-    }
-    lines.push(Line::from(sync));
     if let Some(error) = &card.fetch_error {
         lines.push(Line::styled(error.card_text(), bad()));
     }
@@ -487,11 +505,25 @@ pub fn draw_menu(frame: &mut Frame, menu: &Menu) -> Vec<(u16, usize)> {
 fn draw_cli(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.gui.mode == Mode::Command;
     let text = app.gui.cli.input.text.clone();
-    let label = cli::label(&text);
-    let mut spans = vec![
-        Span::styled(label.clone(), Style::new().add_modifier(Modifier::BOLD)),
-        Span::raw(" "),
-    ];
+    let mut label = cli::label(&text);
+    let mut spans = Vec::new();
+    if app.config.output_hidden
+        && let Some(outcome) = app.unseen_outcome()
+    {
+        // The hidden panel has news: running, then green or red.
+        let color = match outcome {
+            None => Color::Yellow,
+            Some(true) => Color::Green,
+            Some(false) => Color::Red,
+        };
+        spans.push(Span::styled("\u{2022} ", Style::new().fg(color)));
+        label.insert_str(0, "  ");
+    }
+    spans.push(Span::styled(
+        cli::label(&text),
+        Style::new().add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::raw(" "));
     if text.is_empty() && !focused {
         let hint = if app.marked_repos().is_empty() {
             "mark repositories to run commands"
@@ -618,4 +650,51 @@ fn draw_confirm(frame: &mut Frame, app: &App) {
             .block(Block::bordered().title(heading)),
         area,
     );
+}
+
+fn draw_output(frame: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.gui.mode == Mode::Output;
+    let hint = if focused {
+        " output  Tab: board  e/E: pager  C: clear "
+    } else {
+        " output  Tab: focus  o: hide "
+    };
+    let border = if focused {
+        Style::new().fg(Color::Cyan)
+    } else {
+        dim()
+    };
+    let block = Block::new()
+        .borders(Borders::TOP)
+        .border_style(border)
+        .title(hint);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let all = output::lines(app);
+    let height = usize::from(inner.height);
+    let at = output::cursor(app, all.len());
+    // The cursor line stays in view; without a cursor the newest lines show.
+    let mut top = app.gui.output_top.min(all.len().saturating_sub(height));
+    if app.gui.output_cursor.is_none() {
+        top = all.len().saturating_sub(height);
+    } else if at < top {
+        top = at;
+    } else if at >= top + height {
+        top = at + 1 - height;
+    }
+    let lines: Vec<Line> = all
+        .iter()
+        .enumerate()
+        .skip(top)
+        .take(height)
+        .map(|(i, line)| line.to_line(focused && i == at))
+        .collect();
+    let empty = lines.is_empty();
+    frame.render_widget(Paragraph::new(lines), inner);
+    if empty {
+        frame.render_widget(Paragraph::new("No commands yet.").style(dim()), inner);
+    }
+    app.gui.output_top = top;
+    app.gui.output_area = inner;
+    app.output_shown();
 }

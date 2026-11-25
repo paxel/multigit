@@ -3,6 +3,7 @@
 use super::App;
 use super::actions::{Action, perform};
 use super::cli;
+use super::output;
 use super::state::{Mode, move_selection, select_end, selected};
 use super::widgets::{Item, Menu, MenuKey};
 use crate::app::MarkBy;
@@ -37,6 +38,11 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
     }
     match std::mem::take(&mut app.gui.mode) {
         Mode::Board => board_key(app, key),
+        Mode::Output => {
+            if output::key(app, key) {
+                app.gui.mode = Mode::Output;
+            }
+        }
         Mode::Command => {
             if cli::key(app, key) == cli::Outcome::Stay {
                 app.gui.mode = Mode::Command;
@@ -76,6 +82,10 @@ fn board_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('P') => app.filter_by(MarkBy::Ahead),
         KeyCode::Char('/') => app.gui.mode = Mode::Filter,
         KeyCode::Char(':') => app.gui.mode = Mode::Command,
+        KeyCode::Char('o') => app.config.output_hidden = !app.config.output_hidden,
+        KeyCode::Tab if !app.config.output_hidden && !app.log.is_empty() => {
+            app.gui.mode = Mode::Output;
+        }
         KeyCode::Char('s') => app.gui.mode = Mode::Menu(sort_menu(app)),
         _ => {}
     }
@@ -131,6 +141,10 @@ pub fn on_mouse(app: &mut App, mouse: MouseEvent) {
         }
         return;
     }
+    if !app.config.output_hidden && contains(app.gui.output_area, mouse.column, mouse.row) {
+        output_mouse(app, mouse);
+        return;
+    }
     match mouse.kind {
         MouseEventKind::ScrollDown => move_selection(app, 1),
         MouseEventKind::ScrollUp => move_selection(app, -1),
@@ -155,4 +169,34 @@ pub fn row_at(app: &App, column: u16, row: u16) -> Option<std::path::PathBuf> {
         .iter()
         .find(|(y, _)| *y == row)
         .map(|(_, path)| path.clone())
+}
+
+fn contains(area: ratatui::layout::Rect, column: u16, row: u16) -> bool {
+    column >= area.x
+        && column < area.x.saturating_add(area.width)
+        && row >= area.y
+        && row < area.y.saturating_add(area.height)
+}
+
+/// The wheel scrolls the output panel; a click on a section's header folds
+/// it.
+fn output_mouse(app: &mut App, mouse: MouseEvent) {
+    let all = output::lines(app);
+    let at = output::cursor(app, all.len());
+    let last = all.len().saturating_sub(1);
+    match mouse.kind {
+        MouseEventKind::ScrollDown => app.gui.output_cursor = Some(at.saturating_add(3).min(last)),
+        MouseEventKind::ScrollUp => app.gui.output_cursor = Some(at.saturating_sub(3)),
+        MouseEventKind::Down(MouseButton::Left) => {
+            let index =
+                app.gui.output_top + usize::from(mouse.row.saturating_sub(app.gui.output_area.y));
+            if let Some(line) = all.get(index) {
+                app.gui.output_cursor = Some(index);
+                if matches!(line, output::OutLine::Section { .. }) {
+                    output::toggle_fold(app, line);
+                }
+            }
+        }
+        _ => {}
+    }
 }

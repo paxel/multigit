@@ -7,18 +7,21 @@ pub mod board;
 pub mod cli;
 pub mod desktop;
 pub mod keys;
+pub mod output;
 pub mod state;
 pub mod widgets;
 
 #[cfg(test)]
 mod tests;
 
+use desktop::{Foreground, TerminalDesktop};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
     self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
 };
 use ratatui::crossterm::execute;
 use std::io;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use state::Tui;
@@ -30,20 +33,35 @@ pub type App = crate::app::App<Tui>;
 /// command's output) show at least this often.
 const FRAME: Duration = Duration::from_millis(100);
 
-/// Run the terminal front end until the user quits.
-pub fn run(mut app: App) -> io::Result<()> {
+/// Run the terminal front end until the user quits. `desktop` is the one
+/// `app` was made with: what it is asked to open runs in this terminal.
+pub fn run(mut app: App, desktop: Arc<TerminalDesktop>) -> io::Result<()> {
     app.silent = true;
-    // `init` puts the terminal into raw mode and the alternate screen and
-    // restores it on a panic too.
-    let mut terminal = ratatui::init();
-    execute!(io::stdout(), EnableMouseCapture, EnableFocusChange)?;
-    let result = run_loop(&mut terminal, &mut app);
-    let _ = execute!(io::stdout(), DisableMouseCapture, DisableFocusChange);
-    ratatui::restore();
+    let mut terminal = enter()?;
+    let result = run_loop(&mut terminal, &mut app, &desktop);
+    leave();
     result
 }
 
-fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
+/// Take the terminal: raw mode, the alternate screen, mouse and focus
+/// reports. `init` restores it on a panic too.
+fn enter() -> io::Result<DefaultTerminal> {
+    let terminal = ratatui::init();
+    execute!(io::stdout(), EnableMouseCapture, EnableFocusChange)?;
+    Ok(terminal)
+}
+
+/// Give the terminal back as it was.
+fn leave() {
+    let _ = execute!(io::stdout(), DisableMouseCapture, DisableFocusChange);
+    ratatui::restore();
+}
+
+fn run_loop(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    desktop: &TerminalDesktop,
+) -> io::Result<()> {
     while !app.gui.quit {
         app.handle_events();
         let next = app.tick(Instant::now());
@@ -51,8 +69,31 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
         if event::poll(next.min(FRAME))? {
             on_event(app, event::read()?);
         }
+        for program in desktop.take() {
+            leave();
+            let ran = run_foreground(&program);
+            *terminal = enter()?;
+            terminal.clear()?;
+            if let Err(e) = ran {
+                app.toast(format!("Cannot start {}: {e}", program.what()));
+            }
+        }
     }
     Ok(())
+}
+
+/// Run `program` in this terminal and wait for it.
+fn run_foreground(program: &Foreground) -> io::Result<()> {
+    let command = program.command(std::env::var_os("PAGER"));
+    let Some((name, args)) = command.split_first() else {
+        return Err(io::Error::other("no program"));
+    };
+    let mut process = std::process::Command::new(name);
+    process.args(args);
+    if let Some(dir) = program.dir() {
+        process.current_dir(dir);
+    }
+    process.status().map(|_| ())
 }
 
 /// One event of the terminal.

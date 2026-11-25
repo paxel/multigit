@@ -74,15 +74,16 @@ fn run_terminal(
     history: multigit::domain::history::History,
 ) -> Result<(), String> {
     let backend = Arc::new(GitBackend::default());
+    let desktop = Arc::new(TerminalDesktop::default());
     let app = multigit::tui::App::new(
         config,
         paths,
         history,
         backend,
-        Arc::new(TerminalDesktop),
+        desktop.clone(),
         Arc::new(|| {}),
     );
-    multigit::tui::run(app).map_err(|e| e.to_string())
+    multigit::tui::run(app, desktop).map_err(|e| e.to_string())
 }
 
 fn run_window(

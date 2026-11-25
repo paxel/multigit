@@ -42,6 +42,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("x, right click", "the row's menu: copy, and more"),
     ("f", "favorites: show, edit, add marked, delete"),
     ("+", "add a repository or scan a folder"),
+    ("S", "Settings and About"),
     ("1 .. 9", "run that card button on the row"),
     ("m", "run a card button on all marked rows"),
     ("t", "a shell in the row's folder (exit: back)"),
@@ -65,7 +66,9 @@ pub const HELP: &[(&str, &str)] = &[
 
 /// Draw everything.
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    if app.repo_view.is_some() {
+    if app.settings_open {
+        super::settings::draw(frame, app);
+    } else if app.repo_view.is_some() {
         super::repo::draw(frame, app);
     } else {
         draw_board(frame, app);

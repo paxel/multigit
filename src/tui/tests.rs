@@ -992,3 +992,118 @@ fn the_graph_tab_draws_the_branches_and_unfolds_a_run() {
         "the old branches line"
     );
 }
+
+/// Put the Settings cursor on the first row that is `row`.
+fn settings_to(app: &mut App, row: super::settings::Row) {
+    let rows = super::settings::rows(app);
+    let at = rows.iter().position(|r| *r == row).unwrap();
+    app.gui.settings_cursor = at;
+}
+
+#[test]
+fn settings_change_values_with_the_arrows_and_leave_out_sounds_and_the_terminal() {
+    use super::settings::Row;
+    let mut app = board_app();
+    press(&mut app, KeyCode::Char('S'));
+    let lines = screen(&mut app, 100, 40);
+    assert!(shown(&lines, " Settings "));
+    assert!(shown(&lines, "Parallel git processes"));
+    assert!(!shown(&lines, "Sounds"));
+    assert!(!shown(&lines, "music"));
+    assert!(!shown(&lines, "Terminal command"));
+    let before = app.config.concurrency;
+    settings_to(&mut app, Row::Concurrency);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.config.concurrency, before + 1);
+    settings_to(&mut app, Row::Theme);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.config.theme, crate::domain::config::Theme::Light);
+    settings_to(&mut app, Row::SingleMatch);
+    let single = app.config.auto_insert_single_match;
+    press(&mut app, KeyCode::Enter);
+    assert_ne!(app.config.auto_insert_single_match, single);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.settings_open);
+}
+
+#[test]
+fn settings_edit_add_move_and_remove_card_buttons() {
+    use super::settings::Row;
+    let mut app = board_app();
+    let count = app.config.buttons.len();
+    press(&mut app, KeyCode::Char('S'));
+    settings_to(&mut app, Row::AddButton);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.config.buttons.len(), count + 1);
+    settings_to(&mut app, Row::Button(count));
+    press(&mut app, KeyCode::Enter);
+    ctrl(&mut app, 'u');
+    type_line(&mut app, "log");
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('a'));
+    ctrl(&mut app, 'u');
+    type_line(&mut app, "log --oneline -5");
+    press(&mut app, KeyCode::Enter);
+    let last = app.config.buttons.last().unwrap();
+    assert_eq!(
+        (last.label.as_str(), last.args.as_str()),
+        ("log", "log --oneline -5")
+    );
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.config.buttons[count - 1].label, "log", "moved up");
+    press(&mut app, KeyCode::Char('d'));
+    assert_eq!(app.config.buttons.len(), count);
+    assert!(app.config.buttons.iter().all(|b| b.label != "log"));
+    settings_to(&mut app, Row::AddPreset);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.config.buttons.len(), count + 1, "a preset");
+}
+
+#[test]
+fn hidden_repositories_are_unhidden_in_settings() {
+    use super::settings::Row;
+    let mut app = board_app();
+    app.hide_cards(&[PathBuf::from("/repos/alpha"), PathBuf::from("/repos/beta")]);
+    press(&mut app, KeyCode::Char('S'));
+    let lines = screen(&mut app, 100, 40);
+    assert!(shown(&lines, "Hidden repositories (2)"));
+    settings_to(&mut app, Row::Hidden(PathBuf::from("/repos/alpha")));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.config.hidden, vec![PathBuf::from("/repos/beta")]);
+    settings_to(&mut app, Row::UnhideAll);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.config.hidden.is_empty());
+}
+
+#[test]
+fn about_copies_its_links_and_lists_the_licenses() {
+    use super::settings::Row;
+    let mut app = board_app();
+    press(&mut app, KeyCode::Char('S'));
+    settings_to(&mut app, Row::About);
+    press(&mut app, KeyCode::Enter);
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, " About multigit "));
+    assert!(shown(&lines, crate::domain::about::VERSION));
+    assert!(shown(&lines, "https://github.com/paxel/multigit"));
+    settings_to(
+        &mut app,
+        Row::Link(
+            "Write the developer",
+            crate::domain::about::DEVELOPER_MAIL.to_owned(),
+        ),
+    );
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.gui.copies,
+        vec![crate::domain::about::DEVELOPER_MAIL.to_owned()]
+    );
+    settings_to(&mut app, Row::Licenses);
+    press(&mut app, KeyCode::Enter);
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, "ratatui"));
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.settings_page, crate::app::SettingsPage::Settings);
+}

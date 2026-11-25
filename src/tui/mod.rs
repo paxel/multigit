@@ -15,6 +15,7 @@ pub mod graph;
 pub mod keys;
 pub mod output;
 pub mod repo;
+pub mod settings;
 pub mod state;
 pub mod widgets;
 

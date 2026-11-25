@@ -48,6 +48,8 @@ pub enum Action {
     Open(PathBuf),
     /// Show this commit in the repository view.
     GoToCommit(String),
+    /// A card button with this label and these arguments at the end.
+    AddButton(String, String),
     /// Off the board; nothing on disk is touched.
     Remove(Vec<PathBuf>),
     /// Off the board and remembered, so a scan leaves them out.
@@ -61,6 +63,10 @@ pub enum PromptFor {
     NewBranch(PathBuf),
     /// A folder to add: a repository, or one to scan for repositories.
     AddFolder,
+    /// The label of card button `n`.
+    ButtonLabel(usize),
+    /// The git arguments of card button `n`.
+    ButtonArgs(usize),
 }
 
 /// A question that wants a line of text.
@@ -77,6 +83,16 @@ pub fn answer(app: &mut App, purpose: PromptFor, text: &str) {
         PromptFor::NewBranch(path) => {
             if let Some(command) = new_branch_command(text) {
                 app.start_run(&command, vec![path]);
+            }
+        }
+        PromptFor::ButtonLabel(index) => {
+            if let Some(button) = app.config.buttons.get_mut(index) {
+                button.label = text.to_owned();
+            }
+        }
+        PromptFor::ButtonArgs(index) => {
+            if let Some(button) = app.config.buttons.get_mut(index) {
+                button.args = text.to_owned();
             }
         }
         PromptFor::AddFolder => {
@@ -151,6 +167,10 @@ pub fn perform(app: &mut App, action: Action) {
         Action::RemoveFromFavorite(index, repos) => app.remove_from_favorite(index, &repos),
         Action::DeleteFavorite(index) => app.delete_favorite(index),
         Action::Open(path) => app.open_repo_view(&path),
+        Action::AddButton(label, args) => app
+            .config
+            .buttons
+            .push(crate::domain::config::ButtonDef::new(&label, &args)),
         Action::GoToCommit(hash) => {
             app.select_in_repo_view(crate::domain::details::DiffTarget::Commit(hash));
         }

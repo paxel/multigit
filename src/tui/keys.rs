@@ -56,6 +56,7 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
         return;
     }
     match std::mem::take(&mut app.gui.mode) {
+        Mode::Board if app.settings_open => super::settings::key(app, key),
         Mode::Board if app.repo_view.is_some() => super::repo::key(app, key),
         Mode::Board => board_key(app, key),
         Mode::Prompt(mut prompt) => match key.code {
@@ -137,6 +138,10 @@ fn board_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char(c @ '1'..='9') => run_button(app, c),
         KeyCode::Char('m') => app.gui.mode = Mode::Menu(marked_buttons_menu(app)),
+        KeyCode::Char('S') => {
+            app.settings_open = true;
+            app.settings_page = crate::app::SettingsPage::Settings;
+        }
         KeyCode::Char('+') => {
             app.gui.mode = Mode::Prompt(Prompt {
                 title: "add a repository, or a folder to scan (Tab completes)".to_owned(),
@@ -243,6 +248,9 @@ pub fn on_mouse(app: &mut App, mouse: MouseEvent) {
                 None => app.gui.mode = Mode::Board,
             }
         }
+        return;
+    }
+    if app.settings_open {
         return;
     }
     if app.repo_view.is_some() {

@@ -66,6 +66,8 @@ pub struct Tui {
     pub pane_cursor: usize,
     /// How far the key help is scrolled.
     pub help_scroll: usize,
+    /// The Settings page's cursor row.
+    pub settings_cursor: usize,
 }
 
 /// What has the keys.
@@ -115,6 +117,7 @@ impl Default for Tui {
             pane_focus: false,
             pane_cursor: 0,
             help_scroll: 0,
+            settings_cursor: 0,
         }
     }
 }

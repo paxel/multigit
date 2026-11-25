@@ -287,6 +287,7 @@ Plain keys act on the board; `?` shows them all:
 | x, right click    | The row's menu                                         |
 | f                 | The favorites                                          |
 | +                 | Add a repository, or the ones below a folder           |
+| S                 | Settings and About                                     |
 | 1 … 9             | Run that card button on the row                        |
 | m                 | Run a card button on all marked rows                   |
 | t                 | A shell in the row's folder; `exit` returns            |

@@ -1,7 +1,11 @@
 //! What keys and the mouse do in the terminal.
 
 use super::App;
-use super::state::{move_selection, select_end};
+use super::actions::{Action, perform};
+use super::state::{Mode, move_selection, select_end, selected};
+use super::widgets::{Item, Menu, MenuKey};
+use crate::app::MarkBy;
+use crate::domain::board::SortKey;
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -22,7 +26,15 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
             return;
         }
     }
-    board_key(app, key);
+    match std::mem::take(&mut app.gui.mode) {
+        Mode::Board => board_key(app, key),
+        Mode::Filter => filter_key(app, key),
+        Mode::Menu(mut menu) => match menu.key(key) {
+            MenuKey::Stay => app.gui.mode = Mode::Menu(menu),
+            MenuKey::Close => {}
+            MenuKey::Pick(action) => perform(app, action),
+        },
+    }
 }
 
 fn board_key(app: &mut App, key: KeyEvent) {
@@ -35,8 +47,50 @@ fn board_key(app: &mut App, key: KeyEvent) {
         KeyCode::PageUp => move_selection(app, -page(app)),
         KeyCode::Char('g') | KeyCode::Home => select_end(app, false),
         KeyCode::Char('G') | KeyCode::End => select_end(app, true),
+        KeyCode::Char(' ') => {
+            if let Some(path) = selected(app) {
+                app.toggle_mark(path);
+            }
+        }
+        KeyCode::Char('a') => app.press_mark(MarkBy::All),
+        KeyCode::Char('d') => app.press_mark(MarkBy::Dirty),
+        KeyCode::Char('b') => app.press_mark(MarkBy::Behind),
+        KeyCode::Char('p') => app.press_mark(MarkBy::Ahead),
+        KeyCode::Char('A') => app.status_filter = None,
+        KeyCode::Char('D') => app.filter_by(MarkBy::Dirty),
+        KeyCode::Char('B') => app.filter_by(MarkBy::Behind),
+        KeyCode::Char('P') => app.filter_by(MarkBy::Ahead),
+        KeyCode::Char('/') => app.gui.mode = Mode::Filter,
+        KeyCode::Char('s') => app.gui.mode = Mode::Menu(sort_menu(app)),
         _ => {}
     }
+}
+
+fn filter_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter | KeyCode::Esc => return,
+        KeyCode::Backspace => {
+            app.filter.pop();
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => app.filter.clear(),
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => app.filter.push(c),
+        _ => {}
+    }
+    app.gui.mode = Mode::Filter;
+}
+
+/// The sort keys, the one in use selected.
+pub fn sort_menu(app: &App) -> Menu {
+    let items = SortKey::ALL
+        .iter()
+        .map(|&key| Item::new(key.label(), Action::Sort(key)))
+        .collect();
+    let mut menu = Menu::new("sort by", items);
+    menu.selected = SortKey::ALL
+        .iter()
+        .position(|&key| key == app.sort)
+        .unwrap_or(0);
+    menu
 }
 
 /// Rows of one page of the table.
@@ -46,12 +100,29 @@ fn page(app: &App) -> isize {
 
 /// A mouse event.
 pub fn on_mouse(app: &mut App, mouse: MouseEvent) {
+    if let Mode::Menu(menu) = &mut app.gui.mode {
+        if let MouseEventKind::Down(_) = mouse.kind {
+            let hit = app.gui.menu_rows.iter().find(|(y, _)| *y == mouse.row);
+            match hit {
+                Some(&(_, index)) => {
+                    menu.selected = index;
+                    if let Some(action) = menu.picked() {
+                        app.gui.mode = Mode::Board;
+                        perform(app, action);
+                    }
+                }
+                None => app.gui.mode = Mode::Board,
+            }
+        }
+        return;
+    }
     match mouse.kind {
         MouseEventKind::ScrollDown => move_selection(app, 1),
         MouseEventKind::ScrollUp => move_selection(app, -1),
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(path) = row_at(app, mouse.column, mouse.row) {
-                app.gui.selected = Some(path);
+                app.gui.selected = Some(path.clone());
+                app.toggle_mark(path);
             }
         }
         _ => {}

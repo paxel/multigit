@@ -272,14 +272,22 @@ the terminal.
 
 Plain keys act on the board; `?` shows them all:
 
-| Key               | Action                         |
-|-------------------|--------------------------------|
-| j / k, arrows     | Select a row (the wheel too)   |
-| g / G, Home / End | First / last row               |
-| ?                 | Show or hide the keys          |
-| q, Ctrl+C         | Quit                           |
+| Key               | Action                                                 |
+|-------------------|--------------------------------------------------------|
+| j / k, arrows     | Select a row (the wheel too)                           |
+| g / G, Home / End | First / last row                                       |
+| space             | Mark or unmark the row                                 |
+| a, d, b, p        | Mark button all, dirty, behind, ahead (p for push)     |
+| D, B, P           | Show only the dirty, behind, ahead rows                |
+| A                 | Show all rows again                                    |
+| /                 | Type into the filter field; Enter or Esc leaves it     |
+| s                 | Sort                                                   |
+| ?                 | Show or hide the keys                                  |
+| q, Ctrl+C         | Quit                                                   |
 
-A click selects a row. In the terminal multigit writes no menu entry and no
+The mark keys work like the toolbar's buttons: the pressed one shows
+reversed, struck through when a second press marked the other rows. A click
+on a row selects and marks it. In the terminal multigit writes no menu entry and no
 icon. With `RUST_LOG` set, its log goes to `tui.log` in
 `~/.local/state/multigit` instead of the screen.
 

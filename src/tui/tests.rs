@@ -171,3 +171,83 @@ fn the_terminal_never_plays_sounds_or_music() {
     assert!(!app.music_plays());
     assert!(desktop.played.lock().unwrap().is_empty());
 }
+
+#[test]
+fn space_and_clicks_mark_rows_and_the_mark_keys_act_like_the_buttons() {
+    let mut app = board_app();
+    app.cards[1].probe = Some(Ok(snapshot(
+        Counts {
+            untracked: 1,
+            ..Counts::default()
+        },
+        Upstream::None,
+        &["main"],
+    )));
+    press(&mut app, KeyCode::Char(' '));
+    assert!(app.marked.contains(&PathBuf::from("/repos/alpha")));
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "1 marked"));
+    press(&mut app, KeyCode::Char('d'));
+    assert_eq!(app.marked_repos(), vec![PathBuf::from("/repos/beta")]);
+    press(&mut app, KeyCode::Char('d'));
+    assert_eq!(
+        app.marked_repos().len(),
+        2,
+        "a second press marks the others"
+    );
+    press(&mut app, KeyCode::Char('a'));
+    assert_eq!(app.marked_repos().len(), 3);
+    press(&mut app, KeyCode::Char('a'));
+    assert!(app.marked_repos().is_empty(), "a second all marks nothing");
+}
+
+#[test]
+fn the_status_filter_shows_only_the_fitting_rows() {
+    let mut app = board_app();
+    app.cards[2].probe = Some(Ok(snapshot(
+        Counts {
+            staged: 1,
+            ..Counts::default()
+        },
+        Upstream::None,
+        &["main"],
+    )));
+    press(&mut app, KeyCode::Char('D'));
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "showing dirty (1)"));
+    assert!(!shown(&lines, "alpha"));
+    press(&mut app, KeyCode::Char('A'));
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "alpha"));
+}
+
+#[test]
+fn slash_types_into_the_filter_field() {
+    let mut app = board_app();
+    press(&mut app, KeyCode::Char('/'));
+    for c in "et".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "/et"));
+    assert!(shown(&lines, "beta"));
+    assert!(!shown(&lines, "alpha"));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.gui.mode, super::state::Mode::Board);
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.gui.quit, "keys act on the board again");
+}
+
+#[test]
+fn s_picks_a_sort_key_from_a_list() {
+    let mut app = board_app();
+    press(&mut app, KeyCode::Char('s'));
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, " sort by "));
+    assert!(shown(&lines, "dirty first"));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.sort, crate::domain::board::SortKey::Path);
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "sort: path"));
+}

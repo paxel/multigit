@@ -1,12 +1,13 @@
 //! What only the terminal front end keeps beside the board.
 
 use super::App;
+use super::widgets::Menu;
 use ratatui::layout::Rect;
 use std::path::PathBuf;
 
 /// The terminal's own state: selection, what has the keys, what was drawn
 /// where (for the mouse).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Tui {
     /// The user asked to quit.
     pub quit: bool,
@@ -23,6 +24,23 @@ pub struct Tui {
     pub offset: usize,
     /// The table's area as last drawn.
     pub table: Rect,
+    /// What has the keys.
+    pub mode: Mode,
+    /// Where the open menu's items were drawn: screen line and position
+    /// among the shown items.
+    pub menu_rows: Vec<(u16, usize)>,
+}
+
+/// What has the keys.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum Mode {
+    /// The board: plain keys are shortcuts.
+    #[default]
+    Board,
+    /// The filter field, which `app.filter` holds.
+    Filter,
+    /// A list to pick from.
+    Menu(Menu),
 }
 
 impl Default for Tui {
@@ -35,6 +53,8 @@ impl Default for Tui {
             rows_at: Vec::new(),
             offset: 0,
             table: Rect::default(),
+            mode: Mode::Board,
+            menu_rows: Vec::new(),
         }
     }
 }

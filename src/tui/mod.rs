@@ -2,10 +2,12 @@
 //! machine without a display, reached over SSH first. It drives the same
 //! [`crate::app::App`] as the window; only drawing and keys live here.
 
+pub mod actions;
 pub mod board;
 pub mod desktop;
 pub mod keys;
 pub mod state;
+pub mod widgets;
 
 #[cfg(test)]
 mod tests;

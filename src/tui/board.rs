@@ -2,8 +2,9 @@
 //! the selected row under it, and a status line.
 
 use super::App;
-use super::state::selected_index;
-use crate::app::Card;
+use super::state::{Mode, selected_index};
+use super::widgets::Menu;
+use crate::app::{Card, MarkBy};
 use crate::domain::naming::title;
 use crate::domain::remote::short_url;
 use crate::domain::repo::Snapshot;
@@ -21,6 +22,12 @@ const DETAIL_HEIGHT: u16 = 9;
 pub const HELP: &[(&str, &str)] = &[
     ("j / k, arrows", "select a row (the wheel too)"),
     ("g / G, Home / End", "first / last row"),
+    ("space, click", "mark or unmark the row"),
+    ("a d b p", "mark all / dirty / behind / ahead"),
+    ("D B P", "show only dirty / behind / ahead"),
+    ("A", "show all again"),
+    ("/", "filter by name (Enter, Esc: done)"),
+    ("s", "sort"),
     ("?", "show or hide this help"),
     ("q", "quit"),
 ];
@@ -28,22 +35,32 @@ pub const HELP: &[(&str, &str)] = &[
 /// Draw everything.
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [top, table, detail, status] = Layout::vertical([
-        Constraint::Length(1),
+        Constraint::Length(2),
         Constraint::Min(3),
         Constraint::Length(DETAIL_HEIGHT),
         Constraint::Length(1),
     ])
     .areas(frame.area());
-    frame.render_widget(Paragraph::new(toolbar_line(app)), top);
+    frame.render_widget(Paragraph::new(toolbar_lines(app)), top);
+    if app.gui.mode == Mode::Filter {
+        // The filter text ends the first line; the cursor stands after it.
+        let before = toolbar_lines(app).first().map_or(0, Line::width);
+        let x = u16::try_from(before).unwrap_or(u16::MAX);
+        frame.set_cursor_position((top.x.saturating_add(x), top.y));
+    }
     draw_table(frame, app, table);
     draw_detail(frame, app, detail);
     frame.render_widget(Paragraph::new(status_line(app)), status);
+    if let Mode::Menu(menu) = &app.gui.mode {
+        let menu = menu.clone();
+        app.gui.menu_rows = draw_menu(frame, &menu);
+    }
     if app.gui.help {
         draw_help(frame);
     }
 }
 
-fn toolbar_line(app: &App) -> Line<'static> {
+fn toolbar_lines(app: &App) -> Vec<Line<'static>> {
     let shown = app.shown_cards().len();
     let all = app.cards.len();
     let count = if shown == all {
@@ -51,11 +68,67 @@ fn toolbar_line(app: &App) -> Line<'static> {
     } else {
         format!("{shown} of {}", repositories(all))
     };
-    Line::from(vec![
+    let mut first = vec![
         Span::styled("multigit", Style::new().add_modifier(Modifier::BOLD)),
         Span::raw(format!("  {count}")),
-        Span::styled("   ? keys  q quit", dim()),
-    ])
+    ];
+    let marked = app.marked_repos().len();
+    if marked > 0 {
+        first.push(Span::styled(
+            format!(", {marked} marked"),
+            Style::new().fg(Color::Cyan),
+        ));
+    }
+    first.push(Span::styled(format!("  sort: {}", app.sort.label()), dim()));
+    let filtering = app.gui.mode == Mode::Filter;
+    if filtering || !app.filter.is_empty() {
+        let style = if filtering {
+            Style::new().add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::new()
+        };
+        first.push(Span::raw("  /"));
+        first.push(Span::styled(app.filter.clone(), style));
+    } else {
+        first.push(Span::styled("   ? keys  q quit", dim()));
+    }
+    let mut second = vec![Span::styled("mark ", dim())];
+    for (key, by) in [
+        ('a', MarkBy::All),
+        ('d', MarkBy::Dirty),
+        ('b', MarkBy::Behind),
+        ('p', MarkBy::Ahead),
+    ] {
+        second.push(mark_button(app, key, by));
+        second.push(Span::raw(" "));
+    }
+    if let Some(by) = app.status_filter {
+        second.push(Span::styled(
+            format!(" showing {} ({shown})", by.label()),
+            Style::new().fg(Color::Magenta),
+        ));
+        second.push(Span::styled("  A: all", dim()));
+    }
+    vec![Line::from(first), Line::from(second)]
+}
+
+/// A mark button: its key and name, reversed while pressed and struck
+/// through when it marks the other cards.
+fn mark_button(app: &App, key: char, by: MarkBy) -> Span<'static> {
+    let mut style = Style::new();
+    match app.pressed_mark {
+        Some((pressed, inverted)) if pressed == by => {
+            style = style.add_modifier(Modifier::REVERSED);
+            if inverted {
+                style = style.add_modifier(Modifier::CROSSED_OUT);
+            }
+        }
+        _ => {}
+    }
+    if app.status_filter == Some(by) {
+        style = style.fg(Color::Magenta);
+    }
+    Span::styled(format!("[{key}] {}", by.label()), style)
 }
 
 /// "1 repository", "3 repositories".
@@ -323,4 +396,74 @@ fn draw_help(frame: &mut Frame) {
     let block = Block::bordered().title(" keys ");
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Draw an open menu in the middle of the screen; returns the screen line
+/// of each shown item.
+pub fn draw_menu(frame: &mut Frame, menu: &Menu) -> Vec<(u16, usize)> {
+    let shown = menu.shown();
+    let widest = shown
+        .iter()
+        .map(|item| item.label.chars().count())
+        .chain([menu.title.chars().count() + 2, 24])
+        .max()
+        .unwrap_or(24);
+    let screen = frame.area();
+    let width = u16::try_from(widest + 4)
+        .unwrap_or(u16::MAX)
+        .min(screen.width);
+    let filter_lines: u16 = if menu.filter.is_some() { 1 } else { 0 };
+    let room = screen.height.saturating_sub(2 + filter_lines).max(1);
+    let listed = u16::try_from(shown.len().max(1))
+        .unwrap_or(u16::MAX)
+        .min(room);
+    let height = (listed + 2 + filter_lines).min(screen.height);
+    let area = Rect {
+        x: screen.width.saturating_sub(width) / 2,
+        y: screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, area);
+    let block = Block::bordered().title(format!(" {} ", menu.title));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let mut lines = Vec::new();
+    if let Some(filter) = &menu.filter {
+        lines.push(Line::from(vec![
+            Span::styled("filter: ", dim()),
+            Span::raw(filter.text.clone()),
+        ]));
+        let x = inner
+            .x
+            .saturating_add(8)
+            .saturating_add(filter.cursor_column());
+        frame.set_cursor_position((x, inner.y));
+    }
+    // Keep the selected item in view.
+    let skip = menu
+        .selected
+        .saturating_sub(usize::from(listed).saturating_sub(1));
+    let mut rows = Vec::new();
+    if shown.is_empty() {
+        lines.push(Line::styled(menu.none.clone(), dim()));
+    }
+    for (index, item) in shown
+        .iter()
+        .enumerate()
+        .skip(skip)
+        .take(usize::from(listed))
+    {
+        let mut style = if item.enabled { Style::new() } else { dim() };
+        if index == menu.selected && item.enabled {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        let y = inner
+            .y
+            .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
+        rows.push((y, index));
+        lines.push(Line::styled(item.label.clone(), style));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+    rows
 }

@@ -349,8 +349,17 @@ header) folds a section, `C` clears the output, and `e` opens the command's
 output, `E` the section's, in `$PAGER` (`less` when it is not set); the
 board comes back when the pager ends. While the panel is hidden, a dot in
 front of the command line tells about the last command: running, then green
-or red. In the terminal multigit writes no menu entry and no
-icon. With `RUST_LOG` set, its log goes to `tui.log` in
+or red.
+
+`S` opens Settings as a page of rows: ← and → change a value, Enter toggles
+or opens. The card buttons are edited there (Enter the label, `a` the git
+arguments, ← and → move one, `d` removes it), and hidden repositories are
+unhidden. Sounds, the Kawaii music and the terminal command are not shown.
+In the terminal System, Light and Dark all use the terminal's own colors.
+About shows the version and the links; Enter copies a link, as there is no
+browser.
+
+In the terminal multigit writes no menu entry and no icon. With `RUST_LOG` set, its log goes to `tui.log` in
 `~/.local/state/multigit` instead of the screen.
 
 ## Settings and files

@@ -32,6 +32,8 @@ pub const HELP: &[(&str, &str)] = &[
     ("  J / K, PgDn / PgUp", "scroll the right pane"),
     ("  [ / ]", "back / forward"),
     ("  r / y / Esc", "refresh / copy the pane / close"),
+    ("  Tab", "keys to the right pane and back"),
+    ("  c / p", "a commit's values to copy / its parents"),
     ("a d b p", "mark all / dirty / behind / ahead"),
     ("D B P", "show only dirty / behind / ahead"),
     ("A", "show all again"),

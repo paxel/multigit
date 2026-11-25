@@ -60,6 +60,10 @@ pub struct Tui {
     pub list_top: usize,
     /// The last click on a board row, for a double click.
     pub last_click: Option<(PathBuf, Instant)>,
+    /// The repository view's right pane has the keys.
+    pub pane_focus: bool,
+    /// The right pane's cursor row while it has the keys.
+    pub pane_cursor: usize,
 }
 
 /// What has the keys.
@@ -106,6 +110,8 @@ impl Default for Tui {
             list_area: Rect::default(),
             list_top: 0,
             last_click: None,
+            pane_focus: false,
+            pane_cursor: 0,
         }
     }
 }

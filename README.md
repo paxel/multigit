@@ -315,7 +315,10 @@ picked in it on the right. `1`, `2` and `3` pick the tabs Files, Commits and
 Graph, `[` and `]` are Back and Forward, `j`/`k` and Enter (or a click) move
 and pick, `J`/`K` and PgDn/PgUp scroll the right side, `r` reads the
 repository again, `y` copies all of the right side, and Esc or `q` closes
-it. To copy a part, mark it with the terminal's own selection (Shift and drag
+it. In the Commits tab the history reads on at its end; for a picked commit
+`c` lists its hash, author, mail, date, message and names to copy, `p` its
+parents to go to, and Tab gives the keys to the right side, where Enter
+unfolds what the commit did to a file (Tab or Esc gives them back). To copy a part, mark it with the terminal's own selection (Shift and drag
 where the terminal leaves the mouse to multigit).
 
 `+` asks for the folder instead of a folder dialog: `~` is the home folder,

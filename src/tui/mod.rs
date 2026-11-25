@@ -7,6 +7,7 @@ pub mod board;
 pub mod card_menu;
 pub mod cli;
 pub mod clipboard;
+pub mod commits;
 pub mod desktop;
 pub mod favorites;
 pub mod folders;

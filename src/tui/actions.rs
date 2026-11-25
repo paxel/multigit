@@ -46,6 +46,8 @@ pub enum Action {
     DeleteFavorite(usize),
     /// The read-only view of this repository.
     Open(PathBuf),
+    /// Show this commit in the repository view.
+    GoToCommit(String),
     /// Off the board; nothing on disk is touched.
     Remove(Vec<PathBuf>),
     /// Off the board and remembered, so a scan leaves them out.
@@ -149,6 +151,9 @@ pub fn perform(app: &mut App, action: Action) {
         Action::RemoveFromFavorite(index, repos) => app.remove_from_favorite(index, &repos),
         Action::DeleteFavorite(index) => app.delete_favorite(index),
         Action::Open(path) => app.open_repo_view(&path),
+        Action::GoToCommit(hash) => {
+            app.select_in_repo_view(crate::domain::details::DiffTarget::Commit(hash));
+        }
         Action::Remove(repos) => app.remove_cards(&repos),
         Action::Hide(repos) => app.hide_cards(&repos),
     }

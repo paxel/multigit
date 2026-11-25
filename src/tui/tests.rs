@@ -854,3 +854,65 @@ fn a_double_click_on_a_row_opens_it_and_keeps_its_mark() {
     assert!(app.repo_view.is_some());
     assert!(app.marked.is_empty());
 }
+
+#[test]
+fn the_commits_tab_lists_the_history_and_shows_a_picked_commit() {
+    let (mut app, _) = repo_app();
+    open_view(&mut app);
+    let lines = screen(&mut app, 120, 34);
+    assert!(shown(&lines, "AL aaaabbb Fix the thing"));
+    press(&mut app, KeyCode::Enter);
+    settle_diff(&mut app);
+    let lines = screen(&mut app, 120, 34);
+    assert!(
+        shown(&lines, "[HEAD -> main]") || shown(&lines, "[tag: v9]"),
+        "{lines:#?}"
+    );
+    assert!(shown(&lines, "Ada Lovelace <ada@example.org>"));
+    assert!(shown(&lines, "Because it was broken."));
+    assert!(shown(&lines, "2 files changed +15 -1"));
+    assert!(shown(&lines, "\u{25b8} M src/main.rs +3 -1"));
+}
+
+#[test]
+fn tab_goes_to_the_commit_pane_where_enter_unfolds_a_file() {
+    let (mut app, _) = repo_app();
+    open_view(&mut app);
+    press(&mut app, KeyCode::Enter);
+    settle_diff(&mut app);
+    screen(&mut app, 120, 34);
+    press(&mut app, KeyCode::Tab);
+    assert!(app.gui.pane_focus);
+    press(&mut app, KeyCode::Char('G'));
+    press(&mut app, KeyCode::Char('k'));
+    press(&mut app, KeyCode::Enter);
+    crate::app::tests::settle(&mut app, |app| {
+        app.repo_view
+            .as_ref()
+            .is_some_and(|v| v.unfolded.values().any(Option::is_some))
+    });
+    let lines = screen(&mut app, 120, 34);
+    assert!(shown(&lines, "+after in src/main.rs"), "{lines:#?}");
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.gui.pane_focus, "Esc gives the keys back to the list");
+    assert!(app.repo_view.is_some());
+}
+
+#[test]
+fn c_copies_a_commit_value_and_p_goes_to_a_parent() {
+    let (mut app, _) = repo_app();
+    open_view(&mut app);
+    press(&mut app, KeyCode::Enter);
+    settle_diff(&mut app);
+    press(&mut app, KeyCode::Char('c'));
+    pick(&mut app, "Copy mail ada@example.org");
+    assert_eq!(app.gui.copies, vec!["ada@example.org".to_owned()]);
+    press(&mut app, KeyCode::Char('p'));
+    pick(&mut app, "bbbbcccc");
+    assert_eq!(
+        app.repo_view.as_ref().unwrap().selected,
+        Some(crate::domain::details::DiffTarget::Commit(
+            "bbbbcccc".to_owned()
+        ))
+    );
+}

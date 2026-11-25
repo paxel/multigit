@@ -3,6 +3,8 @@
 
 use super::App;
 use super::actions::copy;
+use super::commits::PaneRow;
+use super::state::Mode;
 use crate::app::{RepoView, TextOf};
 use crate::domain::details::{ChangeKind, DiffTarget, LineKind, RepoTab, file_lines, tree_rows};
 use crate::domain::naming::title;
@@ -106,7 +108,8 @@ pub fn rows(app: &App) -> Vec<ViewRow> {
                 })
                 .collect()
         }
-        RepoTab::Commits | RepoTab::Graph => vec![ViewRow::note("not in the terminal yet")],
+        RepoTab::Commits => super::commits::rows(details, view),
+        RepoTab::Graph => vec![ViewRow::note("not in the terminal yet")],
     }
 }
 
@@ -128,6 +131,18 @@ fn set_cursor(app: &mut App, at: usize) {
     }
 }
 
+/// At the end of the Commits tab the next page of the history is read.
+fn read_on(app: &mut App, last: usize) {
+    let at_end = cursor(app, last.saturating_add(1)) == last;
+    let more = app
+        .repo_view
+        .as_ref()
+        .is_some_and(|v| v.tab == RepoTab::Commits && v.more_commits && !v.loading_commits);
+    if at_end && more {
+        app.load_more_commits();
+    }
+}
+
 /// Pick the row under the cursor.
 pub fn pick(app: &mut App, row: &ViewRow) {
     match &row.pick {
@@ -140,24 +155,32 @@ pub fn pick(app: &mut App, row: &ViewRow) {
     }
 }
 
-/// The right pane's lines.
-pub fn pane_lines(view: &RepoView) -> Vec<Line<'static>> {
+/// The right pane's rows.
+pub fn pane_rows(view: &RepoView) -> Vec<PaneRow> {
+    pane_lines(view)
+}
+
+fn pane_lines(view: &RepoView) -> Vec<PaneRow> {
+    let text = |line: Line<'static>| vec![PaneRow::text(line)];
     let (target, diff) = match (&view.selected, &view.diff) {
         (None, _) => {
             let hint = match view.tab {
                 RepoTab::Files => "Pick a file to see its changes.",
                 RepoTab::Commits | RepoTab::Graph => "Pick a commit to see it.",
             };
-            return vec![Line::styled(hint, dim())];
+            return text(Line::styled(hint, dim()));
         }
-        (Some(_), None) => return vec![Line::styled("loading", dim())],
+        (Some(_), None) => return text(Line::styled("loading", dim())),
         (Some(_), Some(Err(error))) => {
-            return vec![Line::styled(error.clone(), Style::new().fg(Color::Red))];
+            return text(Line::styled(error.clone(), Style::new().fg(Color::Red)));
         }
         (Some(target), Some(Ok(diff))) => (target, diff),
     };
-    let DiffTarget::File(file) = target else {
-        return Vec::new();
+    let file = match target {
+        DiffTarget::File(file) => file,
+        DiffTarget::Commit(_) => return super::commits::pane(view, diff),
+        // Shown inside its commit, never picked.
+        DiffTarget::CommitFile { .. } => return Vec::new(),
     };
     let mut lines = vec![Line::from(vec![
         Span::styled(
@@ -179,11 +202,43 @@ pub fn pane_lines(view: &RepoView) -> Vec<Line<'static>> {
         body.into_iter()
             .map(|(kind, text)| Line::styled(text.to_owned(), line_style(kind))),
     );
-    lines
+    lines.into_iter().map(PaneRow::text).collect()
+}
+
+/// A key while the right pane has the keys: move, and fold a commit's
+/// file.
+fn pane_key(app: &mut App, key: KeyEvent) {
+    let Some(view) = app.repo_view.clone() else {
+        return;
+    };
+    let rows = pane_rows(&view);
+    let last = rows.len().saturating_sub(1);
+    let at = app.gui.pane_cursor.min(last);
+    match key.code {
+        KeyCode::Tab | KeyCode::Esc => app.gui.pane_focus = false,
+        KeyCode::Char('j') | KeyCode::Down => app.gui.pane_cursor = at.saturating_add(1).min(last),
+        KeyCode::Char('k') | KeyCode::Up => app.gui.pane_cursor = at.saturating_sub(1),
+        KeyCode::Char('g') | KeyCode::Home => app.gui.pane_cursor = 0,
+        KeyCode::Char('G') | KeyCode::End => app.gui.pane_cursor = last,
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            if let Some(path) = rows.get(at).and_then(|row| row.file.clone()) {
+                app.toggle_commit_file(&path);
+            }
+        }
+        _ => list_key(app, key),
+    }
 }
 
 /// A key while the view is open.
 pub fn key(app: &mut App, key: KeyEvent) {
+    if app.gui.pane_focus {
+        pane_key(app, key);
+    } else {
+        list_key(app, key);
+    }
+}
+
+fn list_key(app: &mut App, key: KeyEvent) {
     let all = rows(app);
     let at = cursor(app, all.len());
     let last = all.len().saturating_sub(1);
@@ -192,6 +247,7 @@ pub fn key(app: &mut App, key: KeyEvent) {
         KeyCode::Esc | KeyCode::Char('q') => {
             app.close_repo_view();
             app.gui.view_cursor.clear();
+            app.gui.pane_focus = false;
         }
         KeyCode::Char('1') => app.switch_repo_tab(RepoTab::Files),
         KeyCode::Char('2') => app.switch_repo_tab(RepoTab::Commits),
@@ -200,10 +256,30 @@ pub fn key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(']') => app.repo_view_forward(),
         KeyCode::Char('r') => app.refresh_repo_view(),
         KeyCode::Char('?') => app.gui.help = true,
-        KeyCode::Char('j') | KeyCode::Down => set_cursor(app, at.saturating_add(1).min(last)),
+        KeyCode::Tab => {
+            app.gui.pane_focus = true;
+            app.gui.pane_cursor = 0;
+        }
+        KeyCode::Char('c') => {
+            if let Some(commit) = super::commits::picked(app) {
+                app.gui.mode = Mode::Menu(super::commits::copy_menu(&commit));
+            }
+        }
+        KeyCode::Char('p') => {
+            if let Some(commit) = super::commits::picked(app) {
+                app.gui.mode = Mode::Menu(super::commits::parents_menu(&commit));
+            }
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            set_cursor(app, at.saturating_add(1).min(last));
+            read_on(app, last);
+        }
         KeyCode::Char('k') | KeyCode::Up => set_cursor(app, at.saturating_sub(1)),
         KeyCode::Char('g') | KeyCode::Home => set_cursor(app, 0),
-        KeyCode::Char('G') | KeyCode::End => set_cursor(app, last),
+        KeyCode::Char('G') | KeyCode::End => {
+            set_cursor(app, last);
+            read_on(app, last);
+        }
         KeyCode::Enter | KeyCode::Char(' ') => {
             if let Some(row) = all.get(at) {
                 pick(app, row);
@@ -240,7 +316,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Paragraph::new(Line::from(vec![
             Span::styled(title(&view.repo), Style::new().add_modifier(Modifier::BOLD)),
             Span::styled(format!("  {}", view.repo.display()), dim()),
-            Span::styled("   r refresh  y copy all  Esc close", dim()),
+            Span::styled("   Tab pane  r refresh  y copy all  Esc close", dim()),
         ])),
         head,
     );
@@ -300,12 +376,40 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(lines).block(block), list_area);
     app.gui.list_area = inner;
     app.gui.list_top = top;
-    let pane = pane_lines(&view);
+    let pane = pane_rows(&view);
     let room = usize::from(pane_area.height.saturating_sub(1));
+    let focused = app.gui.pane_focus;
+    let cursor_at = app.gui.pane_cursor.min(pane.len().saturating_sub(1));
+    // With the keys the pane follows its cursor.
+    if focused {
+        if cursor_at < app.gui.pane_scroll {
+            app.gui.pane_scroll = cursor_at;
+        } else if cursor_at >= app.gui.pane_scroll + room {
+            app.gui.pane_scroll = cursor_at + 1 - room.max(1);
+        }
+    }
     let scroll = app.gui.pane_scroll.min(pane.len().saturating_sub(room));
     app.gui.pane_scroll = scroll;
-    let shown: Vec<Line> = pane.into_iter().skip(scroll).take(room).collect();
-    let block = Block::new().borders(Borders::TOP).border_style(dim());
+    let shown: Vec<Line> = pane
+        .into_iter()
+        .enumerate()
+        .skip(scroll)
+        .take(room)
+        .map(|(i, row)| {
+            if focused && i == cursor_at {
+                row.line
+                    .patch_style(Style::new().add_modifier(Modifier::REVERSED))
+            } else {
+                row.line
+            }
+        })
+        .collect();
+    let border = if focused {
+        Style::new().fg(Color::Cyan)
+    } else {
+        dim()
+    };
+    let block = Block::new().borders(Borders::TOP).border_style(border);
     frame.render_widget(Paragraph::new(shown).block(block), pane_area);
     let toast = app
         .toasts

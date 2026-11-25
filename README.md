@@ -282,12 +282,19 @@ Plain keys act on the board; `?` shows them all:
 | A                 | Show all rows again                                    |
 | /                 | Type into the filter field; Enter or Esc leaves it     |
 | s                 | Sort                                                   |
+| :                 | Go to the command line; Esc goes back to the board     |
 | ?                 | Show or hide the keys                                  |
 | q, Ctrl+C         | Quit                                                   |
 
 The mark keys work like the toolbar's buttons: the pressed one shows
 reversed, struck through when a second press marked the other rows. A click
-on a row selects and marks it. In the terminal multigit writes no menu entry and no
+on a row selects and marks it.
+
+The command line works as in the window, with the same keys (see
+[Command line keys](#command-line-keys)): Enter runs the line in the marked
+rows, Tab completes, Ctrl+R searches the history. A shell line, or a
+destructive command for more than one repository, asks first in a box:
+Enter runs, Esc cancels. In the terminal multigit writes no menu entry and no
 icon. With `RUST_LOG` set, its log goes to `tui.log` in
 `~/.local/state/multigit` instead of the screen.
 

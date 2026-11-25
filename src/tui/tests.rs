@@ -251,3 +251,117 @@ fn s_picks_a_sort_key_from_a_list() {
     let lines = screen(&mut app, 100, 24);
     assert!(shown(&lines, "sort: path"));
 }
+
+fn type_line(app: &mut App, text: &str) {
+    for c in text.chars() {
+        press(app, KeyCode::Char(c));
+    }
+}
+
+fn ctrl(app: &mut App, c: char) {
+    on_event(
+        app,
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)),
+    );
+}
+
+#[test]
+fn colon_runs_git_in_the_marked_rows() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut app = app_on_front::<Tui>(backend.clone(), Arc::new(FakeDesktop::default()), None);
+    app.cards
+        .push(card("alpha", Counts::default(), Upstream::None));
+    app.cards
+        .push(card("beta", Counts::default(), Upstream::None));
+    app.marked.insert(PathBuf::from("/repos/beta"));
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "git : to type git arguments"));
+    press(&mut app, KeyCode::Char(':'));
+    type_line(&mut app, "git status -s");
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "git git status -s"));
+    press(&mut app, KeyCode::Enter);
+    crate::app::tests::settle(&mut app, |_| !backend.runs.lock().unwrap().is_empty());
+    let runs = backend.runs.lock().unwrap().clone();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].0, PathBuf::from("/repos/beta"));
+    assert_eq!(runs[0].1, vec!["status".to_owned(), "-s".to_owned()]);
+    assert_eq!(
+        app.history.entries().last().map(String::as_str),
+        Some("status -s")
+    );
+    assert!(app.gui.cli.input.text.is_empty());
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.gui.mode, super::state::Mode::Board);
+}
+
+#[test]
+fn a_shell_line_asks_first_and_esc_cancels() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut app = app_on_front::<Tui>(backend.clone(), Arc::new(FakeDesktop::default()), None);
+    app.cards
+        .push(card("alpha", Counts::default(), Upstream::None));
+    app.marked.insert(PathBuf::from("/repos/alpha"));
+    press(&mut app, KeyCode::Char(':'));
+    type_line(&mut app, "!ls");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.confirm.is_some());
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "Shell command"));
+    assert!(shown(&lines, "Enter runs, Esc cancels"));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.confirm.is_none());
+    assert!(backend.shell_runs.lock().unwrap().is_empty());
+    type_line(&mut app, "!ls");
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    crate::app::tests::settle(&mut app, |_| !backend.shell_runs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn history_up_suggestion_and_search() {
+    let mut app = board_app();
+    app.history = crate::domain::history::History::from_lines(
+        ["fetch --all", "status", "log --oneline"].map(str::to_owned),
+    );
+    press(&mut app, KeyCode::Char(':'));
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.gui.cli.input.text, "log --oneline");
+    ctrl(&mut app, 'u');
+    type_line(&mut app, "fe");
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "git fetch --all"), "the grey suggestion");
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.gui.cli.input.text, "fetch --all");
+    ctrl(&mut app, 'u');
+    type_line(&mut app, "stt");
+    ctrl(&mut app, 'r');
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, " history "));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.gui.cli.input.text, "status");
+    assert!(app.gui.cli.popup.is_none());
+}
+
+#[test]
+fn tab_completes_a_branch_of_the_marked_rows() {
+    let mut app = board_app();
+    app.cards[0].probe = Some(Ok(snapshot(
+        Counts::default(),
+        Upstream::None,
+        &["main", "feature-a", "feature-b"],
+    )));
+    app.marked.insert(PathBuf::from("/repos/alpha"));
+    app.vocab.subcommands = vec!["switch".to_owned()];
+    press(&mut app, KeyCode::Char(':'));
+    type_line(&mut app, "switch fea");
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(
+        app.gui.cli.input.text, "switch feature-",
+        "the common prefix"
+    );
+    assert!(app.gui.cli.popup.is_some());
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.gui.cli.input.text, "switch feature-b ");
+}

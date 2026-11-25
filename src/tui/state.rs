@@ -1,6 +1,7 @@
 //! What only the terminal front end keeps beside the board.
 
 use super::App;
+use super::cli::Cli;
 use super::widgets::Menu;
 use ratatui::layout::Rect;
 use std::path::PathBuf;
@@ -29,6 +30,8 @@ pub struct Tui {
     /// Where the open menu's items were drawn: screen line and position
     /// among the shown items.
     pub menu_rows: Vec<(u16, usize)>,
+    /// The command line.
+    pub cli: Cli,
 }
 
 /// What has the keys.
@@ -41,6 +44,8 @@ pub enum Mode {
     Filter,
     /// A list to pick from.
     Menu(Menu),
+    /// The command line.
+    Command,
 }
 
 impl Default for Tui {
@@ -55,6 +60,7 @@ impl Default for Tui {
             table: Rect::default(),
             mode: Mode::Board,
             menu_rows: Vec::new(),
+            cli: Cli::default(),
         }
     }
 }

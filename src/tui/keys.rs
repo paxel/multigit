@@ -2,6 +2,7 @@
 
 use super::App;
 use super::actions::{Action, perform};
+use super::cli;
 use super::state::{Mode, move_selection, select_end, selected};
 use super::widgets::{Item, Menu, MenuKey};
 use crate::app::MarkBy;
@@ -26,8 +27,21 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
             return;
         }
     }
+    if app.confirm.is_some() {
+        match key.code {
+            KeyCode::Enter => app.confirm_run(),
+            KeyCode::Esc => app.cancel_run(),
+            _ => {}
+        }
+        return;
+    }
     match std::mem::take(&mut app.gui.mode) {
         Mode::Board => board_key(app, key),
+        Mode::Command => {
+            if cli::key(app, key) == cli::Outcome::Stay {
+                app.gui.mode = Mode::Command;
+            }
+        }
         Mode::Filter => filter_key(app, key),
         Mode::Menu(mut menu) => match menu.key(key) {
             MenuKey::Stay => app.gui.mode = Mode::Menu(menu),
@@ -61,6 +75,7 @@ fn board_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('B') => app.filter_by(MarkBy::Behind),
         KeyCode::Char('P') => app.filter_by(MarkBy::Ahead),
         KeyCode::Char('/') => app.gui.mode = Mode::Filter,
+        KeyCode::Char(':') => app.gui.mode = Mode::Command,
         KeyCode::Char('s') => app.gui.mode = Mode::Menu(sort_menu(app)),
         _ => {}
     }

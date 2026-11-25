@@ -4,6 +4,7 @@
 
 pub mod actions;
 pub mod board;
+pub mod cli;
 pub mod desktop;
 pub mod keys;
 pub mod state;

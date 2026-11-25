@@ -2,9 +2,11 @@
 //! the selected row under it, and a status line.
 
 use super::App;
+use super::cli;
 use super::state::{Mode, selected_index};
 use super::widgets::Menu;
 use crate::app::{Card, MarkBy};
+use crate::domain::command::{Job, display};
 use crate::domain::naming::title;
 use crate::domain::remote::short_url;
 use crate::domain::repo::Snapshot;
@@ -28,16 +30,26 @@ pub const HELP: &[(&str, &str)] = &[
     ("A", "show all again"),
     ("/", "filter by name (Enter, Esc: done)"),
     ("s", "sort"),
+    (":", "command line: git arguments, ! for a shell line"),
+    ("  Tab", "complete; in the list: next"),
+    ("  Up / Down", "history entries with the typed text"),
+    ("  Ctrl+R", "search the history"),
+    ("  Right", "take the grey suggestion"),
+    (
+        "  Enter / Esc",
+        "run in the marked rows / back to the board",
+    ),
     ("?", "show or hide this help"),
     ("q", "quit"),
 ];
 
 /// Draw everything.
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let [top, table, detail, status] = Layout::vertical([
+    let [top, table, detail, command, status] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(3),
         Constraint::Length(DETAIL_HEIGHT),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(frame.area());
@@ -51,9 +63,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_table(frame, app, table);
     draw_detail(frame, app, detail);
     frame.render_widget(Paragraph::new(status_line(app)), status);
+    draw_cli(frame, app, command);
     if let Mode::Menu(menu) = &app.gui.mode {
         let menu = menu.clone();
         app.gui.menu_rows = draw_menu(frame, &menu);
+    }
+    if app.confirm.is_some() {
+        draw_confirm(frame, app);
     }
     if app.gui.help {
         draw_help(frame);
@@ -466,4 +482,140 @@ pub fn draw_menu(frame: &mut Frame, menu: &Menu) -> Vec<(u16, usize)> {
     }
     frame.render_widget(Paragraph::new(lines), inner);
     rows
+}
+
+fn draw_cli(frame: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.gui.mode == Mode::Command;
+    let text = app.gui.cli.input.text.clone();
+    let label = cli::label(&text);
+    let mut spans = vec![
+        Span::styled(label.clone(), Style::new().add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+    ];
+    if text.is_empty() && !focused {
+        let hint = if app.marked_repos().is_empty() {
+            "mark repositories to run commands"
+        } else {
+            ": to type git arguments, ! for a shell line"
+        };
+        spans.push(Span::styled(hint, dim()));
+    } else {
+        spans.push(Span::raw(text));
+        if focused && let Some(rest) = cli::suggestion(app) {
+            spans.push(Span::styled(rest, dim()));
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    if !focused {
+        return;
+    }
+    let start = u16::try_from(label.chars().count() + 1).unwrap_or(u16::MAX);
+    let x = area
+        .x
+        .saturating_add(start)
+        .saturating_add(app.gui.cli.input.cursor_column());
+    frame.set_cursor_position((x, area.y));
+    let Some(popup) = app.gui.cli.popup else {
+        return;
+    };
+    let rows = cli::rows(app);
+    let height = u16::try_from(rows.len().clamp(1, 10))
+        .unwrap_or(10)
+        .saturating_add(2)
+        .min(area.y);
+    let popup_area = Rect {
+        x: area.x,
+        y: area.y.saturating_sub(height),
+        width: area.width.min(80),
+        height,
+    };
+    let listed = usize::from(height.saturating_sub(2));
+    let selected = popup.selected % rows.len().max(1);
+    let skip = selected.saturating_sub(listed.saturating_sub(1));
+    let mut lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .skip(skip)
+        .take(listed)
+        .map(|(i, row)| {
+            let style = if i == selected {
+                Style::new().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::new()
+            };
+            let mut spans = vec![Span::styled(row.text.clone(), style)];
+            if let Some(tag) = &row.tag {
+                spans.push(Span::styled(format!("  {tag}"), warn()));
+            }
+            if let Some(description) = &row.description {
+                spans.push(Span::styled(format!("  {description}"), dim()));
+            }
+            Line::from(spans)
+        })
+        .collect();
+    if lines.is_empty() {
+        lines.push(Line::styled("no matches", dim()));
+    }
+    let title = match popup.kind {
+        cli::PopupKind::Completion => " complete ",
+        cli::PopupKind::History => " history ",
+    };
+    frame.render_widget(Clear, popup_area);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(title)),
+        popup_area,
+    );
+}
+
+/// The question before a shell line, or a destructive command in more than
+/// one repository, runs.
+fn draw_confirm(frame: &mut Frame, app: &App) {
+    let Some(pending) = &app.confirm else {
+        return;
+    };
+    let names: Vec<String> = pending.repos.iter().map(|p| title(p)).collect();
+    let (heading, question) = match &pending.job {
+        Job::Shell(line) => (
+            " Shell command ",
+            format!(
+                "Run `{line}` with {} in {}?",
+                cli::login_shell_name(),
+                repositories(names.len())
+            ),
+        ),
+        Job::Git(_) => (
+            " Destructive command ",
+            format!(
+                "Run `{}` in {}? This can discard work.",
+                display(&pending.command),
+                repositories(names.len())
+            ),
+        ),
+    };
+    let screen = frame.area();
+    let width = 70.min(screen.width);
+    let area = Rect {
+        x: screen.width.saturating_sub(width) / 2,
+        y: screen.height.saturating_sub(8) / 2,
+        width,
+        height: 8.min(screen.height),
+    };
+    let lines = vec![
+        Line::raw(question),
+        Line::styled(names.join(", "), dim()),
+        Line::default(),
+        Line::from(vec![
+            Span::styled("Enter", Style::new().add_modifier(Modifier::BOLD)),
+            Span::raw(" runs, "),
+            Span::styled("Esc", Style::new().add_modifier(Modifier::BOLD)),
+            Span::raw(" cancels"),
+        ]),
+    ];
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .block(Block::bordered().title(heading)),
+        area,
+    );
 }

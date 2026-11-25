@@ -31,6 +31,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("A", "show all again"),
     ("/", "filter by name (Enter, Esc: done)"),
     ("s", "sort"),
+    ("x, right click", "the row's menu: copy, and more"),
     ("1 .. 9", "run that card button on the row"),
     ("m", "run a card button on all marked rows"),
     ("t", "a shell in the row's folder (exit: back)"),

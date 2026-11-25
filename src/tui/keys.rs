@@ -2,6 +2,7 @@
 
 use super::App;
 use super::actions::{Action, perform};
+use super::card_menu::card_menu;
 use super::cli;
 use super::output;
 use super::state::{Mode, move_selection, select_end, selected};
@@ -90,6 +91,11 @@ fn board_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char(c @ '1'..='9') => run_button(app, c),
         KeyCode::Char('m') => app.gui.mode = Mode::Menu(marked_buttons_menu(app)),
+        KeyCode::Char('x') => {
+            if let Some(path) = selected(app) {
+                app.gui.mode = Mode::Menu(card_menu(app, &path));
+            }
+        }
         KeyCode::Tab if !app.config.output_hidden && !app.log.is_empty() => {
             app.gui.mode = Mode::Output;
         }
@@ -196,6 +202,12 @@ pub fn on_mouse(app: &mut App, mouse: MouseEvent) {
             if let Some(path) = row_at(app, mouse.column, mouse.row) {
                 app.gui.selected = Some(path.clone());
                 app.toggle_mark(path);
+            }
+        }
+        MouseEventKind::Down(MouseButton::Right) => {
+            if let Some(path) = row_at(app, mouse.column, mouse.row) {
+                app.gui.selected = Some(path.clone());
+                app.gui.mode = Mode::Menu(card_menu(app, &path));
             }
         }
         _ => {}

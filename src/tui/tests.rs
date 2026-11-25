@@ -469,3 +469,70 @@ fn t_opens_a_shell_in_the_row_and_ignores_the_terminal_setting() {
     assert_eq!(asked.len(), 1);
     assert_eq!(asked[0].0, PathBuf::from("/repos/alpha"));
 }
+
+fn pick(app: &mut App, label: &str) {
+    let super::state::Mode::Menu(menu) = &mut app.gui.mode else {
+        panic!("no menu is open");
+    };
+    let at = menu
+        .shown()
+        .iter()
+        .position(|item| item.label == label)
+        .unwrap_or_else(|| panic!("no {label}"));
+    menu.selected = at;
+    press(app, KeyCode::Enter);
+}
+
+#[test]
+fn x_opens_the_card_menu_whose_copy_entries_go_to_the_clipboard() {
+    let mut app = board_app();
+    press(&mut app, KeyCode::Char('x'));
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, " alpha "));
+    assert!(shown(&lines, "Copy branch"));
+    pick(&mut app, "Copy branch");
+    assert_eq!(app.gui.copies, vec!["main".to_owned()]);
+    assert!(app.toasts.iter().any(|t| t.text == "Copied main"));
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Copy path");
+    assert_eq!(app.gui.copies[1], "/repos/alpha");
+}
+
+#[test]
+fn copying_the_fetch_error_takes_it_off_the_row() {
+    let mut app = board_app();
+    app.cards[0].fetch_error = Some(crate::domain::repo::FetchError {
+        summary: "auth failed".to_owned(),
+        output: "fatal: could not read Username".to_owned(),
+    });
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "!alpha"));
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Copy the fetch error and take it off");
+    assert_eq!(
+        app.gui.copies,
+        vec!["fatal: could not read Username".to_owned()]
+    );
+    assert!(app.cards[0].fetch_error.is_none());
+}
+
+#[test]
+fn a_right_click_opens_the_menu_of_that_row() {
+    let mut app = board_app();
+    screen(&mut app, 100, 24);
+    let (y, _) = app.gui.rows_at[1].clone();
+    keys::on_mouse(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 5,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    let super::state::Mode::Menu(menu) = &app.gui.mode else {
+        panic!("no menu");
+    };
+    assert_eq!(menu.title, "beta");
+    assert!(app.marked.is_empty(), "a right click does not mark");
+}

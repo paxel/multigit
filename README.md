@@ -283,6 +283,7 @@ Plain keys act on the board; `?` shows them all:
 | /                 | Type into the filter field; Enter or Esc leaves it     |
 | s                 | Sort                                                   |
 | :                 | Go to the command line; Esc goes back to the board     |
+| x, right click    | The row's menu                                         |
 | 1 … 9             | Run that card button on the row                        |
 | m                 | Run a card button on all marked rows                   |
 | t                 | A shell in the row's folder; `exit` returns            |
@@ -294,6 +295,14 @@ Plain keys act on the board; `?` shows them all:
 The mark keys work like the toolbar's buttons: the pressed one shows
 reversed, struck through when a second press marked the other rows. A click
 on a row selects and marks it.
+
+The row's menu (`x` or a right click) has what a right click on a card has
+in the window, and the card's texts to copy: name, path, branch, tags,
+commit hash, remote URL and the fetch error, which then leaves the row.
+Copying asks the terminal to put the text on its clipboard (the OSC 52
+escape), so it reaches the clipboard of the machine in front of you, also
+over SSH. Terminals that do not support it copy nothing; in tmux it takes
+`set-clipboard on`.
 
 `t` is the terminal button: the board steps aside for `$SHELL` (`sh` when it
 is empty) in the repository's folder, and comes back when the shell ends.

@@ -4,7 +4,9 @@
 
 pub mod actions;
 pub mod board;
+pub mod card_menu;
 pub mod cli;
+pub mod clipboard;
 pub mod desktop;
 pub mod keys;
 pub mod output;
@@ -66,6 +68,7 @@ fn run_loop(
         app.handle_events();
         let next = app.tick(Instant::now());
         terminal.draw(|frame| board::draw(frame, app))?;
+        send_copies(app)?;
         if event::poll(next.min(FRAME))? {
             on_event(app, event::read()?);
         }
@@ -80,6 +83,20 @@ fn run_loop(
         }
     }
     Ok(())
+}
+
+/// Hand what was copied to the terminal's clipboard.
+fn send_copies(app: &mut App) -> io::Result<()> {
+    use std::io::Write;
+    let copies = std::mem::take(&mut app.gui.copies);
+    if copies.is_empty() {
+        return Ok(());
+    }
+    let mut out = io::stdout();
+    for text in copies {
+        out.write_all(clipboard::osc52(&text).as_bytes())?;
+    }
+    out.flush()
 }
 
 /// Run `program` in this terminal and wait for it.

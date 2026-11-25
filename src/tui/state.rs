@@ -41,6 +41,8 @@ pub struct Tui {
     pub output_area: Rect,
     /// The first output line drawn.
     pub output_top: usize,
+    /// Texts for the clipboard, sent to the terminal with the next frame.
+    pub copies: Vec<String>,
 }
 
 /// What has the keys.
@@ -76,6 +78,7 @@ impl Default for Tui {
             output_cursor: None,
             output_area: Rect::default(),
             output_top: 0,
+            copies: Vec::new(),
         }
     }
 }

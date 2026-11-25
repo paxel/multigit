@@ -1,6 +1,7 @@
 //! What the terminal's menus can ask for, and doing it.
 
 use super::App;
+use super::favorites;
 use super::state::Mode;
 use super::widgets::{Input, Item, Menu};
 use crate::domain::board::SortKey;
@@ -31,6 +32,17 @@ pub enum Action {
     Tags(PathBuf),
     /// The remotes this repository's branch can track.
     Remotes(PathBuf),
+    /// What can be done with this favorite.
+    Favorite(usize),
+    /// Show only this favorite's rows, or all again.
+    ToggleFavorite(usize),
+    /// The form for this favorite.
+    EditFavorite(usize),
+    /// The form for a new favorite of these repositories.
+    NewFavorite(Vec<PathBuf>),
+    AddToFavorite(usize, Vec<PathBuf>),
+    RemoveFromFavorite(usize, Vec<PathBuf>),
+    DeleteFavorite(usize),
 }
 
 /// What a line typed into a [`Prompt`] is for.
@@ -91,6 +103,32 @@ pub fn perform(app: &mut App, action: Action) {
             let menu = remote_menu(app, &path);
             app.gui.mode = Mode::Menu(menu);
         }
+        Action::Favorite(index) => {
+            let menu = favorites::of(app, index);
+            app.gui.mode = Mode::Menu(menu);
+        }
+        Action::ToggleFavorite(index) => app.toggle_favorite(index),
+        Action::EditFavorite(index) => {
+            app.edit_favorite(index);
+            open_form(app);
+        }
+        Action::NewFavorite(repos) => {
+            app.new_favorite(repos);
+            open_form(app);
+        }
+        Action::AddToFavorite(index, repos) => app.add_to_favorite(index, &repos),
+        Action::RemoveFromFavorite(index, repos) => app.remove_from_favorite(index, &repos),
+        Action::DeleteFavorite(index) => app.delete_favorite(index),
+    }
+}
+
+/// Open the favorite form on what `app.favorite_dialog` holds.
+fn open_form(app: &mut App) {
+    if let Some(dialog) = &app.favorite_dialog {
+        app.gui.mode = Mode::Favorite(favorites::Form {
+            field: favorites::Field::Name,
+            name: Input::new(dialog.draft.name.clone()),
+        });
     }
 }
 

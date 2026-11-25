@@ -8,6 +8,7 @@ pub mod card_menu;
 pub mod cli;
 pub mod clipboard;
 pub mod desktop;
+pub mod favorites;
 pub mod keys;
 pub mod output;
 pub mod state;

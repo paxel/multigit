@@ -40,6 +40,24 @@ pub fn card_menu(app: &App, path: &Path) -> Menu {
         ));
         items.push(Item::new("Track remote\u{2026}", Action::Remotes(own)));
     }
+    for (i, favorite) in app.config.favorites.iter().enumerate() {
+        items.push(Item::new(
+            format!("Add to {}", favorite.label()),
+            Action::AddToFavorite(i, targets.clone()),
+        ));
+    }
+    items.push(Item::new(
+        "New favorite\u{2026}",
+        Action::NewFavorite(targets.clone()),
+    ));
+    for (i, favorite) in app.config.favorites.iter().enumerate() {
+        if targets.iter().any(|t| favorite.contains(t)) {
+            items.push(Item::new(
+                format!("Remove from {}", favorite.label()),
+                Action::RemoveFromFavorite(i, targets.clone()),
+            ));
+        }
+    }
     items.extend(copy_items(app, path));
     Menu::new(heading, items)
 }

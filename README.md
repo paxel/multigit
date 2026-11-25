@@ -284,6 +284,7 @@ Plain keys act on the board; `?` shows them all:
 | s                 | Sort                                                   |
 | :                 | Go to the command line; Esc goes back to the board     |
 | x, right click    | The row's menu                                         |
+| f                 | The favorites                                          |
 | 1 … 9             | Run that card button on the row                        |
 | m                 | Run a card button on all marked rows                   |
 | t                 | A shell in the row's folder; `exit` returns            |
@@ -299,12 +300,18 @@ on a row selects and marks it.
 The row's menu (`x` or a right click) has what a right click on a card has
 in the window: **Switch to**, **Create new branch**, **Switch to tag** and
 **Track remote** for that one repository, with the same lists (typing
-filters them), and the card's texts to copy: name, path, branch, tags,
+filters them), adding to and removing from favorites and **New favorite**,
+and the card's texts to copy: name, path, branch, tags,
 commit hash, remote URL and the fetch error, which then leaves the row.
 Copying asks the terminal to put the text on its clipboard (the OSC 52
 escape), so it reaches the clipboard of the machine in front of you, also
 over SSH. Terminals that do not support it copy nothing; in tmux it takes
 `set-clipboard on`.
+
+Favorites have a line over the table, each in its color. A click on one
+shows only its rows, a second click all again; a right click, or `f` and the
+favorite, opens what its button's right click opens in the window. The form
+for a favorite has its name, and its color and emoji, which ← and → change.
 
 `t` is the terminal button: the board steps aside for `$SHELL` (`sh` when it
 is empty) in the repository's folder, and comes back when the shell ends.

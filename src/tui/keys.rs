@@ -47,6 +47,11 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
                 app.gui.mode = Mode::Prompt(prompt);
             }
         },
+        Mode::Favorite(mut form) => {
+            if super::favorites::key(app, &mut form, key) {
+                app.gui.mode = Mode::Favorite(form);
+            }
+        }
         Mode::Output => {
             if output::key(app, key) {
                 app.gui.mode = Mode::Output;
@@ -99,6 +104,7 @@ fn board_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char(c @ '1'..='9') => run_button(app, c),
         KeyCode::Char('m') => app.gui.mode = Mode::Menu(marked_buttons_menu(app)),
+        KeyCode::Char('f') => app.gui.mode = Mode::Menu(super::favorites::list(app)),
         KeyCode::Char('x') => {
             if let Some(path) = selected(app) {
                 app.gui.mode = Mode::Menu(card_menu(app, &path));
@@ -201,6 +207,24 @@ pub fn on_mouse(app: &mut App, mouse: MouseEvent) {
     }
     if !app.config.output_hidden && contains(app.gui.output_area, mouse.column, mouse.row) {
         output_mouse(app, mouse);
+        return;
+    }
+    if let MouseEventKind::Down(button) = mouse.kind
+        && mouse.row == app.gui.favorites_at.0
+        && let Some(&(_, _, index)) = app
+            .gui
+            .favorites_at
+            .1
+            .iter()
+            .find(|(from, to, _)| (*from..*to).contains(&mouse.column))
+    {
+        // A click shows only its rows; a right click opens what can be
+        // done with it, as on its button in the window.
+        if button == MouseButton::Right {
+            app.gui.mode = Mode::Menu(super::favorites::of(app, index));
+        } else {
+            app.toggle_favorite(index);
+        }
         return;
     }
     match mouse.kind {

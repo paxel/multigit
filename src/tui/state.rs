@@ -3,6 +3,7 @@
 use super::App;
 use super::actions::Prompt;
 use super::cli::Cli;
+use super::favorites::Form;
 use super::widgets::Menu;
 use ratatui::layout::Rect;
 use std::collections::HashSet;
@@ -44,6 +45,9 @@ pub struct Tui {
     pub output_top: usize,
     /// Texts for the clipboard, sent to the terminal with the next frame.
     pub copies: Vec<String>,
+    /// Where the favorites line was drawn: its screen line, and each
+    /// favorite's first and past-last column.
+    pub favorites_at: (u16, Vec<(u16, u16, usize)>),
 }
 
 /// What has the keys.
@@ -62,6 +66,8 @@ pub enum Mode {
     Output,
     /// A question that wants a line of text.
     Prompt(Prompt),
+    /// The form for a favorite's name, color and emoji.
+    Favorite(Form),
 }
 
 impl Default for Tui {
@@ -82,6 +88,7 @@ impl Default for Tui {
             output_area: Rect::default(),
             output_top: 0,
             copies: Vec::new(),
+            favorites_at: (0, Vec::new()),
         }
     }
 }

@@ -32,6 +32,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("/", "filter by name (Enter, Esc: done)"),
     ("s", "sort"),
     ("x, right click", "the row's menu: copy, and more"),
+    ("f", "favorites: show, edit, add marked, delete"),
     ("1 .. 9", "run that card button on the row"),
     ("m", "run a card button on all marked rows"),
     ("t", "a shell in the row's folder (exit: back)"),
@@ -61,8 +62,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         (frame.area().height / 4).max(5)
     };
-    let [top, table, detail, out, command, status] = Layout::vertical([
+    let favorites = u16::from(!app.config.favorites.is_empty());
+    let [top, favorites_line, table, detail, out, command, status] = Layout::vertical([
         Constraint::Length(2),
+        Constraint::Length(favorites),
         Constraint::Min(3),
         Constraint::Length(DETAIL_HEIGHT),
         Constraint::Length(panel),
@@ -76,6 +79,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let before = toolbar_lines(app).first().map_or(0, Line::width);
         let x = u16::try_from(before).unwrap_or(u16::MAX);
         frame.set_cursor_position((top.x.saturating_add(x), top.y));
+    }
+    if favorites > 0 {
+        let (line, at) = super::favorites::line(app);
+        frame.render_widget(Paragraph::new(line), favorites_line);
+        app.gui.favorites_at = (favorites_line.y, at);
+    } else {
+        app.gui.favorites_at = (u16::MAX, Vec::new());
     }
     draw_table(frame, app, table);
     draw_detail(frame, app, detail);
@@ -92,6 +102,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let Mode::Prompt(prompt) = &app.gui.mode {
         draw_prompt(frame, &prompt.title, &prompt.input);
+    }
+    if let Mode::Favorite(form) = &app.gui.mode {
+        draw_favorite_form(frame, app, form);
     }
     if app.confirm.is_some() {
         draw_confirm(frame, app);
@@ -342,6 +355,15 @@ pub fn detail_lines(app: &App, card: &Card) -> Vec<Line<'static>> {
         Span::styled(title(&card.path), Style::new().add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {}", card.path.display()), dim()),
     ];
+    for index in crate::domain::favorites::favorites_of(&app.config.favorites, &card.path) {
+        if let Some(favorite) = app.config.favorites.get(index) {
+            first.push(Span::raw(" "));
+            first.push(super::favorites::chip(
+                favorite,
+                app.active_favorite == Some(index),
+            ));
+        }
+    }
     // The card buttons with their keys.
     for (key, button) in (1..=9).zip(&app.config.buttons) {
         first.push(Span::styled(
@@ -735,4 +757,34 @@ pub fn draw_prompt(frame: &mut Frame, title: &str, input: &Input) {
     ];
     frame.render_widget(Paragraph::new(lines), inner);
     frame.set_cursor_position((inner.x.saturating_add(input.cursor_column()), inner.y));
+}
+
+fn draw_favorite_form(frame: &mut Frame, app: &App, form: &super::favorites::Form) {
+    let screen = frame.area();
+    let width = 66.min(screen.width);
+    let area = Rect {
+        x: screen.width.saturating_sub(width) / 2,
+        y: screen.height.saturating_sub(7) / 2,
+        width,
+        height: 7.min(screen.height),
+    };
+    let title = match app.favorite_dialog.as_ref().and_then(|d| d.editing) {
+        Some(_) => " edit favorite ",
+        None => " new favorite ",
+    };
+    frame.render_widget(Clear, area);
+    let block = Block::bordered().title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(super::favorites::form_lines(app, form)),
+        inner,
+    );
+    if form.field == super::favorites::Field::Name {
+        let x = inner
+            .x
+            .saturating_add(7)
+            .saturating_add(form.name.cursor_column());
+        frame.set_cursor_position((x, inner.y));
+    }
 }

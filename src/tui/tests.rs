@@ -600,3 +600,78 @@ fn the_tag_and_remote_lists_say_when_there_is_nothing() {
     let lines = screen(&mut app, 100, 30);
     assert!(shown(&lines, "no remote"));
 }
+
+#[test]
+fn a_new_favorite_from_the_card_menu_with_name_color_and_emoji() {
+    let mut app = board_app();
+    app.marked.insert(PathBuf::from("/repos/alpha"));
+    app.marked.insert(PathBuf::from("/repos/beta"));
+    press(&mut app, KeyCode::Char('x'));
+    let lines = screen(&mut app, 100, 30);
+    assert!(
+        shown(&lines, " 2 repositories "),
+        "a marked row's menu is for all marked"
+    );
+    pick(&mut app, "New favorite\u{2026}");
+    type_line(&mut app, "etl");
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Right);
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, " new favorite "));
+    assert!(shown(&lines, "orange"));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.config.favorites.len(), 1);
+    let favorite = &app.config.favorites[0];
+    assert_eq!(favorite.name, "etl");
+    assert_eq!(favorite.color, "orange");
+    assert_eq!(favorite.emoji.as_deref(), Some("\u{2b50}"));
+    assert_eq!(favorite.repos.len(), 2);
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, "\u{2b50} etl"), "the favorites line");
+}
+
+#[test]
+fn a_favorite_without_a_name_stays_open_and_esc_cancels() {
+    let mut app = board_app();
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "New favorite\u{2026}");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.gui.mode, super::state::Mode::Favorite(_)));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.favorite_dialog.is_none());
+    assert!(app.config.favorites.is_empty());
+}
+
+#[test]
+fn f_lists_the_favorites_to_show_edit_and_delete() {
+    let mut app = board_app();
+    app.config
+        .favorites
+        .push(crate::domain::favorites::Favorite {
+            name: "web".to_owned(),
+            color: "blue".to_owned(),
+            emoji: None,
+            repos: vec![PathBuf::from("/repos/gamma")],
+        });
+    press(&mut app, KeyCode::Char('f'));
+    pick(&mut app, "web");
+    pick(&mut app, "Show only these");
+    assert_eq!(app.active_favorite, Some(0));
+    let lines = screen(&mut app, 100, 24);
+    assert!(!shown(&lines, "alpha"));
+    assert!(shown(&lines, "gamma"));
+    press(&mut app, KeyCode::Char('f'));
+    pick(&mut app, "web (shown)");
+    pick(&mut app, "Edit\u{2026}");
+    ctrl(&mut app, 'u');
+    type_line(&mut app, "front");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.config.favorites[0].name, "front");
+    press(&mut app, KeyCode::Char('f'));
+    pick(&mut app, "front (shown)");
+    pick(&mut app, "Delete");
+    assert!(app.config.favorites.is_empty());
+    assert_eq!(app.active_favorite, None);
+}

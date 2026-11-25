@@ -1169,3 +1169,588 @@ fn a_click_on_a_critter_pets_it_and_marks_nothing() {
         crate::domain::critters::Mood::Pet
     );
 }
+
+fn key_event(code: KeyCode) -> Event {
+    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+#[test]
+fn the_loop_draws_handles_events_sends_copies_and_runs_programs() {
+    use super::desktop::{Foreground, TerminalDesktop};
+    let mut app = board_app();
+    let desktop = TerminalDesktop::default();
+    use crate::application::desktop::Desktop;
+    desktop
+        .open_file(std::path::Path::new("/tmp/out.txt"))
+        .unwrap();
+    app.gui.copies.push("copied".to_owned());
+    let mut events = vec![
+        key_event(KeyCode::Char('q')),
+        Event::Resize(80, 24),
+        // Popped from the end: gained first, then lost.
+        Event::FocusLost,
+        Event::FocusGained,
+        Event::Mouse(mouse_event(MouseEventKind::ScrollDown, 1, 1)),
+        key_event(KeyCode::Char('j')),
+    ];
+    let mut next = |_wait: std::time::Duration| Ok(events.pop());
+    let mut ran = Vec::new();
+    let mut foreground = |_: &mut Terminal<TestBackend>, program: &Foreground| {
+        ran.push(program.clone());
+        Ok(Err(std::io::Error::other("not here")))
+    };
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    let mut out = Vec::new();
+    super::run_loop(
+        &mut terminal,
+        &mut app,
+        &desktop,
+        &mut out,
+        &mut next,
+        &mut foreground,
+    )
+    .unwrap();
+    assert!(app.gui.quit);
+    assert!(!app.gui.focused, "focus was lost");
+    assert_eq!(ran, vec![Foreground::Pager(PathBuf::from("/tmp/out.txt"))]);
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.text == "Cannot start the pager: not here")
+    );
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        super::clipboard::osc52("copied")
+    );
+}
+
+#[test]
+fn a_foreground_program_runs_in_its_folder_and_a_missing_one_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(super::run_foreground(&["true".into()], Some(dir.path())).is_ok());
+    assert!(super::run_foreground(&[], None).is_err());
+    assert!(super::run_foreground(&["/no/such/program".into()], None).is_err());
+}
+
+#[test]
+fn board_keys_move_mark_and_filter() {
+    let mut app = board_app();
+    for name in ["delta", "epsilon"] {
+        app.cards
+            .push(card(name, Counts::default(), Upstream::None));
+    }
+    app.cards[1].probe = Some(Ok(snapshot(
+        Counts::default(),
+        Upstream::Tracking {
+            ahead: 2,
+            behind: 1,
+        },
+        &["main"],
+    )));
+    screen(&mut app, 100, 24);
+    press(&mut app, KeyCode::PageDown);
+    press(&mut app, KeyCode::Char('k'));
+    press(&mut app, KeyCode::PageUp);
+    assert_eq!(
+        super::state::selected(&app),
+        Some(PathBuf::from("/repos/alpha"))
+    );
+    press(&mut app, KeyCode::Char('b'));
+    assert_eq!(app.marked_repos(), vec![PathBuf::from("/repos/beta")]);
+    press(&mut app, KeyCode::Char('p'));
+    assert_eq!(app.marked_repos(), vec![PathBuf::from("/repos/beta")]);
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "[p] ahead"));
+    press(&mut app, KeyCode::Char('p'));
+    let lines = screen(&mut app, 100, 24);
+    assert!(
+        shown(&lines, "[p] ahead"),
+        "struck through, the others marked"
+    );
+    press(&mut app, KeyCode::Char('B'));
+    assert_eq!(app.status_filter, Some(crate::app::MarkBy::Behind));
+    press(&mut app, KeyCode::Char('P'));
+    assert_eq!(app.status_filter, Some(crate::app::MarkBy::Ahead));
+    press(&mut app, KeyCode::Char('A'));
+    press(&mut app, KeyCode::Char('/'));
+    type_line(&mut app, "xyz");
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(app.filter, "xy");
+    ctrl(&mut app, 'u');
+    assert!(app.filter.is_empty());
+    press(&mut app, KeyCode::F(5));
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::F(5));
+    assert_eq!(app.gui.mode, super::state::Mode::Board);
+    ctrl(&mut app, 'c');
+    assert!(app.gui.quit);
+}
+
+#[test]
+fn the_help_scrolls_and_q_in_it_quits() {
+    let mut app = board_app();
+    press(&mut app, KeyCode::Char('?'));
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.gui.help_scroll, 2);
+    press(&mut app, KeyCode::Char('k'));
+    assert_eq!(app.gui.help_scroll, 1);
+    press(&mut app, KeyCode::PageDown);
+    screen(&mut app, 100, 24);
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.gui.help_scroll, 0);
+    let lines = screen(&mut app, 100, 80);
+    assert!(shown(&lines, " keys "), "a tall screen shows all keys");
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.gui.quit);
+}
+
+#[test]
+fn the_mouse_picks_menu_entries_and_a_click_beside_closes_it() {
+    let mut app = board_app();
+    press(&mut app, KeyCode::Char('s'));
+    screen(&mut app, 100, 30);
+    let (y, _) = app.gui.menu_rows[1];
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::Down(MouseButton::Left), 50, y),
+    );
+    assert_eq!(app.sort, crate::domain::board::SortKey::Path);
+    press(&mut app, KeyCode::Char('s'));
+    screen(&mut app, 100, 30);
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::Down(MouseButton::Left), 0, 0),
+    );
+    assert_eq!(app.gui.mode, super::state::Mode::Board);
+    press(&mut app, KeyCode::Char('m'));
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, "mark repositories first"));
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::BackTab);
+    press(&mut app, KeyCode::Char('k'));
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Esc);
+}
+
+#[test]
+fn the_mouse_scrolls_and_folds_the_output_panel() {
+    let (mut app, _) = ran_status();
+    screen(&mut app, 100, 40);
+    let area = app.gui.output_area;
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::ScrollUp, area.x, area.y),
+    );
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::ScrollDown, area.x, area.y),
+    );
+    screen(&mut app, 100, 40);
+    let section = super::output::lines(&app)
+        .iter()
+        .position(|l| matches!(l, super::output::OutLine::Section { .. }))
+        .unwrap();
+    app.gui.output_top = 0;
+    let row = area.y + u16::try_from(section).unwrap();
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::Down(MouseButton::Left), area.x, row),
+    );
+    assert_eq!(app.gui.folded.len(), 1);
+}
+
+#[test]
+fn a_click_on_a_favorite_shows_its_rows_and_a_right_click_its_menu() {
+    let mut app = board_app();
+    app.config
+        .favorites
+        .push(crate::domain::favorites::Favorite {
+            name: "web".to_owned(),
+            color: "blue".to_owned(),
+            emoji: None,
+            repos: vec![PathBuf::from("/repos/gamma")],
+        });
+    screen(&mut app, 100, 24);
+    let (y, chips) = app.gui.favorites_at.clone();
+    let x = chips[0].0;
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::Down(MouseButton::Left), x, y),
+    );
+    assert_eq!(app.active_favorite, Some(0));
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::Down(MouseButton::Right), x, y),
+    );
+    assert!(matches!(&app.gui.mode, super::state::Mode::Menu(m) if m.title == "web"));
+    pick(&mut app, "Add the marked rows (none marked)");
+    assert!(
+        matches!(app.gui.mode, super::state::Mode::Menu(_)),
+        "a greyed entry is not picked"
+    );
+    press(&mut app, KeyCode::Esc);
+    // A second click shows all rows again; a hidden mark counts for nothing.
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::Down(MouseButton::Left), x, y),
+    );
+    assert_eq!(app.active_favorite, None);
+    app.marked.insert(PathBuf::from("/repos/alpha"));
+    press(&mut app, KeyCode::Char('f'));
+    pick(&mut app, "web");
+    pick(&mut app, "Add the marked rows");
+    assert_eq!(app.config.favorites[0].repos.len(), 2);
+    press(&mut app, KeyCode::Char('f'));
+    pick(&mut app, "web");
+    pick(&mut app, "Remove the marked rows");
+    assert_eq!(app.config.favorites[0].repos.len(), 1);
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Add to web");
+    assert_eq!(app.config.favorites[0].repos.len(), 2);
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Remove from web");
+    assert_eq!(app.config.favorites[0].repos.len(), 1);
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Open");
+    assert!(app.repo_view.is_some());
+}
+
+#[test]
+fn the_repository_view_takes_the_mouse_and_scrolls_its_pane() {
+    let (mut app, _) = repo_app();
+    app.cards[0].probe = Some(Ok(snapshot(
+        Counts {
+            modified: 1,
+            ..Counts::default()
+        },
+        Upstream::None,
+        &["main"],
+    )));
+    open_view(&mut app);
+    screen(&mut app, 120, 30);
+    let list = app.gui.list_area;
+    let click = |row| mouse_event(MouseEventKind::Down(MouseButton::Left), list.x + 1, row);
+    keys::on_mouse(&mut app, click(list.y));
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, "\u{25b8} src/"), "a click folded the folder");
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::ScrollDown, list.x + 1, list.y),
+    );
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::ScrollUp, list.x + 1, list.y),
+    );
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::ScrollDown, 100, list.y),
+    );
+    keys::on_mouse(&mut app, mouse_event(MouseEventKind::ScrollUp, 100, list.y));
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::Down(MouseButton::Left), 100, 5),
+    );
+    keys::on_mouse(&mut app, mouse_event(MouseEventKind::Moved, 100, 5));
+    for code in [
+        KeyCode::Char('J'),
+        KeyCode::Char('K'),
+        KeyCode::PageDown,
+        KeyCode::PageUp,
+        KeyCode::Char('k'),
+        KeyCode::Char('r'),
+        KeyCode::F(5),
+    ] {
+        press(&mut app, code);
+    }
+    press(&mut app, KeyCode::Char('?'));
+    assert!(app.gui.help);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('2'));
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, " Commits "));
+    press(&mut app, KeyCode::Char('G'));
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.repo_view.is_none());
+}
+
+#[test]
+fn the_pane_says_what_is_being_read_or_went_wrong() {
+    use crate::domain::details::{ChangeKind, DiffTarget, FileChange};
+    let (mut app, _) = repo_app();
+    open_view(&mut app);
+    let view = app.repo_view.as_mut().unwrap();
+    let added = FileChange {
+        path: "empty.txt".into(),
+        kind: ChangeKind::Added,
+    };
+    view.selected = Some(DiffTarget::File(added));
+    view.diff = None;
+    let text = |app: &App| {
+        super::repo::pane_rows(app.repo_view.as_ref().unwrap())
+            .iter()
+            .map(|r| r.line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(text(&app), "loading");
+    app.repo_view.as_mut().unwrap().diff = Some(Err("broken".into()));
+    assert_eq!(text(&app), "broken");
+    app.repo_view.as_mut().unwrap().diff = Some(Ok(String::new()));
+    assert!(text(&app).contains("empty file"));
+    let view = app.repo_view.as_mut().unwrap();
+    view.selected = Some(DiffTarget::File(FileChange {
+        path: "same.txt".into(),
+        kind: ChangeKind::Modified,
+    }));
+    assert!(text(&app).contains("no difference"));
+    let view = app.repo_view.as_mut().unwrap();
+    view.selected = Some(DiffTarget::Commit("aaaabbbb".into()));
+    view.diff = Some(Ok("garbage".into()));
+    assert!(text(&app).contains("this commit cannot be read"));
+    let view = app.repo_view.as_mut().unwrap();
+    view.details = None;
+    assert_eq!(super::repo::rows(&app)[0].line.to_string(), "loading");
+    app.repo_view.as_mut().unwrap().details = Some(Err("no repository".into()));
+    assert_eq!(super::repo::rows(&app)[0].line.to_string(), "no repository");
+    app.repo_view.as_mut().unwrap().details = Some(Ok(Default::default()));
+    app.switch_repo_tab(crate::domain::details::RepoTab::Files);
+    assert!(
+        super::repo::rows(&app)[0]
+            .line
+            .to_string()
+            .contains("clean")
+    );
+}
+
+#[test]
+fn the_commit_pane_keys_move_and_the_list_reads_on() {
+    let backend = Arc::new(FakeBackend::default());
+    *backend.details.lock().unwrap() = Some(Default::default());
+    *backend.log_length.lock().unwrap() = 230;
+    let mut app = app_on_front::<Tui>(backend, Arc::new(FakeDesktop::default()), None);
+    app.cards
+        .push(card("alpha", Counts::default(), Upstream::None));
+    open_view(&mut app);
+    let commits = |app: &App| {
+        app.repo_view
+            .as_ref()
+            .unwrap()
+            .details
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .commits
+            .len()
+    };
+    let before = commits(&app);
+    let rows = super::repo::rows(&app);
+    assert_eq!(
+        rows.last().unwrap().line.to_string(),
+        "more commits are read\u{2026}"
+    );
+    press(&mut app, KeyCode::Char('G'));
+    crate::app::tests::settle(&mut app, |app| commits(app) > before);
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Enter);
+    settle_diff(&mut app);
+    press(&mut app, KeyCode::Tab);
+    for code in [
+        KeyCode::Char('j'),
+        KeyCode::Down,
+        KeyCode::Char('g'),
+        KeyCode::Up,
+        KeyCode::Char('J'),
+    ] {
+        press(&mut app, code);
+    }
+    screen(&mut app, 120, 12);
+    press(&mut app, KeyCode::Char('G'));
+    screen(&mut app, 120, 12);
+    press(&mut app, KeyCode::Tab);
+    assert!(!app.gui.pane_focus);
+}
+
+#[test]
+fn a_line_edits_by_characters_not_bytes() {
+    use super::widgets::Input;
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+    let mut input = Input::new("äöü");
+    assert_eq!(input.cursor_column(), 3);
+    input.edit(key(KeyCode::Left));
+    input.edit(key(KeyCode::Backspace));
+    assert_eq!(input.text, "äü");
+    input.edit(key(KeyCode::Home));
+    input.edit(key(KeyCode::Delete));
+    assert_eq!(input.text, "ü");
+    input.edit(key(KeyCode::Right));
+    input.edit(key(KeyCode::Right));
+    input.edit(key(KeyCode::Char('x')));
+    assert_eq!(input.text, "üx");
+    input.edit(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    assert_eq!(input.cursor, 0);
+    input.edit(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+    assert_eq!(input.cursor, input.text.len());
+    input.edit(key(KeyCode::End));
+    assert!(!input.edit(key(KeyCode::F(1))));
+    input.set("abc", Some(99));
+    assert_eq!(input.cursor, 3);
+    input.set("ä", Some(1));
+    assert_eq!(input.cursor, 2, "never inside a character");
+    let mut empty = Input::default();
+    empty.edit(key(KeyCode::Backspace));
+    empty.edit(key(KeyCode::Delete));
+    assert!(empty.text.is_empty());
+}
+
+#[test]
+fn settings_rows_step_within_their_ranges() {
+    use super::settings::Row;
+    let mut app = board_app();
+    press(&mut app, KeyCode::Char('S'));
+    settings_to(&mut app, Row::FetchInterval);
+    let before = app.config.fetch_interval_secs;
+    press(&mut app, KeyCode::Char('l'));
+    assert_eq!(app.config.fetch_interval_secs, before + 10);
+    press(&mut app, KeyCode::Char('h'));
+    assert_eq!(app.config.fetch_interval_secs, before);
+    settings_to(&mut app, Row::ScanDepth);
+    app.config.scan_depth = 1;
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.config.scan_depth, 1, "not below 1");
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.config.scan_depth, 2);
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('k'));
+    press(&mut app, KeyCode::Up);
+    let rows = super::settings::rows(&app);
+    assert_eq!(rows[super::settings::cursor(&app, &rows)], Row::ScanDepth);
+    app.config.auto_insert_single_match = false;
+    let lines = screen(&mut app, 100, 40);
+    assert!(shown(&lines, "[ ] Tab inserts"));
+    settings_to(&mut app, Row::Button(0));
+    let first = app.config.buttons[0].label.clone();
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.config.buttons[1].label, first, "moved down");
+    let lines = screen(&mut app, 100, 40);
+    assert!(shown(&lines, "a: git arguments"));
+    press(&mut app, KeyCode::Char('?'));
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::F(5));
+    settings_to(&mut app, Row::About);
+    press(&mut app, KeyCode::Enter);
+    settings_to(&mut app, Row::Back);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.settings_page, crate::app::SettingsPage::Settings);
+    press(&mut app, KeyCode::Char('q'));
+    assert!(!app.settings_open);
+}
+
+#[test]
+fn the_completion_popup_moves_both_ways_and_esc_closes_it() {
+    let mut app = board_app();
+    app.cards[0].probe = Some(Ok(snapshot(
+        Counts::default(),
+        Upstream::None,
+        &["main", "feature-a", "feature-b"],
+    )));
+    app.marked.insert(PathBuf::from("/repos/alpha"));
+    app.vocab.subcommands = vec!["switch".to_owned(), "status".to_owned()];
+    app.config.auto_insert_single_match = true;
+    press(&mut app, KeyCode::Char(':'));
+    type_line(&mut app, "swi");
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(
+        app.gui.cli.input.text, "switch ",
+        "a single match is typed in"
+    );
+    type_line(&mut app, "f");
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
+    type_line(&mut app, "e");
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, " complete "));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.gui.cli.popup.is_none());
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Enter);
+    app.history = crate::domain::history::History::from_lines(["one", "two"].map(str::to_owned));
+    ctrl(&mut app, 'u');
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.gui.cli.input.text, "two");
+    ctrl(&mut app, 'r');
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, " history "));
+    type_line(&mut app, "zzz");
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, "no matches"));
+}
+
+#[test]
+fn the_board_names_every_state_of_a_card() {
+    use crate::domain::status::{Head, RepoState};
+    let mut snap = snapshot(Counts::default(), Upstream::Gone, &["main"]);
+    snap.status.head = Head::Detached("abc1234".into());
+    snap.state = RepoState::Rebasing;
+    snap.tags = vec!["v2".into(), "v1".into()];
+    assert_eq!(board::branch_text(&snap), "detached @ abc1234");
+    assert_eq!(board::tag_text(&snap), "v2 +1");
+    assert_eq!(board::tree_text(&snap), "clean rebasing");
+    assert_eq!(board::sync_text(&snap), "upstream gone");
+    snap.status.head = Head::Unborn("main".into());
+    snap.state = RepoState::Merging;
+    snap.tags = vec!["v1".into()];
+    assert_eq!(board::branch_text(&snap), "main (no commits)");
+    assert_eq!(board::tag_text(&snap), "v1");
+    assert_eq!(board::tree_text(&snap), "clean merging");
+    let mut failed = card("alpha", Counts::default(), Upstream::None);
+    failed.last_command = Some(false);
+    assert_eq!(board::last_text(&failed, false).0, "failed");
+    assert_eq!(board::last_text(&failed, true).0, "running");
+    let mut app = board_app();
+    let mut tagged = snapshot(Counts::default(), Upstream::None, &["main"]);
+    tagged.tags = vec!["v1".into(), "v0".into()];
+    tagged.commit = Some(crate::domain::repo::Commit {
+        hash: "abcdef0123".into(),
+        short: "abcdef0".into(),
+        subject: "Start".into(),
+    });
+    app.cards[0].probe = Some(Ok(tagged));
+    app.cards[0].last_command = Some(true);
+    app.toast("hello");
+    let lines = screen(&mut app, 120, 24);
+    assert!(shown(&lines, "v1 v0"));
+    assert!(shown(&lines, "abcdef0 Start"));
+    assert!(shown(&lines, "last command: ok"));
+    assert!(shown(&lines, "hello"));
+}
+
+#[test]
+fn a_destructive_command_in_several_rows_asks_first() {
+    let mut app = board_app();
+    app.marked.insert(PathBuf::from("/repos/alpha"));
+    app.marked.insert(PathBuf::from("/repos/beta"));
+    app.run_cli_line("reset --hard");
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, " Destructive command "));
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.confirm.is_some(), "other keys do nothing");
+    press(&mut app, KeyCode::Esc);
+    assert!(app.confirm.is_none());
+}

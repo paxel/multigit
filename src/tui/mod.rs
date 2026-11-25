@@ -24,12 +24,13 @@ pub mod widgets;
 mod tests;
 
 use desktop::{Foreground, TerminalDesktop};
-use ratatui::DefaultTerminal;
+use ratatui::backend::Backend;
 use ratatui::crossterm::event::{
     self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
 };
 use ratatui::crossterm::execute;
-use std::io;
+use ratatui::{DefaultTerminal, Terminal};
+use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -47,7 +48,30 @@ const FRAME: Duration = Duration::from_millis(100);
 pub fn run(mut app: App, desktop: Arc<TerminalDesktop>) -> io::Result<()> {
     app.silent = true;
     let mut terminal = enter()?;
-    let result = run_loop(&mut terminal, &mut app, &desktop);
+    let mut next_event = |wait: Duration| -> io::Result<Option<Event>> {
+        if event::poll(wait)? {
+            event::read().map(Some)
+        } else {
+            Ok(None)
+        }
+    };
+    // The board steps aside while the program runs, and comes back.
+    let mut foreground = |terminal: &mut DefaultTerminal, program: &Foreground| {
+        leave();
+        let command = program.command(std::env::var_os("PAGER"), std::env::var_os("SHELL"));
+        let ran = run_foreground(&command, program.dir());
+        *terminal = enter()?;
+        terminal.clear()?;
+        Ok(ran)
+    };
+    let result = run_loop(
+        &mut terminal,
+        &mut app,
+        &desktop,
+        &mut io::stdout(),
+        &mut next_event,
+        &mut foreground,
+    );
     leave();
     result
 }
@@ -66,11 +90,25 @@ fn leave() {
     ratatui::restore();
 }
 
-fn run_loop(
-    terminal: &mut DefaultTerminal,
+/// What waits for the next event of the terminal, at most this long.
+pub type NextEvent<'a> = dyn FnMut(Duration) -> io::Result<Option<Event>> + 'a;
+
+/// What runs a program in the terminal: `Ok` with how the program went.
+pub type RunForeground<'a, T> = dyn FnMut(&mut T, &Foreground) -> io::Result<io::Result<()>> + 'a;
+
+/// Draw, wait for an event, handle it, until the user quits. Copies go to
+/// `out`; what `desktop` was asked to open goes to `foreground`.
+pub fn run_loop<B: Backend>(
+    terminal: &mut Terminal<B>,
     app: &mut App,
     desktop: &TerminalDesktop,
-) -> io::Result<()> {
+    out: &mut impl Write,
+    next_event: &mut NextEvent,
+    foreground: &mut RunForeground<Terminal<B>>,
+) -> io::Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
     let mut last_frame = Instant::now();
     while !app.gui.quit {
         app.handle_events();
@@ -87,17 +125,15 @@ fn run_loop(
         } else {
             FRAME
         };
-        terminal.draw(|frame| board::draw(frame, app))?;
-        send_copies(app)?;
-        if event::poll(next.min(frame))? {
-            on_event(app, event::read()?);
+        terminal
+            .draw(|frame| board::draw(frame, app))
+            .map_err(io::Error::other)?;
+        send_copies(app, out)?;
+        if let Some(event) = next_event(next.min(frame))? {
+            on_event(app, event);
         }
         for program in desktop.take() {
-            leave();
-            let ran = run_foreground(&program);
-            *terminal = enter()?;
-            terminal.clear()?;
-            if let Err(e) = ran {
+            if let Err(e) = foreground(terminal, &program)? {
                 app.toast(format!("Cannot start {}: {e}", program.what()));
             }
         }
@@ -106,28 +142,28 @@ fn run_loop(
 }
 
 /// Hand what was copied to the terminal's clipboard.
-fn send_copies(app: &mut App) -> io::Result<()> {
-    use std::io::Write;
+pub fn send_copies(app: &mut App, out: &mut impl Write) -> io::Result<()> {
     let copies = std::mem::take(&mut app.gui.copies);
     if copies.is_empty() {
         return Ok(());
     }
-    let mut out = io::stdout();
     for text in copies {
         out.write_all(clipboard::osc52(&text).as_bytes())?;
     }
     out.flush()
 }
 
-/// Run `program` in this terminal and wait for it.
-fn run_foreground(program: &Foreground) -> io::Result<()> {
-    let command = program.command(std::env::var_os("PAGER"), std::env::var_os("SHELL"));
+/// Run `command` in `dir` and wait for it.
+pub fn run_foreground(
+    command: &[std::ffi::OsString],
+    dir: Option<&std::path::Path>,
+) -> io::Result<()> {
     let Some((name, args)) = command.split_first() else {
         return Err(io::Error::other("no program"));
     };
     let mut process = std::process::Command::new(name);
     process.args(args);
-    if let Some(dir) = program.dir() {
+    if let Some(dir) = dir {
         process.current_dir(dir);
     }
     process.status().map(|_| ())

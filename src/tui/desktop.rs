@@ -3,6 +3,7 @@
 //! steps aside; nothing opens a browser or plays a sound.
 
 use crate::application::desktop::Desktop;
+use crate::domain::command::shell_program;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -14,12 +15,16 @@ use std::sync::atomic::AtomicBool;
 pub enum Foreground {
     /// A text file in the pager.
     Pager(PathBuf),
+    /// The login shell in a repository's folder.
+    Shell(PathBuf),
 }
 
 impl Foreground {
-    /// The program and its arguments. `pager` is `$PAGER`.
-    pub fn command(&self, pager: Option<OsString>) -> Vec<OsString> {
+    /// The program and its arguments. `pager` is `$PAGER`, `shell` is
+    /// `$SHELL`.
+    pub fn command(&self, pager: Option<OsString>, shell: Option<OsString>) -> Vec<OsString> {
         match self {
+            Self::Shell(_) => vec![shell_program(shell)],
             Self::Pager(file) => {
                 let pager = pager
                     .and_then(|p| p.into_string().ok())
@@ -37,6 +42,7 @@ impl Foreground {
     pub fn dir(&self) -> Option<&Path> {
         match self {
             Self::Pager(_) => None,
+            Self::Shell(dir) => Some(dir),
         }
     }
 
@@ -44,6 +50,7 @@ impl Foreground {
     pub fn what(&self) -> &'static str {
         match self {
             Self::Pager(_) => "the pager",
+            Self::Shell(_) => "the shell",
         }
     }
 }
@@ -95,8 +102,10 @@ impl Desktop for TerminalDesktop {
         Ok(())
     }
 
-    fn open_terminal(&self, _dir: &Path, _configured: &str) -> io::Result<()> {
-        Err(none("a terminal window"))
+    /// The shell in `dir`, in this terminal; the terminal command of the
+    /// settings opens windows and is not used here.
+    fn open_terminal(&self, dir: &Path, _configured: &str) -> io::Result<()> {
+        self.push(Foreground::Shell(dir.to_path_buf()))
     }
 }
 
@@ -108,15 +117,34 @@ mod tests {
     fn the_pager_is_pager_with_its_words_or_less() {
         let file = Foreground::Pager(PathBuf::from("/tmp/out.txt"));
         assert_eq!(
-            file.command(Some("less -R".into())),
+            file.command(Some("less -R".into()), None),
             vec![
                 OsString::from("less"),
                 OsString::from("-R"),
                 OsString::from("/tmp/out.txt")
             ]
         );
-        assert_eq!(file.command(None)[0], OsString::from("less"));
-        assert_eq!(file.command(Some("".into()))[0], OsString::from("less"));
+        assert_eq!(file.command(None, None)[0], OsString::from("less"));
+        assert_eq!(
+            file.command(Some("".into()), None)[0],
+            OsString::from("less")
+        );
+    }
+
+    #[test]
+    fn the_shell_is_shell_or_sh_in_the_folder() {
+        let shell = Foreground::Shell(PathBuf::from("/repos/alpha"));
+        assert_eq!(
+            shell.command(None, Some("/usr/bin/fish".into())),
+            vec![OsString::from("/usr/bin/fish")]
+        );
+        assert_eq!(shell.command(None, None), vec![OsString::from("sh")]);
+        assert_eq!(shell.dir(), Some(Path::new("/repos/alpha")));
+        let desktop = TerminalDesktop::default();
+        desktop
+            .open_terminal(Path::new("/repos/alpha"), "konsole")
+            .unwrap();
+        assert_eq!(desktop.take(), vec![shell]);
     }
 
     #[test]

@@ -31,6 +31,9 @@ pub const HELP: &[(&str, &str)] = &[
     ("A", "show all again"),
     ("/", "filter by name (Enter, Esc: done)"),
     ("s", "sort"),
+    ("1 .. 9", "run that card button on the row"),
+    ("m", "run a card button on all marked rows"),
+    ("t", "a shell in the row's folder (exit: back)"),
     ("o", "hide or show the output panel"),
     ("Tab", "to the output panel and back"),
     ("  j / k, Enter", "move / fold a section (a click too)"),
@@ -331,10 +334,19 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// The full card of a repository, as lines.
 pub fn detail_lines(app: &App, card: &Card) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(vec![
+    let mut first = vec![
         Span::styled(title(&card.path), Style::new().add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {}", card.path.display()), dim()),
-    ])];
+    ];
+    // The card buttons with their keys.
+    for (key, button) in (1..=9).zip(&app.config.buttons) {
+        first.push(Span::styled(
+            format!("  {key}"),
+            Style::new().fg(Color::Cyan),
+        ));
+        first.push(Span::raw(format!(" {}", button.label)));
+    }
+    let mut lines = vec![Line::from(first)];
     let snap = match &card.probe {
         None => {
             lines.push(Line::styled("loading", dim()));

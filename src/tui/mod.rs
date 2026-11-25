@@ -84,7 +84,7 @@ fn run_loop(
 
 /// Run `program` in this terminal and wait for it.
 fn run_foreground(program: &Foreground) -> io::Result<()> {
-    let command = program.command(std::env::var_os("PAGER"));
+    let command = program.command(std::env::var_os("PAGER"), std::env::var_os("SHELL"));
     let Some((name, args)) = command.split_first() else {
         return Err(io::Error::other("no program"));
     };

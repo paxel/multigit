@@ -283,6 +283,9 @@ Plain keys act on the board; `?` shows them all:
 | /                 | Type into the filter field; Enter or Esc leaves it     |
 | s                 | Sort                                                   |
 | :                 | Go to the command line; Esc goes back to the board     |
+| 1 … 9             | Run that card button on the row                        |
+| m                 | Run a card button on all marked rows                   |
+| t                 | A shell in the row's folder; `exit` returns            |
 | o                 | Hide or show the output panel                          |
 | Tab               | Go to the output panel and back                        |
 | ?                 | Show or hide the keys                                  |
@@ -291,6 +294,10 @@ Plain keys act on the board; `?` shows them all:
 The mark keys work like the toolbar's buttons: the pressed one shows
 reversed, struck through when a second press marked the other rows. A click
 on a row selects and marks it.
+
+`t` is the terminal button: the board steps aside for `$SHELL` (`sh` when it
+is empty) in the repository's folder, and comes back when the shell ends.
+The terminal command of the Settings opens windows and is not used here.
 
 The command line works as in the window, with the same keys (see
 [Command line keys](#command-line-keys)): Enter runs the line in the marked

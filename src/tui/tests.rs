@@ -431,3 +431,41 @@ fn the_hidden_panel_marks_news_on_the_command_line() {
     let lines = screen(&mut app, 100, 24);
     assert!(!shown(&lines, "\u{2022} git"), "the panel showed it");
 }
+
+#[test]
+fn digits_run_card_buttons_and_m_runs_one_on_the_marked_rows() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut app = app_on_front::<Tui>(backend.clone(), Arc::new(FakeDesktop::default()), None);
+    for name in ["alpha", "beta", "gamma"] {
+        app.cards
+            .push(card(name, Counts::default(), Upstream::None));
+    }
+    let first = app.config.buttons[0].clone();
+    let lines = screen(&mut app, 120, 24);
+    assert!(shown(&lines, &format!("1 {}", first.label)));
+    press(&mut app, KeyCode::Char('1'));
+    crate::app::tests::settle(&mut app, |_| backend.runs.lock().unwrap().len() == 1);
+    assert_eq!(
+        backend.runs.lock().unwrap()[0].0,
+        PathBuf::from("/repos/alpha")
+    );
+    app.marked.insert(PathBuf::from("/repos/beta"));
+    app.marked.insert(PathBuf::from("/repos/gamma"));
+    press(&mut app, KeyCode::Char('m'));
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, " run in 2 repositories "));
+    press(&mut app, KeyCode::Enter);
+    crate::app::tests::settle(&mut app, |_| backend.runs.lock().unwrap().len() == 3);
+}
+
+#[test]
+fn t_opens_a_shell_in_the_row_and_ignores_the_terminal_setting() {
+    let desktop = Arc::new(FakeDesktop::default());
+    let mut app = app_on_front::<Tui>(Arc::default(), desktop.clone(), None);
+    app.cards
+        .push(card("alpha", Counts::default(), Upstream::None));
+    press(&mut app, KeyCode::Char('t'));
+    let asked = desktop.terminals.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].0, PathBuf::from("/repos/alpha"));
+}

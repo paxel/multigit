@@ -83,6 +83,13 @@ fn board_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('/') => app.gui.mode = Mode::Filter,
         KeyCode::Char(':') => app.gui.mode = Mode::Command,
         KeyCode::Char('o') => app.config.output_hidden = !app.config.output_hidden,
+        KeyCode::Char('t') => {
+            if let Some(path) = selected(app) {
+                app.open_terminal(&path);
+            }
+        }
+        KeyCode::Char(c @ '1'..='9') => run_button(app, c),
+        KeyCode::Char('m') => app.gui.mode = Mode::Menu(marked_buttons_menu(app)),
         KeyCode::Tab if !app.config.output_hidden && !app.log.is_empty() => {
             app.gui.mode = Mode::Output;
         }
@@ -102,6 +109,43 @@ fn filter_key(app: &mut App, key: KeyEvent) {
         _ => {}
     }
     app.gui.mode = Mode::Filter;
+}
+
+/// A digit runs that card button on the selected row, unless the row has
+/// no status yet (the window greys its buttons then).
+fn run_button(app: &mut App, digit: char) {
+    let Some(index) = digit.to_digit(10).and_then(|d| usize::try_from(d).ok()) else {
+        return;
+    };
+    let Some(path) = selected(app) else {
+        return;
+    };
+    let ready = app
+        .cards
+        .iter()
+        .any(|card| card.path == path && card.snapshot().is_some());
+    if ready {
+        app.run_button(index.saturating_sub(1), &path);
+    }
+}
+
+/// The card buttons, for all marked rows.
+pub fn marked_buttons_menu(app: &App) -> Menu {
+    let marked = app.marked_repos().len();
+    let items = if marked == 0 {
+        vec![Item::disabled("mark repositories first")]
+    } else {
+        app.config
+            .buttons
+            .iter()
+            .enumerate()
+            .map(|(i, b)| Item::new(b.label.clone(), Action::ButtonOnMarked(i)))
+            .collect()
+    };
+    Menu::new(
+        format!("run in {}", super::board::repositories(marked)),
+        items,
+    )
 }
 
 /// The sort keys, the one in use selected.

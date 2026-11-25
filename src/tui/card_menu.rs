@@ -19,6 +19,27 @@ pub fn card_menu(app: &App, path: &Path) -> Menu {
         repositories(targets.len())
     };
     let mut items = Vec::new();
+    let own = path.to_path_buf();
+    let ready = app
+        .cards
+        .iter()
+        .any(|c| c.path == path && c.snapshot().is_some());
+    if ready {
+        // These act on this one repository, marked or not, as on its card.
+        items.push(Item::new(
+            "Switch to\u{2026}",
+            Action::Branches(own.clone()),
+        ));
+        items.push(Item::new(
+            "Create new branch\u{2026}",
+            Action::NewBranch(own.clone()),
+        ));
+        items.push(Item::new(
+            "Switch to tag\u{2026}",
+            Action::Tags(own.clone()),
+        ));
+        items.push(Item::new("Track remote\u{2026}", Action::Remotes(own)));
+    }
     items.extend(copy_items(app, path));
     Menu::new(heading, items)
 }

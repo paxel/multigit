@@ -536,3 +536,67 @@ fn a_right_click_opens_the_menu_of_that_row() {
     assert_eq!(menu.title, "beta");
     assert!(app.marked.is_empty(), "a right click does not mark");
 }
+
+/// An app with one row `alpha` on `main` that has two more branches.
+fn branchy() -> (App, Arc<FakeBackend>) {
+    let backend = Arc::new(FakeBackend::default());
+    let mut app = app_on_front::<Tui>(backend.clone(), Arc::new(FakeDesktop::default()), None);
+    let mut alpha = card("alpha", Counts::default(), Upstream::None);
+    alpha.probe = Some(Ok(snapshot(
+        Counts::default(),
+        Upstream::None,
+        &["main", "feature-a", "feature-b"],
+    )));
+    app.cards.push(alpha);
+    (app, backend)
+}
+
+#[test]
+fn the_card_menu_switches_to_a_branch_from_a_filtered_list() {
+    let (mut app, backend) = branchy();
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Switch to\u{2026}");
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, " switch to "));
+    assert!(shown(&lines, "feature-b"));
+    type_line(&mut app, "-a");
+    let lines = screen(&mut app, 100, 30);
+    assert!(!shown(&lines, "feature-b"), "the filter");
+    press(&mut app, KeyCode::Enter);
+    crate::app::tests::settle(&mut app, |_| !backend.runs.lock().unwrap().is_empty());
+    assert_eq!(
+        backend.runs.lock().unwrap()[0].1,
+        vec!["switch".to_owned(), "feature-a".to_owned()]
+    );
+}
+
+#[test]
+fn create_new_branch_asks_for_its_name() {
+    let (mut app, backend) = branchy();
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Create new branch\u{2026}");
+    type_line(&mut app, "topic");
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, " new branch from the checked-out commit "));
+    assert!(shown(&lines, "topic"));
+    press(&mut app, KeyCode::Enter);
+    crate::app::tests::settle(&mut app, |_| !backend.runs.lock().unwrap().is_empty());
+    assert_eq!(
+        backend.runs.lock().unwrap()[0].1,
+        vec!["switch".to_owned(), "-c".to_owned(), "topic".to_owned()]
+    );
+}
+
+#[test]
+fn the_tag_and_remote_lists_say_when_there_is_nothing() {
+    let (mut app, _) = branchy();
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Switch to tag\u{2026}");
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, "no tags"));
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Track remote\u{2026}");
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, "no remote"));
+}

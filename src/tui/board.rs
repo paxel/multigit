@@ -5,7 +5,7 @@ use super::App;
 use super::cli;
 use super::output;
 use super::state::{Mode, selected_index};
-use super::widgets::Menu;
+use super::widgets::{Input, Menu};
 use crate::app::{Card, MarkBy};
 use crate::domain::command::{Job, display};
 use crate::domain::naming::title;
@@ -89,6 +89,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Mode::Menu(menu) = &app.gui.mode {
         let menu = menu.clone();
         app.gui.menu_rows = draw_menu(frame, &menu);
+    }
+    if let Mode::Prompt(prompt) = &app.gui.mode {
+        draw_prompt(frame, &prompt.title, &prompt.input);
     }
     if app.confirm.is_some() {
         draw_confirm(frame, app);
@@ -710,4 +713,26 @@ fn draw_output(frame: &mut Frame, app: &mut App, area: Rect) {
     app.gui.output_top = top;
     app.gui.output_area = inner;
     app.output_shown();
+}
+
+/// A question that wants a line of text, in the middle of the screen.
+pub fn draw_prompt(frame: &mut Frame, title: &str, input: &Input) {
+    let screen = frame.area();
+    let width = 60.min(screen.width);
+    let area = Rect {
+        x: screen.width.saturating_sub(width) / 2,
+        y: screen.height.saturating_sub(4) / 2,
+        width,
+        height: 4.min(screen.height),
+    };
+    frame.render_widget(Clear, area);
+    let block = Block::bordered().title(format!(" {title} "));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let lines = vec![
+        Line::raw(input.text.clone()),
+        Line::styled("Enter: done  Esc: cancel", dim()),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+    frame.set_cursor_position((inner.x.saturating_add(input.cursor_column()), inner.y));
 }

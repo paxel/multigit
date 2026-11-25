@@ -1,7 +1,7 @@
 //! What keys and the mouse do in the terminal.
 
 use super::App;
-use super::actions::{Action, perform};
+use super::actions::{Action, answer, perform};
 use super::card_menu::card_menu;
 use super::cli;
 use super::output;
@@ -39,6 +39,14 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
     }
     match std::mem::take(&mut app.gui.mode) {
         Mode::Board => board_key(app, key),
+        Mode::Prompt(mut prompt) => match key.code {
+            KeyCode::Esc => {}
+            KeyCode::Enter => answer(app, prompt.purpose, &prompt.input.text),
+            _ => {
+                prompt.input.edit(key);
+                app.gui.mode = Mode::Prompt(prompt);
+            }
+        },
         Mode::Output => {
             if output::key(app, key) {
                 app.gui.mode = Mode::Output;

@@ -297,7 +297,9 @@ reversed, struck through when a second press marked the other rows. A click
 on a row selects and marks it.
 
 The row's menu (`x` or a right click) has what a right click on a card has
-in the window, and the card's texts to copy: name, path, branch, tags,
+in the window: **Switch to**, **Create new branch**, **Switch to tag** and
+**Track remote** for that one repository, with the same lists (typing
+filters them), and the card's texts to copy: name, path, branch, tags,
 commit hash, remote URL and the fetch error, which then leaves the row.
 Copying asks the terminal to put the text on its clipboard (the OSC 52
 escape), so it reaches the clipboard of the machine in front of you, also

@@ -1,6 +1,7 @@
 //! What only the terminal front end keeps beside the board.
 
 use super::App;
+use super::actions::Prompt;
 use super::cli::Cli;
 use super::widgets::Menu;
 use ratatui::layout::Rect;
@@ -59,6 +60,8 @@ pub enum Mode {
     Command,
     /// The output panel.
     Output,
+    /// A question that wants a line of text.
+    Prompt(Prompt),
 }
 
 impl Default for Tui {

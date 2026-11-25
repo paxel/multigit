@@ -1,7 +1,7 @@
 //! What keys and the mouse do in the terminal.
 
 use super::App;
-use super::actions::{Action, answer, perform};
+use super::actions::{Action, Prompt, PromptFor, answer, perform};
 use super::card_menu::card_menu;
 use super::cli;
 use super::output;
@@ -42,6 +42,15 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
         Mode::Prompt(mut prompt) => match key.code {
             KeyCode::Esc => {}
             KeyCode::Enter => answer(app, prompt.purpose, &prompt.input.text),
+            KeyCode::Tab if prompt.purpose == PromptFor::AddFolder => {
+                let (home, cwd) = super::actions::places();
+                if let Some(text) =
+                    super::folders::complete(&prompt.input.text, home.as_deref(), &cwd)
+                {
+                    prompt.input.set(text, None);
+                }
+                app.gui.mode = Mode::Prompt(prompt);
+            }
             _ => {
                 prompt.input.edit(key);
                 app.gui.mode = Mode::Prompt(prompt);
@@ -104,6 +113,13 @@ fn board_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char(c @ '1'..='9') => run_button(app, c),
         KeyCode::Char('m') => app.gui.mode = Mode::Menu(marked_buttons_menu(app)),
+        KeyCode::Char('+') => {
+            app.gui.mode = Mode::Prompt(Prompt {
+                title: "add a repository, or a folder to scan (Tab completes)".to_owned(),
+                input: super::widgets::Input::default(),
+                purpose: PromptFor::AddFolder,
+            });
+        }
         KeyCode::Char('f') => app.gui.mode = Mode::Menu(super::favorites::list(app)),
         KeyCode::Char('x') => {
             if let Some(path) = selected(app) {

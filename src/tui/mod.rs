@@ -9,6 +9,7 @@ pub mod cli;
 pub mod clipboard;
 pub mod desktop;
 pub mod favorites;
+pub mod folders;
 pub mod keys;
 pub mod output;
 pub mod state;

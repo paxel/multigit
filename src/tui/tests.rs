@@ -629,7 +629,13 @@ fn a_new_favorite_from_the_card_menu_with_name_color_and_emoji() {
     assert_eq!(favorite.emoji.as_deref(), Some("\u{2b50}"));
     assert_eq!(favorite.repos.len(), 2);
     let lines = screen(&mut app, 100, 30);
-    assert!(shown(&lines, "\u{2b50} etl"), "the favorites line");
+    // A wide emoji leaves a filler cell behind it in the buffer.
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains('\u{2b50}') && l.contains(" etl ")),
+        "the favorites line"
+    );
 }
 
 #[test]
@@ -674,4 +680,49 @@ fn f_lists_the_favorites_to_show_edit_and_delete() {
     pick(&mut app, "Delete");
     assert!(app.config.favorites.is_empty());
     assert_eq!(app.active_favorite, None);
+}
+
+#[test]
+fn plus_adds_the_repositories_below_a_typed_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["one", "two"] {
+        let repo = dir.path().join("work").join(name);
+        std::fs::create_dir_all(repo.join(".git/objects")).unwrap();
+        std::fs::create_dir_all(repo.join(".git/refs")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    }
+    let mut app = app();
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(&lines, "+ adds one"));
+    press(&mut app, KeyCode::Char('+'));
+    type_line(&mut app, &format!("{}/wo", dir.path().display()));
+    press(&mut app, KeyCode::Tab);
+    assert!(
+        matches!(&app.gui.mode, super::state::Mode::Prompt(p) if p.input.text.ends_with("/work/"))
+    );
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.cards.len(), 2, "{:?}", app.toasts);
+}
+
+#[test]
+fn a_folder_that_is_not_there_says_so() {
+    let mut app = app();
+    press(&mut app, KeyCode::Char('+'));
+    type_line(&mut app, "/no/such/folder/here");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.toasts.iter().any(|t| t.text.starts_with("No folder")));
+}
+
+#[test]
+fn the_card_menu_hides_or_removes_the_marked_rows() {
+    let mut app = board_app();
+    app.marked.insert(PathBuf::from("/repos/alpha"));
+    app.marked.insert(PathBuf::from("/repos/beta"));
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Hide");
+    assert_eq!(app.cards.len(), 1);
+    assert_eq!(app.config.hidden.len(), 2);
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Remove from board");
+    assert!(app.cards.is_empty());
 }

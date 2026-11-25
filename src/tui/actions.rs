@@ -2,6 +2,7 @@
 
 use super::App;
 use super::favorites;
+use super::folders;
 use super::state::Mode;
 use super::widgets::{Input, Item, Menu};
 use crate::domain::board::SortKey;
@@ -43,6 +44,10 @@ pub enum Action {
     AddToFavorite(usize, Vec<PathBuf>),
     RemoveFromFavorite(usize, Vec<PathBuf>),
     DeleteFavorite(usize),
+    /// Off the board; nothing on disk is touched.
+    Remove(Vec<PathBuf>),
+    /// Off the board and remembered, so a scan leaves them out.
+    Hide(Vec<PathBuf>),
 }
 
 /// What a line typed into a [`Prompt`] is for.
@@ -50,6 +55,8 @@ pub enum Action {
 pub enum PromptFor {
     /// The name of a new branch in this repository.
     NewBranch(PathBuf),
+    /// A folder to add: a repository, or one to scan for repositories.
+    AddFolder,
 }
 
 /// A question that wants a line of text.
@@ -68,7 +75,27 @@ pub fn answer(app: &mut App, purpose: PromptFor, text: &str) {
                 app.start_run(&command, vec![path]);
             }
         }
+        PromptFor::AddFolder => {
+            if text.trim().is_empty() {
+                return;
+            }
+            let (home, cwd) = places();
+            let folder = folders::expand(text, home.as_deref(), &cwd);
+            match folder.canonicalize() {
+                Ok(folder) if folder.is_dir() => app.add_folder(&folder),
+                _ => app.toast(format!("No folder {}", folder.display())),
+            }
+        }
     }
+}
+
+/// The home folder and the folder multigit was started in.
+pub fn places() -> (Option<PathBuf>, PathBuf) {
+    let home = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    (home, cwd)
 }
 
 /// Do what a picked entry asks for.
@@ -119,6 +146,8 @@ pub fn perform(app: &mut App, action: Action) {
         Action::AddToFavorite(index, repos) => app.add_to_favorite(index, &repos),
         Action::RemoveFromFavorite(index, repos) => app.remove_from_favorite(index, &repos),
         Action::DeleteFavorite(index) => app.delete_favorite(index),
+        Action::Remove(repos) => app.remove_cards(&repos),
+        Action::Hide(repos) => app.hide_cards(&repos),
     }
 }
 

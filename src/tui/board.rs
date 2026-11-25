@@ -33,6 +33,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("s", "sort"),
     ("x, right click", "the row's menu: copy, and more"),
     ("f", "favorites: show, edit, add marked, delete"),
+    ("+", "add a repository or scan a folder"),
     ("1 .. 9", "run that card button on the row"),
     ("m", "run a card button on all marked rows"),
     ("t", "a shell in the row's folder (exit: back)"),
@@ -331,7 +332,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .with_offset(app.gui.offset)
         .with_selected(selected_index(app));
     if paths.is_empty() {
-        let empty = Paragraph::new("No repositories yet.").style(dim());
+        let empty = Paragraph::new("No repositories yet: + adds one.").style(dim());
         frame.render_widget(empty, area);
     } else {
         frame.render_stateful_widget(table, area, &mut state);

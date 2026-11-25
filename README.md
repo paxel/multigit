@@ -285,6 +285,7 @@ Plain keys act on the board; `?` shows them all:
 | :                 | Go to the command line; Esc goes back to the board     |
 | x, right click    | The row's menu                                         |
 | f                 | The favorites                                          |
+| +                 | Add a repository, or the ones below a folder           |
 | 1 … 9             | Run that card button on the row                        |
 | m                 | Run a card button on all marked rows                   |
 | t                 | A shell in the row's folder; `exit` returns            |
@@ -301,12 +302,16 @@ The row's menu (`x` or a right click) has what a right click on a card has
 in the window: **Switch to**, **Create new branch**, **Switch to tag** and
 **Track remote** for that one repository, with the same lists (typing
 filters them), adding to and removing from favorites and **New favorite**,
-and the card's texts to copy: name, path, branch, tags,
+**Hide** and **Remove from board**, and the card's texts to copy: name, path, branch, tags,
 commit hash, remote URL and the fetch error, which then leaves the row.
 Copying asks the terminal to put the text on its clipboard (the OSC 52
 escape), so it reaches the clipboard of the machine in front of you, also
 over SSH. Terminals that do not support it copy nothing; in tmux it takes
 `set-clipboard on`.
+
+`+` asks for the folder instead of a folder dialog: `~` is the home folder,
+a relative path starts where multigit was started, and Tab completes a
+folder's name. It is added and scanned as with **+** in the window.
 
 Favorites have a line over the table, each in its color. A click on one
 shows only its rows, a second click all again; a right click, or `f` and the

@@ -26,9 +26,24 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
         return;
     }
     if app.gui.help {
-        // Any key closes the help; `q` still quits.
-        app.gui.help = false;
-        if key.code != KeyCode::Char('q') {
+        // The scroll keys scroll it, any other closes it; `q` still quits.
+        let scroll = &mut app.gui.help_scroll;
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => *scroll = scroll.saturating_add(1),
+            KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+            KeyCode::PageDown | KeyCode::Char('G') | KeyCode::End => {
+                *scroll = scroll.saturating_add(usize::from(u16::MAX));
+            }
+            KeyCode::PageUp | KeyCode::Char('g') | KeyCode::Home => *scroll = 0,
+            _ => {
+                app.gui.help = false;
+                app.gui.help_scroll = 0;
+                if key.code != KeyCode::Char('q') {
+                    return;
+                }
+            }
+        }
+        if app.gui.help {
             return;
         }
     }

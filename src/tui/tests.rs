@@ -146,8 +146,10 @@ fn help_shows_the_keys_and_q_quits() {
     let mut app = board_app();
     press(&mut app, KeyCode::Char('?'));
     let lines = screen(&mut app, 100, 30);
-    assert!(shown(&lines, " keys "));
-    assert!(shown(&lines, "quit"));
+    assert!(shown(&lines, " keys  j/k scroll "));
+    press(&mut app, KeyCode::Char('G'));
+    let lines = screen(&mut app, 100, 30);
+    assert!(shown(&lines, "quit"), "scrolled to the end");
     press(&mut app, KeyCode::Esc);
     assert!(!app.gui.help, "any key closes the help");
     assert!(!app.gui.quit);
@@ -809,7 +811,13 @@ fn a_picked_file_shows_its_diff_and_y_copies_it() {
         &["main"],
     )));
     open_view(&mut app);
-    press(&mut app, KeyCode::Char('G'));
+    let main = super::repo::rows(&app)
+        .iter()
+        .position(|r| r.line.to_string().contains("M main.rs"))
+        .unwrap();
+    app.gui
+        .view_cursor
+        .insert(crate::domain::details::RepoTab::Files, main);
     press(&mut app, KeyCode::Enter);
     settle_diff(&mut app);
     let lines = screen(&mut app, 120, 30);

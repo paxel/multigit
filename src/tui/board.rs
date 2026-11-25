@@ -84,7 +84,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_confirm(frame, app);
     }
     if app.gui.help {
-        draw_help(frame);
+        draw_help(frame, &mut app.gui.help_scroll);
     }
 }
 
@@ -463,7 +463,7 @@ fn status_line(app: &App) -> Line<'static> {
     }
 }
 
-fn draw_help(frame: &mut Frame) {
+fn draw_help(frame: &mut Frame, scroll: &mut usize) {
     let width = 64.min(frame.area().width);
     let height = u16::try_from(HELP.len())
         .unwrap_or(u16::MAX)
@@ -484,9 +484,18 @@ fn draw_help(frame: &mut Frame) {
             ])
         })
         .collect();
-    let block = Block::bordered().title(" keys ");
+    // A screen too low for all keys scrolls them.
+    let room = usize::from(height.saturating_sub(2));
+    *scroll = (*scroll).min(lines.len().saturating_sub(room));
+    let title = if lines.len() > room {
+        " keys  j/k scroll "
+    } else {
+        " keys "
+    };
+    let shown: Vec<Line> = lines.into_iter().skip(*scroll).collect();
+    let block = Block::bordered().title(title);
     frame.render_widget(Clear, area);
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    frame.render_widget(Paragraph::new(shown).block(block), area);
 }
 
 /// Draw an open menu in the middle of the screen; returns the screen line

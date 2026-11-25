@@ -64,6 +64,8 @@ pub struct Tui {
     pub pane_focus: bool,
     /// The right pane's cursor row while it has the keys.
     pub pane_cursor: usize,
+    /// How far the key help is scrolled.
+    pub help_scroll: usize,
 }
 
 /// What has the keys.
@@ -112,6 +114,7 @@ impl Default for Tui {
             last_click: None,
             pane_focus: false,
             pane_cursor: 0,
+            help_scroll: 0,
         }
     }
 }

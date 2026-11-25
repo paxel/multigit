@@ -24,6 +24,10 @@ pub enum Pick {
     Fold(String),
     /// Show this in the right pane.
     Select(DiffTarget),
+    /// Unfold the folded run of the graph whose newest commit this is.
+    Unfold(String),
+    /// Draw the old remote branches too.
+    Old,
 }
 
 /// One row of a list.
@@ -109,7 +113,7 @@ pub fn rows(app: &App) -> Vec<ViewRow> {
                 .collect()
         }
         RepoTab::Commits => super::commits::rows(details, view),
-        RepoTab::Graph => vec![ViewRow::note("not in the terminal yet")],
+        RepoTab::Graph => super::graph::rows(details, view),
     }
 }
 
@@ -148,6 +152,8 @@ pub fn pick(app: &mut App, row: &ViewRow) {
     match &row.pick {
         Pick::Nothing => {}
         Pick::Fold(path) => app.toggle_repo_folder(path),
+        Pick::Unfold(first) => app.unfold_graph_run(first),
+        Pick::Old => app.show_old_branches(),
         Pick::Select(target) => {
             app.select_in_repo_view(target.clone());
             app.gui.pane_scroll = 0;
@@ -338,8 +344,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         tab_spans.push(Span::raw(" "));
     }
     frame.render_widget(Paragraph::new(Line::from(tab_spans)), tabs);
-    let [list_area, pane_area] =
-        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(body);
+    // The graph needs room for lanes, names and titles.
+    let share = if view.tab == RepoTab::Graph { 60 } else { 40 };
+    let [list_area, pane_area] = Layout::horizontal([
+        Constraint::Percentage(share),
+        Constraint::Percentage(100 - share),
+    ])
+    .areas(body);
     let all = rows(app);
     let at = cursor(app, all.len());
     let height = usize::from(list_area.height.saturating_sub(1));

@@ -916,3 +916,74 @@ fn c_copies_a_commit_value_and_p_goes_to_a_parent() {
         ))
     );
 }
+
+/// `repo_app` with a graph: main with two plain commits over the base, and
+/// side-branch with one commit on the base.
+fn graph_app() -> (App, Arc<FakeBackend>) {
+    use crate::domain::graph::{GraphCommit, GraphData, GraphRef, RefKind};
+    let (app, backend) = repo_app();
+    let commit = |hash: &str, parent: &str, subject: &str| GraphCommit {
+        hash: hash.into(),
+        parents: vec![parent.into()],
+        author: "Ada Lovelace".into(),
+        subject: subject.into(),
+    };
+    let name = |name: &str, kind, hash: &str| GraphRef {
+        name: name.into(),
+        kind,
+        hash: hash.into(),
+        time: 0,
+    };
+    *backend.graph.lock().unwrap() = Some(GraphData {
+        commits: vec![
+            commit("aa01", "aa02", "Tip of main"),
+            commit("aa02", "aa03", "Plain one"),
+            commit("aa03", "ba5e", "Plain two"),
+            commit("51de", "ba5e", "Work on the side"),
+            commit("ba5e", "0000", "Where they part"),
+        ],
+        refs: vec![
+            name("main", RefKind::Local, "aa01"),
+            name("origin/main", RefKind::Remote, "aa01"),
+            name("side-branch", RefKind::Local, "51de"),
+            name("v1", RefKind::Tag, "ba5e"),
+        ],
+        hidden: 2,
+        cut: false,
+    });
+    (app, backend)
+}
+
+#[test]
+fn the_graph_tab_draws_the_branches_and_unfolds_a_run() {
+    let (mut app, _) = graph_app();
+    open_view(&mut app);
+    press(&mut app, KeyCode::Char('3'));
+    crate::app::tests::settle(&mut app, |app| {
+        app.repo_view.as_ref().is_some_and(|v| v.graph.is_some())
+    });
+    let lines = screen(&mut app, 140, 34);
+    assert!(shown(&lines, "2 old remote branches hidden"), "{lines:#?}");
+    assert!(shown(&lines, "[main = origin]"));
+    assert!(shown(&lines, "Tip of main"));
+    assert!(shown(&lines, "2 commits"));
+    assert!(shown(&lines, "[v1]"));
+    assert!(lines.iter().any(|l| l.contains('\u{25cf}')), "commit dots");
+    let rows = super::repo::rows(&app);
+    let fold = rows
+        .iter()
+        .position(|r| matches!(r.pick, super::repo::Pick::Unfold(_)))
+        .unwrap();
+    app.gui
+        .view_cursor
+        .insert(crate::domain::details::RepoTab::Graph, fold);
+    press(&mut app, KeyCode::Enter);
+    let lines = screen(&mut app, 140, 34);
+    assert!(shown(&lines, "Plain one"), "the run unfolded");
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        app.repo_view.as_ref().unwrap().with_old,
+        "the old branches line"
+    );
+}

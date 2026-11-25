@@ -318,7 +318,9 @@ repository again, `y` copies all of the right side, and Esc or `q` closes
 it. In the Commits tab the history reads on at its end; for a picked commit
 `c` lists its hash, author, mail, date, message and names to copy, `p` its
 parents to go to, and Tab gives the keys to the right side, where Enter
-unfolds what the commit did to a file (Tab or Esc gives them back). To copy a part, mark it with the terminal's own selection (Shift and drag
+unfolds what the commit did to a file (Tab or Esc gives them back). The
+Graph tab draws the lanes with line characters; Enter on a folded run
+unfolds it, and on the line of hidden old remote branches shows them. To copy a part, mark it with the terminal's own selection (Shift and drag
 where the terminal leaves the mouse to multigit).
 
 `+` asks for the folder instead of a folder dialog: `~` is the home folder,

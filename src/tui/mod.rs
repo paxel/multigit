@@ -11,6 +11,7 @@ pub mod commits;
 pub mod desktop;
 pub mod favorites;
 pub mod folders;
+pub mod graph;
 pub mod keys;
 pub mod output;
 pub mod repo;

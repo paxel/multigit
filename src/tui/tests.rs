@@ -864,10 +864,7 @@ fn the_commits_tab_lists_the_history_and_shows_a_picked_commit() {
     press(&mut app, KeyCode::Enter);
     settle_diff(&mut app);
     let lines = screen(&mut app, 120, 34);
-    assert!(
-        shown(&lines, "[HEAD -> main]") || shown(&lines, "[tag: v9]"),
-        "{lines:#?}"
-    );
+    assert!(shown(&lines, "aaaabbbb [main] [v9]"), "{lines:#?}");
     assert!(shown(&lines, "Ada Lovelace <ada@example.org>"));
     assert!(shown(&lines, "Because it was broken."));
     assert!(shown(&lines, "2 files changed +15 -1"));

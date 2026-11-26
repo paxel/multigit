@@ -89,8 +89,8 @@ fn tab_single_match_inserts_inline() {
     let mut h = ready(Arc::default(), &[]);
     type_text(&mut h, "reba");
     key(&mut h, Key::Tab);
-    assert_eq!(h.state().cli.text, "rebase ");
-    assert!(h.state().cli.popup.is_none());
+    assert_eq!(h.state().gui.cli.text, "rebase ");
+    assert!(h.state().gui.cli.popup.is_none());
 }
 
 #[test]
@@ -98,15 +98,15 @@ fn tab_many_opens_popup_and_enter_accepts() {
     let mut h = ready(Arc::default(), &[]);
     type_text(&mut h, "switch fea");
     key(&mut h, Key::Tab);
-    assert_eq!(h.state().cli.text, "switch feature-");
+    assert_eq!(h.state().gui.cli.text, "switch feature-");
     assert_eq!(
-        h.state().cli.popup.as_ref().map(|p| p.kind),
+        h.state().gui.cli.popup.as_ref().map(|p| p.kind),
         Some(PopupKind::Completion)
     );
     key(&mut h, Key::ArrowDown);
     key(&mut h, Key::Enter);
-    assert_eq!(h.state().cli.text, "switch feature-b ");
-    assert!(h.state().cli.popup.is_none());
+    assert_eq!(h.state().gui.cli.text, "switch feature-b ");
+    assert!(h.state().gui.cli.popup.is_none());
     // Focus stays in the command line.
     assert!(h.ctx.memory(|m| m.has_focus(input_id())));
 }
@@ -118,8 +118,8 @@ fn popup_row_click_inserts() {
     key(&mut h, Key::Tab);
     h.get_by_label("feature-a").click();
     h.run();
-    assert_eq!(h.state().cli.text, "switch feature-a ");
-    assert!(h.state().cli.popup.is_none());
+    assert_eq!(h.state().gui.cli.text, "switch feature-a ");
+    assert!(h.state().gui.cli.popup.is_none());
 }
 
 #[test]
@@ -132,10 +132,10 @@ fn auto_insert_off_opens_popup_for_single_match() {
     focus_cli(&mut h);
     type_text(&mut h, "reba");
     key(&mut h, Key::Tab);
-    assert_eq!(h.state().cli.text, "reba");
-    assert!(h.state().cli.popup.is_some());
+    assert_eq!(h.state().gui.cli.text, "reba");
+    assert!(h.state().gui.cli.popup.is_some());
     key(&mut h, Key::Escape);
-    assert!(h.state().cli.popup.is_none());
+    assert!(h.state().gui.cli.popup.is_none());
     assert!(h.ctx.memory(|m| m.has_focus(input_id())));
 }
 
@@ -144,17 +144,17 @@ fn history_suggestion_and_up_down() {
     let mut h = ready(Arc::default(), &["pull --rebase", "status"]);
     type_text(&mut h, "pu");
     key(&mut h, Key::ArrowRight);
-    assert_eq!(h.state().cli.text, "pull --rebase");
+    assert_eq!(h.state().gui.cli.text, "pull --rebase");
 
     let mut h = ready(Arc::default(), &["pull --rebase", "status", "push"]);
     type_text(&mut h, "pu");
     key(&mut h, Key::ArrowUp);
-    assert_eq!(h.state().cli.text, "push");
+    assert_eq!(h.state().gui.cli.text, "push");
     key(&mut h, Key::ArrowUp);
-    assert_eq!(h.state().cli.text, "pull --rebase");
+    assert_eq!(h.state().gui.cli.text, "pull --rebase");
     key(&mut h, Key::ArrowDown);
     key(&mut h, Key::ArrowDown);
-    assert_eq!(h.state().cli.text, "pu");
+    assert_eq!(h.state().gui.cli.text, "pu");
     assert!(h.ctx.memory(|m| m.has_focus(input_id())));
 }
 
@@ -167,12 +167,12 @@ fn ctrl_r_fuzzy_history() {
     h.key_press_modifiers(Modifiers::CTRL, Key::R);
     h.run();
     assert_eq!(
-        h.state().cli.popup.as_ref().map(|p| p.kind),
+        h.state().gui.cli.popup.as_ref().map(|p| p.kind),
         Some(PopupKind::History)
     );
     type_text(&mut h, "lgo");
     key(&mut h, Key::Enter);
-    assert_eq!(h.state().cli.text, "log --oneline");
+    assert_eq!(h.state().gui.cli.text, "log --oneline");
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn enter_runs_in_marked_repos() {
     let mut h = ready(backend.clone(), &[]);
     type_text(&mut h, "status -sb");
     key(&mut h, Key::Enter);
-    assert_eq!(h.state().cli.text, "");
+    assert_eq!(h.state().gui.cli.text, "");
     settle(&mut h, |a| a.cards[0].last_command == Some(true));
     let runs = backend.runs.lock().unwrap().clone();
     assert!(runs.contains(&(
@@ -450,7 +450,7 @@ fn clicking_a_value_copies_it_and_keeps_the_mark() {
         // The click lands on the last of the queued events: read that pass.
         h.step();
         assert_eq!(copied(&h), vec![copy.to_owned()], "{label}");
-        assert!(h.state().copy_flash.is_some(), "{label}");
+        assert!(h.state().gui.copy_flash.is_some(), "{label}");
         h.run();
     }
     assert!(h.state().marked.contains(&PathBuf::from("/repo")));
@@ -473,7 +473,7 @@ fn clicking_a_field_name_or_state_marks_the_card_and_copies_nothing() {
             "{label}"
         );
     }
-    assert!(h.state().copy_flash.is_none());
+    assert!(h.state().gui.copy_flash.is_none());
 }
 
 #[test]
@@ -1298,7 +1298,7 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
         h.get_by_label(label).click();
         h.step();
         assert_eq!(copied(&h), vec![copy.to_owned()], "{label}");
-        assert!(h.state().copy_flash.is_some(), "{label}");
+        assert!(h.state().gui.copy_flash.is_some(), "{label}");
         // Off the value again: a resting pointer would show its tooltip.
         h.event(egui::Event::PointerGone);
         // Until "Copied" has faded.
@@ -1488,7 +1488,7 @@ fn text_is_marked(h: &Harness<'static, App>) -> bool {
 
 /// Where the open text menu drew `Copy` and `Copy all`.
 fn text_menu_entries(h: &Harness<'static, App>) -> (egui::Pos2, egui::Pos2) {
-    let menu = h.state().text_menu.as_ref().expect("no menu is open");
+    let menu = h.state().gui.text_menu.as_ref().expect("no menu is open");
     let [_, copy, all] = menu.drawn.expect("the menu was not drawn");
     (copy.center(), all.center())
 }
@@ -1520,14 +1520,17 @@ fn right_click_on_text_of_the_repository_view_copies_the_marked_text_or_all_of_i
     send(&mut h, vec![egui::Event::PointerMoved(to)]);
     send(&mut h, vec![pointer_button(to, Primary, false)]);
     assert!(text_is_marked(&h));
-    assert!(h.state().text_menu.is_none());
+    assert!(h.state().gui.text_menu.is_none());
 
     // A right click on it opens the menu, and the text stays marked.
     let on_text = text.left_top() + egui::vec2(20.0, 6.0);
     filtered_click(&mut h, on_text, Secondary);
     h.step();
     assert!(text_is_marked(&h), "the right click took the selection");
-    assert_eq!(h.state().text_menu.as_ref().unwrap().text, TextOf::Message);
+    assert_eq!(
+        h.state().gui.text_menu.as_ref().unwrap().text,
+        TextOf::Message
+    );
     h.get_by_label("Copy");
     h.get_by_label("Copy all");
 
@@ -1536,7 +1539,7 @@ fn right_click_on_text_of_the_repository_view_copies_the_marked_text_or_all_of_i
     send(&mut h, vec![egui::Event::PointerMoved(copy)]);
     send(&mut h, vec![pointer_button(copy, Primary, true)]);
     assert_eq!(copied(&h), vec!["Fix the thing".to_owned()]);
-    assert!(h.state().text_menu.is_none(), "the menu closed");
+    assert!(h.state().gui.text_menu.is_none(), "the menu closed");
     send(&mut h, vec![pointer_button(copy, Primary, false)]);
     assert!(text_is_marked(&h), "the click on Copy took the selection");
     assert!(h.query_by_label("Copy all").is_none());
@@ -1557,7 +1560,7 @@ fn right_click_on_text_of_the_repository_view_copies_the_marked_text_or_all_of_i
     let file = h.get_by_label("A docs/new.md").rect().center();
     filtered_click(&mut h, file, Secondary);
     h.step();
-    assert_eq!(h.state().text_menu.as_ref().unwrap().text, TextOf::Pane);
+    assert_eq!(h.state().gui.text_menu.as_ref().unwrap().text, TextOf::Pane);
     let (_, all) = text_menu_entries(&h);
     send(&mut h, vec![egui::Event::PointerMoved(all)]);
     send(&mut h, vec![pointer_button(all, Primary, true)]);
@@ -1566,18 +1569,18 @@ fn right_click_on_text_of_the_repository_view_copies_the_marked_text_or_all_of_i
 
     // Esc closes the menu, not the view; a click elsewhere closes it too.
     filtered_click(&mut h, on_text, Secondary);
-    assert!(h.state().text_menu.is_some());
+    assert!(h.state().gui.text_menu.is_some());
     send(&mut h, vec![enter_or_esc(Key::Escape)]);
-    assert!(h.state().text_menu.is_none());
+    assert!(h.state().gui.text_menu.is_none());
     assert!(h.state().repo_view.is_some());
     filtered_click(&mut h, on_text, Secondary);
     h.step();
     let row = h.get_by_label("AL aaaabbb Fix the thing").rect().center();
     filtered_click(&mut h, row, Primary);
-    assert!(h.state().text_menu.is_none());
+    assert!(h.state().gui.text_menu.is_none());
     // The list on the left is no text to copy: no menu there.
     filtered_click(&mut h, row, Secondary);
-    assert!(h.state().text_menu.is_none());
+    assert!(h.state().gui.text_menu.is_none());
 }
 
 fn enter_or_esc(key: Key) -> egui::Event {
@@ -1603,7 +1606,7 @@ fn right_click_on_the_output_of_a_command_copies_all_of_it() {
     filtered_click(&mut h, output, Secondary);
     h.step();
     assert!(matches!(
-        h.state().text_menu.as_ref().unwrap().text,
+        h.state().gui.text_menu.as_ref().unwrap().text,
         TextOf::Output(_, ref repo) if repo == &PathBuf::from("/repo")
     ));
     // Nothing is marked: only Copy all does something.
@@ -1611,18 +1614,18 @@ fn right_click_on_the_output_of_a_command_copies_all_of_it() {
     send(&mut h, vec![egui::Event::PointerMoved(copy)]);
     send(&mut h, vec![pointer_button(copy, Primary, true)]);
     assert!(copied(&h).is_empty());
-    assert!(h.state().text_menu.is_some());
+    assert!(h.state().gui.text_menu.is_some());
     send(&mut h, vec![pointer_button(copy, Primary, false)]);
     send(&mut h, vec![egui::Event::PointerMoved(all)]);
     send(&mut h, vec![pointer_button(all, Primary, true)]);
     assert_eq!(copied(&h), vec!["ran status".to_owned()]);
-    assert!(h.state().text_menu.is_none());
+    assert!(h.state().gui.text_menu.is_none());
     send(&mut h, vec![pointer_button(all, Primary, false)]);
 
     // A right click on a card is the card's own menu, as before.
     let card = card_space(&h);
     filtered_click(&mut h, card, Secondary);
-    assert!(h.state().text_menu.is_none());
+    assert!(h.state().gui.text_menu.is_none());
 }
 
 #[test]
@@ -1978,7 +1981,7 @@ fn about_page_opens_from_settings_and_its_rows_open_links() {
     h.get_by_label("multigit");
     h.get_by_label(&format!("Version {}", about::VERSION));
     h.get_by_label(about::TAGLINE);
-    assert!(h.state().icon.is_some(), "the icon was loaded");
+    assert!(h.state().gui.icon.is_some(), "the icon was loaded");
     for link in about::LINKS {
         h.get_by_label(link.subtitle);
         h.get_by_label(link.title).click();

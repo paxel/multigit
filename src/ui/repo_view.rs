@@ -2,9 +2,10 @@
 //! (Files, Commits, Graph), a list on the left and what is picked in it on
 //! the right, and Back and Forward through what was looked at.
 
+use crate::app::{CommitRow, commit_rows};
 use crate::domain::details::{
-    ChangeKind, CommitDetail, Details, DiffTarget, FileChange, LineKind, LogEntry, RepoTab,
-    author_hue, file_lines, initials, parse_commit, short_age, tree_rows,
+    ChangeKind, Details, DiffTarget, LineKind, LogEntry, RepoTab, author_hue, file_lines, initials,
+    parse_commit, short_age, tree_rows,
 };
 use crate::domain::graph::{GraphData, GraphRow, LabelKind, RowKind, graph_rows, labels};
 use crate::domain::naming::title;
@@ -503,77 +504,6 @@ fn diff_pane(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
         return;
     }
     diff_lines(ui, "repo-view-diff", &lines);
-}
-
-/// The rows under the header of `commit`: its files, each with the lines
-/// of its diff when it is unfolded.
-fn commit_rows<'a>(commit: &'a CommitDetail, view: &'a RepoView) -> Vec<CommitRow<'a>> {
-    let mut rows = Vec::new();
-    for file in &commit.files {
-        let diff = view.unfolded.get(&file.path);
-        let lines = commit.lines.get(&file.path).copied();
-        rows.push(CommitRow::File(file, diff.is_some(), lines));
-        match diff {
-            None => {}
-            Some(None) => rows.push(CommitRow::Note("loading")),
-            Some(Some(Err(error))) => rows.push(CommitRow::Note(error)),
-            Some(Some(Ok(diff))) => {
-                let lines = file_lines(file.kind, diff);
-                if lines.is_empty() {
-                    rows.push(CommitRow::Note("nothing to show"));
-                }
-                rows.extend(
-                    lines
-                        .into_iter()
-                        .map(|(kind, line)| CommitRow::Line(kind, line)),
-                );
-            }
-        }
-    }
-    rows
-}
-
-/// What the right pane shows as one text, for `Copy all`.
-impl RepoView {
-    pub(super) fn text_of(&self, text: &TextOf) -> Option<String> {
-        let Some(Ok(diff)) = &self.diff else {
-            return None;
-        };
-        match (text, self.selected.as_ref()?) {
-            (TextOf::Message, DiffTarget::Commit(_)) => Some(parse_commit(diff)?.message),
-            (TextOf::Pane, DiffTarget::File(file)) => {
-                let lines: Vec<&str> = file_lines(file.kind, diff)
-                    .into_iter()
-                    .map(|(_, line)| line)
-                    .collect();
-                Some(lines.join("\n"))
-            }
-            (TextOf::Pane, DiffTarget::Commit(_)) => {
-                let commit = parse_commit(diff)?;
-                let lines: Vec<String> = commit_rows(&commit, self)
-                    .into_iter()
-                    .map(|row| match row {
-                        CommitRow::File(file, ..) => {
-                            format!("{} {}", file.kind.letter(), file.path)
-                        }
-                        CommitRow::Line(_, line) => line.to_owned(),
-                        CommitRow::Note(note) => note.to_owned(),
-                    })
-                    .collect();
-                Some(lines.join("\n"))
-            }
-            _ => None,
-        }
-    }
-}
-
-/// A row under the header of a commit.
-enum CommitRow<'a> {
-    /// A file, whether its diff is unfolded, and its lines added and taken
-    /// away (a binary file has none).
-    File(&'a FileChange, bool, Option<(u32, u32)>),
-    Line(LineKind, &'a str),
-    Note(&'a str),
 }
 
 /// A value of the commit pane that goes to the clipboard on a click, like

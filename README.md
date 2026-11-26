@@ -257,6 +257,118 @@ So the board is no sandbox: add only folders whose origin you know.
 
 Buttons and the command line run git as you would in a terminal, hooks and all.
 
+## In a terminal
+
+`multigit --tui` runs the board in the terminal instead of a window, for a
+machine without a display, over SSH for example. It uses the same config,
+history and repositories as the window.
+
+<img src="assets/tui.svg" alt="multigit --tui: the board as a table, one row per repository, with the detail strip of the selected one">
+
+The board is a table with one row per repository: its name, branch, tag,
+working tree, unpushed (`↑`) and unpulled (`↓`) commits and the last
+command's result. A `!` before the name is a failed fetch. Under the table
+the selected row shows everything its card shows in the window. Statuses
+refresh and fetches run as in the window. No sounds and no music play in
+the terminal.
+
+Plain keys act on the board; `?` shows them all:
+
+| Key               | Action                                                 |
+|-------------------|--------------------------------------------------------|
+| j / k, arrows     | Select a row (the wheel too)                           |
+| g / G, Home / End | First / last row                                       |
+| space             | Mark or unmark the row                                 |
+| Enter             | Open the repository view (a double click too)          |
+| a, d, b, p        | Mark button all, dirty, behind, ahead (p for push)     |
+| D, B, P           | Show only the dirty, behind, ahead rows                |
+| A                 | Show all rows again                                    |
+| /                 | Type into the filter field; Enter or Esc leaves it     |
+| s                 | Sort                                                   |
+| :                 | Go to the command line; Esc goes back to the board     |
+| x, right click    | The row's menu                                         |
+| f                 | The favorites                                          |
+| +                 | Add a repository, or the ones below a folder           |
+| S                 | Settings and About                                     |
+| 1 … 9             | Run that card button on the row                        |
+| m                 | Run a card button on all marked rows                   |
+| t                 | A shell in the row's folder; `exit` returns            |
+| o                 | Hide or show the output panel                          |
+| Tab               | Go to the output panel and back                        |
+| ?                 | Show or hide the keys                                  |
+| q, Ctrl+C         | Quit                                                   |
+
+The mark keys work like the toolbar's buttons: the pressed one shows
+reversed, struck through when a second press marked the other rows. A click
+on a row selects and marks it.
+
+The row's menu (`x` or a right click) has what a right click on a card has
+in the window: **Switch to**, **Create new branch**, **Switch to tag** and
+**Track remote** for that one repository, with the same lists (typing
+filters them), adding to and removing from favorites and **New favorite**,
+**Hide** and **Remove from board**, and the card's texts to copy: name, path, branch, tags,
+commit hash, remote URL and the fetch error, which then leaves the row.
+Copying asks the terminal to put the text on its clipboard (the OSC 52
+escape), so it reaches the clipboard of the machine in front of you, also
+over SSH. Terminals that do not support it copy nothing; in tmux it takes
+`set-clipboard on`.
+
+The repository view fills the terminal: the list on the left, what is
+picked in it on the right. `1`, `2` and `3` pick the tabs Files, Commits and
+Graph, `[` and `]` are Back and Forward, `j`/`k` and Enter (or a click) move
+and pick, `J`/`K` and PgDn/PgUp scroll the right side, `r` reads the
+repository again, `y` copies all of the right side, and Esc or `q` closes
+it. In the Commits tab the history reads on at its end; for a picked commit
+`c` lists its hash, author, mail, date, message and names to copy, `p` its
+parents to go to, and Tab gives the keys to the right side, where Enter
+unfolds what the commit did to a file (Tab or Esc gives them back). The
+Graph tab draws the lanes with line characters; Enter on a folded run
+unfolds it, and on the line of hidden old remote branches shows them. To copy a part, mark it with the terminal's own selection (Shift and drag
+where the terminal leaves the mouse to multigit).
+
+`+` asks for the folder instead of a folder dialog: `~` is the home folder,
+a relative path starts where multigit was started, and Tab completes a
+folder's name. It is added and scanned as with **+** in the window.
+
+Favorites have a line over the table, each in its color. A click on one
+shows only its rows, a second click all again; a right click, or `f` and the
+favorite, opens what its button's right click opens in the window. The form
+for a favorite has its name, and its color and emoji, which ← and → change.
+
+`t` is the terminal button: the board steps aside for `$SHELL` (`sh` when it
+is empty) in the repository's folder, and comes back when the shell ends.
+The terminal command of the Settings opens windows and is not used here.
+
+The command line works as in the window, with the same keys (see
+[Command line keys](#command-line-keys)): Enter runs the line in the marked
+rows, Tab completes, Ctrl+R searches the history. A shell line, or a
+destructive command for more than one repository, asks first in a box:
+Enter runs, Esc cancels.
+
+The output panel shows the last commands, a section per repository with
+its exit code. In the panel `j` and `k` move, Enter (or a click on the
+header) folds a section, `C` clears the output, and `e` opens the command's
+output, `E` the section's, in `$PAGER` (`less` when it is not set); the
+board comes back when the pager ends. While the panel is hidden, a dot in
+front of the command line tells about the last command: running, then green
+or red.
+
+`S` opens Settings as a page of rows: ← and → change a value, Enter toggles
+or opens. The card buttons are edited there (Enter the label, `a` the git
+arguments, ← and → move one, `d` removes it), and hidden repositories are
+unhidden. Sounds, the Kawaii music and the terminal command are not shown.
+In the terminal System, Light and Dark all use the terminal's own colors;
+Kawaii paints everything in pastels and puts the bunnies and cats in front
+of the rows, as text: they sleep, look up, dance, let their ears hang and
+jump with a heart when clicked, as in the window, and a command that ends
+well throws hearts and stars out of its row. It moves while the terminal
+has focus (where the terminal reports focus). No sounds and no music.
+About shows the version and the links; Enter copies a link, as there is no
+browser.
+
+In the terminal multigit writes no menu entry and no icon. With `RUST_LOG` set, its log goes to `tui.log` in
+`~/.local/state/multigit` instead of the screen.
+
 ## Settings and files
 
 **Settings** in the toolbar changes the fetch interval, the number of parallel
@@ -380,7 +492,7 @@ To build the bundle yourself:
 
 ```sh
 cargo build --release
-packaging/macos/bundle.sh target/release/multigit 0.4.0 .
+packaging/macos/bundle.sh target/release/multigit 0.5.0 .
 ```
 
 ### From source

@@ -3,6 +3,7 @@
 
 use crate::domain::repo::Snapshot;
 use crate::domain::status::Upstream;
+use crate::domain::system::System;
 use std::f32::consts::TAU;
 
 /// Samples per second of everything the app makes itself.
@@ -100,18 +101,32 @@ pub fn wav_bytes(samples: &[f32], rate: u32, volume: u8) -> Vec<u8> {
     wav
 }
 
-/// The command lines to try, in order, to play the WAV file `file`: the
-/// first whose program exists plays it.
-pub fn player_commands(macos: bool, file: &str) -> Vec<Vec<String>> {
-    let commands: &[&[&str]] = if macos {
-        &[&["afplay"]]
-    } else {
-        &[
-            &["pw-play"],
-            &["paplay"],
-            &["aplay", "-q"],
-            &["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"],
-        ]
+/// The command lines to try, in order, to play the WAV file `file` on
+/// `system`: the first whose program exists plays it.
+pub fn player_commands(system: System, file: &str) -> Vec<Vec<String>> {
+    const FFPLAY: &[&str] = &["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"];
+    let commands: &[&[&str]] = match system {
+        System::MacOs => &[&["afplay"]],
+        System::Linux => &[&["pw-play"], &["paplay"], &["aplay", "-q"], FFPLAY],
+        System::Windows => {
+            // PowerShell takes the file inside its script, quoted, so a
+            // quote in the path is doubled.
+            let script = format!(
+                "(New-Object Media.SoundPlayer '{}').PlaySync()",
+                file.replace('\'', "''")
+            );
+            let mut ffplay: Vec<String> = FFPLAY.iter().map(|s| (*s).to_owned()).collect();
+            ffplay.push(file.to_owned());
+            return vec![
+                ffplay,
+                vec![
+                    "powershell".to_owned(),
+                    "-NoProfile".to_owned(),
+                    "-Command".to_owned(),
+                    script,
+                ],
+            ];
+        }
     };
     commands
         .iter()
@@ -212,12 +227,27 @@ mod tests {
 
     #[test]
     fn players_get_the_file_as_last_argument() {
-        assert_eq!(player_commands(true, "/t/a.wav"), [["afplay", "/t/a.wav"]]);
-        let linux = player_commands(false, "/t/a.wav");
+        assert_eq!(
+            player_commands(System::MacOs, "/t/a.wav"),
+            [["afplay", "/t/a.wav"]]
+        );
+        let linux = player_commands(System::Linux, "/t/a.wav");
         assert_eq!(linux[0], ["pw-play", "/t/a.wav"]);
         assert_eq!(linux[1], ["paplay", "/t/a.wav"]);
         assert_eq!(linux[2], ["aplay", "-q", "/t/a.wav"]);
         assert!(linux.iter().all(|c| c.last().unwrap() == "/t/a.wav"));
+        let windows = player_commands(System::Windows, r"C:\it's\a.wav");
+        assert_eq!(windows[0][0], "ffplay");
+        assert_eq!(windows[0].last().unwrap(), r"C:\it's\a.wav");
+        assert_eq!(
+            windows[1],
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                r"(New-Object Media.SoundPlayer 'C:\it''s\a.wav').PlaySync()"
+            ]
+        );
     }
 
     #[test]

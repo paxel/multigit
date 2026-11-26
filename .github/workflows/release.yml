@@ -193,8 +193,41 @@ jobs:
           name: macos
           path: multigit-*.zip
 
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-16
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # Both programs: multigit.exe is the window, multigit-tui.exe the
+      # terminal board in a console.
+      - name: Build
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Package
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $name = "multigit-$env:VERSION-x86_64-windows"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/multigit.exe, target/x86_64-pc-windows-msvc/release/multigit-tui.exe $name
+          Copy-Item README.md, CHANGELOG.md, LICENSE, assets/fonts/Fredoka-OFL.txt $name
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: multigit-*.zip
+
   publish:
-    needs: [version, gate, linux, macos]
+    needs: [version, gate, linux, macos, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -254,3 +287,36 @@ jobs:
           git -C tap add Formula/multigit.rb Casks/multigit.rb
           git -C tap diff --cached --quiet || git -C tap commit -m "multigit $VERSION"
           git -C tap push
+
+  # Like the tap: after the release exists, the manifest points at its zip.
+  # CHANNEL_PAT must be allowed to push to paxel/scoop-bucket as well.
+  scoop:
+    name: Scoop bucket
+    needs: [version, publish]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Render the manifest with the zip's checksum
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: packaging/render-channels.sh "$VERSION" dist out
+
+      - name: Push to the bucket
+        env:
+          GH_TOKEN: ${{ secrets.CHANNEL_PAT }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          git config --global user.name "multigit-release-bot"
+          git config --global user.email "taum@tuta.io"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/paxel/scoop-bucket.git" bucket
+          mkdir -p bucket/bucket
+          cp out/multigit-scoop.json bucket/bucket/multigit.json
+          git -C bucket add bucket/multigit.json
+          git -C bucket diff --cached --quiet || git -C bucket commit -m "multigit $VERSION"
+          git -C bucket push

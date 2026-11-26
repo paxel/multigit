@@ -144,7 +144,8 @@ emoji. A repository can be in several.
   with a shell in that repository. Without a terminal command in Settings,
   multigit takes `$TERMINAL`, then `xdg-terminal-exec`, then the first of
   konsole, gnome-terminal, xfce4-terminal, kitty, alacritty, foot, wezterm and
-  xterm that is installed; on macOS it opens Terminal.app. In a terminal
+  xterm that is installed; on macOS it opens Terminal.app, and on Windows
+  Windows Terminal, or a PowerShell console where Windows Terminal is missing. In a terminal
   command of your own, `{dir}` stands for the repository's folder.
 - **Switching branches**: a right click on a card's branch name (or the sha of
   a detached HEAD) opens a menu for that one repository. **Switch to** lists
@@ -182,7 +183,8 @@ emoji. A repository can be in several.
   label (typing `git` first anyway is fine; it is ignored); Enter runs them in
   all marked repositories. It is disabled while nothing is marked.
 - **Shell lines**: a line starting with `!` runs through your login shell
-  (`$SHELL -c`, or `sh -c` when `$SHELL` is empty) in each marked repository's
+  (`$SHELL -c`, or `sh -c` when `$SHELL` is empty; on Windows `pwsh -Command`, or
+  `powershell -Command` when PowerShell 7 is not installed) in each marked repository's
   folder, for example `!ls | wc -l`. The label in front of the line then shows
   the shell's name. A button whose arguments start with `!` does the same.
   Shell lines always ask for confirmation first, even for one repository
@@ -197,7 +199,7 @@ The output panel above the command line keeps the last 50 commands, one
 collapsible section per repository with its exit code. **Open in editor**, on
 a command or on one repository's section, writes that output to a text file
 and opens it with the system's default program for text files (`xdg-open` on
-Linux, `open` on macOS); the files are in the temp folder and are removed when
+Linux, `open` on macOS, `explorer.exe` on Windows); the files are in the temp folder and are removed when
 multigit exits. Drag its upper edge to
 make it bigger. The **Output** button left of the command line hides the panel
 completely and brings it back, and the app starts as it was left; while it is hidden, a mark on the button tells
@@ -261,7 +263,9 @@ Buttons and the command line run git as you would in a terminal, hooks and all.
 
 `multigit --tui` runs the board in the terminal instead of a window, for a
 machine without a display, over SSH for example. It uses the same config,
-history and repositories as the window.
+history and repositories as the window. On Windows it is a program of its
+own, `multigit-tui`, as `multigit.exe` there is a window program without a
+console.
 
 <img src="assets/tui.svg" alt="multigit --tui: the board as a table, one row per repository, with the detail strip of the selected one">
 
@@ -385,8 +389,8 @@ your own command in multigit changed makes no sound. Settings has a volume,
 and per sound a file of your own (WAV, OGG, MP3 or FLAC, its first ten
 seconds), **Default** to go back to the built-in tone, and **Play** to hear
 it. multigit plays through the system's player program: `afplay` on macOS,
-and on Linux the first of `pw-play`, `paplay`, `aplay` and `ffplay` that is
-installed.
+on Linux the first of `pw-play`, `paplay`, `aplay` and `ffplay` that is
+installed, and on Windows `ffplay` or else PowerShell's sound player.
 
 The **Kawaii** theme is round and pastel, in the Fredoka font, with a rainbow
 drifting behind the cards, hearts and stars floating up, cards that bob, grow
@@ -441,7 +445,8 @@ the list of the crates in multigit with their licences.
 | `~/.local/share/icons/hicolor/256x256/apps/multigit.png`       | Icon (Linux only)                                 |
 
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_DATA_HOME` are honoured, on macOS
-as well. If the
+as well. On Windows the config is `%APPDATA%\multigit\config.toml` and the
+history `%LOCALAPPDATA%\multigit\history`, unless the XDG variables are set. If the
 config file cannot be read, the app starts with defaults and does not save
 over it.
 
@@ -492,8 +497,28 @@ To build the bundle yourself:
 
 ```sh
 cargo build --release
-packaging/macos/bundle.sh target/release/multigit 0.5.0 .
+packaging/macos/bundle.sh target/release/multigit 0.6.0 .
 ```
+
+### Scoop (Windows x86_64)
+
+```powershell
+scoop bucket add paxel https://github.com/paxel/scoop-bucket
+scoop install paxel/multigit
+```
+
+Scoop puts `multigit` and `multigit-tui` on the `PATH` and adds multigit to the
+Start menu.
+
+### Release zip (Windows x86_64)
+
+Download `multigit-<version>-x86_64-windows.zip` from the
+[releases](https://github.com/paxel/multigit/releases) and unpack it anywhere.
+`multigit.exe` opens the window and `multigit-tui.exe` the terminal board.
+[Git for Windows](https://git-scm.com/download/win) must be installed. The
+programs are not signed: when Windows shows "Windows protected your PC" for a
+zip downloaded in a browser, choose **More info**, then **Run anyway**. On
+Windows on ARM they run through the x64 emulation.
 
 ### From source
 

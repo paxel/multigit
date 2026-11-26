@@ -1,6 +1,7 @@
 [package]
 name = "multigit"
-version = "0.5.0"
+version = "0.6.0"
+default-run = "multigit"
 edition = "2024"
 description = "Desktop dashboard for many git repositories"
 license = "MIT"
@@ -43,3 +44,6 @@ todo = "deny"
 unimplemented = "deny"
 unreachable = "deny"
 indexing_slicing = "deny"
+
+[build-dependencies]
+winresource = "0.1.34"

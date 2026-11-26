@@ -3,6 +3,7 @@
 use crate::application::desktop::Desktop;
 use crate::domain::audio::player_commands;
 use crate::domain::command::terminal_commands;
+use crate::domain::system::System;
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -30,10 +31,15 @@ pub fn write_scratch_file(dir: &Path, name: &str, text: impl AsRef<[u8]>) -> io:
 
 /// The system's "open with the default program" command.
 pub fn opener() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
+    opener_for(System::current())
+}
+
+/// The "open with the default program" command of `system`.
+pub fn opener_for(system: System) -> &'static str {
+    match system {
+        System::MacOs => "open",
+        System::Windows => "explorer.exe",
+        System::Linux => "xdg-open",
     }
 }
 
@@ -127,7 +133,7 @@ impl Desktop for SystemDesktop {
     }
 
     fn play_wait(&self, file: &Path, stop: &AtomicBool) -> io::Result<()> {
-        let commands = player_commands(cfg!(target_os = "macos"), &file.to_string_lossy());
+        let commands = player_commands(System::current(), &file.to_string_lossy());
         run_until(&commands, stop, NO_PLAYER)
     }
 
@@ -140,7 +146,7 @@ impl Desktop for SystemDesktop {
         let commands = terminal_commands(
             configured,
             env_terminal.as_deref(),
-            cfg!(target_os = "macos"),
+            System::current(),
             &dir.to_string_lossy(),
         )
         .map_err(io::Error::other)?;
@@ -148,7 +154,7 @@ impl Desktop for SystemDesktop {
     }
 
     fn play(&self, file: &Path) -> io::Result<()> {
-        let commands = player_commands(cfg!(target_os = "macos"), &file.to_string_lossy());
+        let commands = player_commands(System::current(), &file.to_string_lossy());
         let dir = file.parent().unwrap_or(Path::new("/"));
         spawn_first(&commands, dir, NO_PLAYER)
     }
@@ -268,5 +274,8 @@ mod tests {
         let missing = OsStr::new("/nonexistent/multigit-test-program");
         assert!(spawn_detached(missing, &[], None).is_err());
         assert!(["open", "xdg-open"].contains(&opener()));
+        assert_eq!(opener_for(System::Windows), "explorer.exe");
+        assert_eq!(opener_for(System::MacOs), "open");
+        assert_eq!(opener_for(System::Linux), "xdg-open");
     }
 }

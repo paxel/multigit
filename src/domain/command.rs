@@ -1,6 +1,7 @@
 //! What a command line or button runs: git arguments, or a shell line when it
 //! starts with `!`.
 
+use crate::domain::system::System;
 use std::ffi::OsString;
 
 /// A command ready for the engine.
@@ -26,18 +27,50 @@ pub fn display(command: &str) -> String {
     }
 }
 
-/// The shell for `!` lines: the login shell from `$SHELL`, `sh` when unset or empty.
+/// The shell for `!` lines: the login shell from `$SHELL`; when unset or
+/// empty `sh`, and on Windows PowerShell.
 pub fn shell_program(env_shell: Option<OsString>) -> OsString {
     env_shell
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| OsString::from("sh"))
+        .unwrap_or_else(|| OsString::from(fallback_shell(cfg!(windows), || on_path("pwsh.exe"))))
 }
 
-/// Short shell name for the UI (`/usr/bin/fish` → `fish`).
+/// The shell when `$SHELL` names none: `sh`, and on Windows `pwsh` when
+/// `has_pwsh` finds it, otherwise the `powershell` every Windows has.
+pub fn fallback_shell(windows: bool, has_pwsh: impl FnOnce() -> bool) -> &'static str {
+    if !windows {
+        "sh"
+    } else if has_pwsh() {
+        "pwsh"
+    } else {
+        "powershell"
+    }
+}
+
+/// Whether `program` is in a folder of `$PATH`.
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
+/// The flag that makes `shell` run one line: `-Command` for PowerShell,
+/// `/C` for cmd, `-c` for the rest.
+pub fn shell_flag(shell: &OsString) -> &'static str {
+    match shell_name(shell).to_ascii_lowercase().as_str() {
+        "pwsh" | "powershell" => "-Command",
+        "cmd" => "/C",
+        _ => "-c",
+    }
+}
+
+/// Short shell name for the UI (`/usr/bin/fish` → `fish`, `pwsh.exe` → `pwsh`).
 pub fn shell_name(program: &OsString) -> String {
-    std::path::Path::new(program)
-        .file_name()
-        .map_or_else(|| program.to_string_lossy(), |name| name.to_string_lossy())
+    let path = std::path::Path::new(program);
+    let name = match path.extension() {
+        Some(ext) if ext.eq_ignore_ascii_case("exe") => path.file_stem(),
+        _ => path.file_name(),
+    };
+    name.map_or_else(|| program.to_string_lossy(), |name| name.to_string_lossy())
         .into_owned()
 }
 
@@ -62,12 +95,13 @@ const KNOWN_TERMINALS: &[&[&str]] = &[
 /// The command lines to try, in order, to open a terminal in `dir`: the
 /// first whose program exists is the one. `configured` is the command from
 /// the settings and the only one tried when it is not blank; otherwise
-/// Terminal.app on macOS, and elsewhere `$TERMINAL` and the known terminals.
+/// Terminal.app on macOS, Windows Terminal or a PowerShell console on
+/// Windows, and elsewhere `$TERMINAL` and the known terminals.
 /// `{dir}` in an argument stands for the folder.
 pub fn terminal_commands(
     configured: &str,
     env_terminal: Option<&str>,
-    macos: bool,
+    system: System,
     dir: &str,
 ) -> Result<Vec<Vec<String>>, String> {
     let fill = |args: Vec<String>| -> Vec<String> {
@@ -81,9 +115,18 @@ pub fn terminal_commands(
     if !configured.trim().is_empty() {
         return Ok(vec![fill(split(configured)?)]);
     }
-    if macos {
-        let open = ["open", "-a", "Terminal", DIR_PLACEHOLDER];
-        return Ok(vec![fill(open.map(str::to_owned).to_vec())]);
+    let words = |words: &[&str]| fill(words.iter().map(|s| (*s).to_owned()).collect());
+    match system {
+        System::MacOs => return Ok(vec![words(&["open", "-a", "Terminal", DIR_PLACEHOLDER])]),
+        // `start` gives the console a window of its own; it opens in the
+        // folder the command starts in.
+        System::Windows => {
+            return Ok(vec![
+                words(&["wt.exe", "-d", DIR_PLACEHOLDER]),
+                words(&["cmd", "/C", "start", "", "powershell", "-NoExit"]),
+            ]);
+        }
+        System::Linux => {}
     }
     let mut commands = Vec::new();
     if let Some(terminal) = env_terminal.filter(|t| !t.trim().is_empty()) {
@@ -102,18 +145,23 @@ mod tests {
 
     #[test]
     fn configured_terminal_is_the_only_one_tried() {
-        let commands =
-            terminal_commands(" foot -D '{dir}' ", Some("kitty"), false, "/my repo").unwrap();
+        let commands = terminal_commands(
+            " foot -D '{dir}' ",
+            Some("kitty"),
+            System::Windows,
+            "/my repo",
+        )
+        .unwrap();
         assert_eq!(commands, vec![vec!["foot", "-D", "/my repo"]]);
-        assert!(terminal_commands("foot 'x", None, false, "/r").is_err());
+        assert!(terminal_commands("foot 'x", None, System::Linux, "/r").is_err());
     }
 
     #[test]
     fn without_a_setting_the_terminal_is_detected() {
-        let mac = terminal_commands("", Some("kitty"), true, "/r").unwrap();
+        let mac = terminal_commands("", Some("kitty"), System::MacOs, "/r").unwrap();
         assert_eq!(mac, vec![vec!["open", "-a", "Terminal", "/r"]]);
 
-        let linux = terminal_commands("  ", Some("my-term --here"), false, "/r").unwrap();
+        let linux = terminal_commands("  ", Some("my-term --here"), System::Linux, "/r").unwrap();
         assert_eq!(linux[0], ["my-term", "--here"]);
         assert_eq!(linux[1], ["xdg-terminal-exec"]);
         assert!(linux.contains(&vec!["konsole".into(), "--workdir".into(), "/r".into()]));
@@ -123,10 +171,23 @@ mod tests {
         ]));
         assert_eq!(linux.last().unwrap(), &["xterm"]);
 
-        let none = terminal_commands("", None, false, "/r").unwrap();
+        let none = terminal_commands("", None, System::Linux, "/r").unwrap();
         assert_eq!(none[0], ["xdg-terminal-exec"]);
         assert_eq!(none.len(), linux.len() - 1);
-        assert!(terminal_commands("", Some(" "), false, "/r").unwrap().len() == none.len());
+        assert!(
+            terminal_commands("", Some(" "), System::Linux, "/r")
+                .unwrap()
+                .len()
+                == none.len()
+        );
+
+        let windows = terminal_commands("", Some("kitty"), System::Windows, "/r").unwrap();
+        assert_eq!(windows[0], ["wt.exe", "-d", "/r"]);
+        assert_eq!(
+            windows[1],
+            ["cmd", "/C", "start", "", "powershell", "-NoExit"]
+        );
+        assert_eq!(windows.len(), 2);
     }
 
     #[test]
@@ -150,9 +211,30 @@ mod tests {
             shell_program(Some("/usr/bin/fish".into())),
             OsString::from("/usr/bin/fish")
         );
-        assert_eq!(shell_program(Some("".into())), OsString::from("sh"));
-        assert_eq!(shell_program(None), OsString::from("sh"));
+        if !cfg!(windows) {
+            assert_eq!(shell_program(Some("".into())), OsString::from("sh"));
+        }
+        if !cfg!(windows) {
+            assert_eq!(shell_program(None), OsString::from("sh"));
+        }
         assert_eq!(shell_name(&"/usr/bin/fish".into()), "fish");
         assert_eq!(shell_name(&"sh".into()), "sh");
+    }
+
+    #[test]
+    fn windows_falls_back_to_powershell() {
+        assert_eq!(fallback_shell(false, || true), "sh");
+        assert_eq!(fallback_shell(true, || true), "pwsh");
+        assert_eq!(fallback_shell(true, || false), "powershell");
+        assert_eq!(shell_name(&"powershell.EXE".into()), "powershell");
+    }
+
+    #[test]
+    fn each_shell_gets_its_flag_for_one_line() {
+        assert_eq!(shell_flag(&"pwsh".into()), "-Command");
+        assert_eq!(shell_flag(&"powershell.exe".into()), "-Command");
+        assert_eq!(shell_flag(&"cmd.exe".into()), "/C");
+        assert_eq!(shell_flag(&"/usr/bin/fish".into()), "-c");
+        assert_eq!(shell_flag(&"sh".into()), "-c");
     }
 }

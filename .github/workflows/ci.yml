@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        os: [ubuntu-24.04, macos-15, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,9 +49,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: OSV gate and coverage floor tools
+      - name: OSV gate, coverage floor and icon tools
         working-directory: tool
-        run: python3 -m unittest test_osv_gate test_coverage_floor
+        run: python3 -m unittest test_osv_gate test_coverage_floor test_make_ico
 
   # Known vulnerabilities in Cargo.lock fail every push. A notice that a
   # crate is unmaintained is listed but does not fail; tool/osv_gate.py

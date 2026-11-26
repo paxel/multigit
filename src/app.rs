@@ -3327,7 +3327,7 @@ pub(crate) mod tests {
         let stored = store::load_config(&paths.config_file).unwrap();
         assert!(stored.output_hidden);
         // The next start reads it.
-        let next = App::<()>::new(
+        let mut next = App::<()>::new(
             Ok(stored),
             Some(paths),
             History::default(),
@@ -3335,6 +3335,8 @@ pub(crate) mod tests {
             Arc::new(FakeDesktop::default()),
             Arc::new(|| {}),
         );
+        // Dropping it must not take away the scratch folders of other tests.
+        next.scratch = dir.path().join("scratch");
         assert!(next.config.output_hidden);
     }
 
@@ -3350,6 +3352,7 @@ pub(crate) mod tests {
             Arc::new(FakeDesktop::default()),
             Arc::new(|| {}),
         );
+        app.scratch = dir.path().join("scratch");
         app.config.concurrency = 9;
         app.tick(Instant::now());
         assert!(!paths.config_file.exists());

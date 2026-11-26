@@ -267,6 +267,7 @@ fn append_batch_mode(ssh: &OsStr) -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::application::engine::FETCH_ARGS;
     use crate::infrastructure::testutil::{TestRepo, isolated_runner};
 
@@ -333,6 +334,7 @@ mod tests {
         assert_eq!(out.stdout, "ssh -o BatchMode=yes");
     }
 
+    #[cfg(unix)]
     #[test]
     fn shell_line_runs_in_repo_without_prompts() {
         let repo = TestRepo::new();
@@ -356,7 +358,9 @@ mod tests {
             runner.clone().with_env("SHELL", "/usr/bin/fish").shell(),
             OsString::from("/usr/bin/fish")
         );
-        assert_eq!(runner.with_env("SHELL", "").shell(), OsString::from("sh"));
+        if cfg!(unix) {
+            assert_eq!(runner.with_env("SHELL", "").shell(), OsString::from("sh"));
+        }
     }
 
     #[test]

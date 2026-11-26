@@ -1233,6 +1233,7 @@ fn the_loop_draws_handles_events_sends_copies_and_runs_programs() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_foreground_program_runs_in_its_folder_and_a_missing_one_says_so() {
     let dir = tempfile::tempdir().unwrap();

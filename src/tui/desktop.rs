@@ -138,7 +138,9 @@ mod tests {
             shell.command(None, Some("/usr/bin/fish".into())),
             vec![OsString::from("/usr/bin/fish")]
         );
-        assert_eq!(shell.command(None, None), vec![OsString::from("sh")]);
+        if cfg!(unix) {
+            assert_eq!(shell.command(None, None), vec![OsString::from("sh")]);
+        }
         assert_eq!(shell.dir(), Some(Path::new("/repos/alpha")));
         let desktop = TerminalDesktop::default();
         desktop

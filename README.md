@@ -199,7 +199,7 @@ The output panel above the command line keeps the last 50 commands, one
 collapsible section per repository with its exit code. **Open in editor**, on
 a command or on one repository's section, writes that output to a text file
 and opens it with the system's default program for text files (`xdg-open` on
-Linux, `open` on macOS); the files are in the temp folder and are removed when
+Linux, `open` on macOS, `explorer.exe` on Windows); the files are in the temp folder and are removed when
 multigit exits. Drag its upper edge to
 make it bigger. The **Output** button left of the command line hides the panel
 completely and brings it back, and the app starts as it was left; while it is hidden, a mark on the button tells

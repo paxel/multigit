@@ -31,10 +31,15 @@ pub fn write_scratch_file(dir: &Path, name: &str, text: impl AsRef<[u8]>) -> io:
 
 /// The system's "open with the default program" command.
 pub fn opener() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
+    opener_for(System::current())
+}
+
+/// The "open with the default program" command of `system`.
+pub fn opener_for(system: System) -> &'static str {
+    match system {
+        System::MacOs => "open",
+        System::Windows => "explorer.exe",
+        System::Linux => "xdg-open",
     }
 }
 
@@ -269,5 +274,8 @@ mod tests {
         let missing = OsStr::new("/nonexistent/multigit-test-program");
         assert!(spawn_detached(missing, &[], None).is_err());
         assert!(["open", "xdg-open"].contains(&opener()));
+        assert_eq!(opener_for(System::Windows), "explorer.exe");
+        assert_eq!(opener_for(System::MacOs), "open");
+        assert_eq!(opener_for(System::Linux), "xdg-open");
     }
 }

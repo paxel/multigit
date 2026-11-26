@@ -263,7 +263,9 @@ Buttons and the command line run git as you would in a terminal, hooks and all.
 
 `multigit --tui` runs the board in the terminal instead of a window, for a
 machine without a display, over SSH for example. It uses the same config,
-history and repositories as the window.
+history and repositories as the window. On Windows it is a program of its
+own, `multigit-tui`, as `multigit.exe` there is a window program without a
+console.
 
 <img src="assets/tui.svg" alt="multigit --tui: the board as a table, one row per repository, with the detail strip of the selected one">
 

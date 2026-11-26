@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - On Windows the terminal button opens Windows Terminal in the repository, or a PowerShell console without it ([mgit-1017](https://github.com/paxel/multigit/issues/91)).
 - On Windows files and links open with their default program ([mgit-1018](https://github.com/paxel/multigit/issues/92)).
 - On Windows sounds and the Kawaii music play through `ffplay` when installed, otherwise through PowerShell ([mgit-1019](https://github.com/paxel/multigit/issues/93)).
+- `multigit-tui` starts the terminal board, as `multigit --tui` does; on Windows it is the way to start it, and `multigit.exe` opens no console window there ([mgit-1020](https://github.com/paxel/multigit/issues/94)).
 
 ---
 

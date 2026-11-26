@@ -263,6 +263,8 @@ Buttons and the command line run git as you would in a terminal, hooks and all.
 machine without a display, over SSH for example. It uses the same config,
 history and repositories as the window.
 
+<img src="assets/tui.svg" alt="multigit --tui: the board as a table, one row per repository, with the detail strip of the selected one">
+
 The board is a table with one row per repository: its name, branch, tag,
 working tree, unpushed (`↑`) and unpulled (`↓`) commits and the last
 command's result. A `!` before the name is a failed fetch. Under the table

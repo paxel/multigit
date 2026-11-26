@@ -1,0 +1,195 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1090" height="453" viewBox="0 0 1090 453">
+<rect width="100%" height="100%" rx="10" fill="#1e1e2e"/>
+<circle cx="20" cy="15" r="6" fill="#f38ba8"/><circle cx="40" cy="15" r="6" fill="#f9e2af"/><circle cx="60" cy="15" r="6" fill="#a6e3a1"/>
+<g font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="15" transform="translate(14,40)">
+<text x="0.0" y="14.0" fill="#cdd6f4" font-weight="bold" textLength="72.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">multigit</text>
+<text x="90.0" y="14.0" fill="#cdd6f4" textLength="126.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">6 repositories</text>
+<text x="216.0" y="14.0" fill="#94e2d5" textLength="90.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">, 1 marked</text>
+<text x="324.0" y="14.0" fill="#585b70" textLength="243.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">sort: name   ? keys  q quit</text>
+<rect x="117.0" y="19.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="126.0" y="19.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="135.0" y="19.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="144.0" y="19.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="153.0" y="19.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="162.0" y="19.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="171.0" y="19.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="180.0" y="19.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="189.0" y="19.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<text x="0.0" y="33.0" fill="#585b70" textLength="36.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">mark</text>
+<text x="45.0" y="33.0" fill="#cdd6f4" textLength="63.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">[a] all</text>
+<text x="117.0" y="33.0" fill="#1e1e2e" textLength="81.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">[d] dirty</text>
+<text x="207.0" y="33.0" fill="#cdd6f4" textLength="180.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">[b] behind [p] ahead</text>
+<text x="18.0" y="52.0" fill="#585b70" textLength="1017.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">repository                 branch                       tag                 tree               sync          last</text>
+<rect x="0.0" y="57.0" width="9.5" height="19.5" fill="#94e2d5"/>
+<rect x="9.0" y="57.0" width="9.5" height="19.5" fill="#f38ba8"/>
+<rect x="18.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="27.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="36.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="45.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="54.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="63.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="72.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="81.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="90.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="99.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="108.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="117.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="126.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="135.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="144.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="153.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="162.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="171.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="180.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="189.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="198.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="207.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="216.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="225.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="234.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="243.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="252.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="261.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="270.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="279.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="288.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="297.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="306.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="315.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="324.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="333.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="342.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="351.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="360.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="369.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="378.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="387.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="396.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="405.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="414.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="423.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="432.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="441.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="450.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="459.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="468.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="477.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="486.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="495.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="504.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="513.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="522.0" y="57.0" width="9.5" height="19.5" fill="#585b70"/>
+<rect x="531.0" y="57.0" width="9.5" height="19.5" fill="#585b70"/>
+<rect x="540.0" y="57.0" width="9.5" height="19.5" fill="#585b70"/>
+<rect x="549.0" y="57.0" width="9.5" height="19.5" fill="#585b70"/>
+<rect x="558.0" y="57.0" width="9.5" height="19.5" fill="#585b70"/>
+<rect x="567.0" y="57.0" width="9.5" height="19.5" fill="#585b70"/>
+<rect x="576.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="585.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="594.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="603.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="612.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="621.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="630.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="639.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="648.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="657.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="666.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="675.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="684.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="693.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="702.0" y="57.0" width="9.5" height="19.5" fill="#a6e3a1"/>
+<rect x="711.0" y="57.0" width="9.5" height="19.5" fill="#a6e3a1"/>
+<rect x="720.0" y="57.0" width="9.5" height="19.5" fill="#a6e3a1"/>
+<rect x="729.0" y="57.0" width="9.5" height="19.5" fill="#a6e3a1"/>
+<rect x="738.0" y="57.0" width="9.5" height="19.5" fill="#a6e3a1"/>
+<rect x="747.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="756.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="765.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="774.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="783.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="792.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="801.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="810.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="819.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="828.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="837.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="846.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="855.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="864.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="873.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="882.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="891.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="900.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="909.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="918.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="927.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="936.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="945.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="954.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="963.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="972.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="981.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="990.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="999.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="1008.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="1017.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="1026.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="1035.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="1044.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<rect x="1053.0" y="57.0" width="9.5" height="19.5" fill="#cdd6f4"/>
+<text x="18.0" y="71.0" fill="#1e1e2e" font-weight="bold" textLength="27.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">api</text>
+<text x="261.0" y="71.0" fill="#1e1e2e" textLength="36.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">main</text>
+<text x="522.0" y="71.0" fill="#1e1e2e" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">no tag</text>
+<text x="702.0" y="71.0" fill="#1e1e2e" textLength="45.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">clean</text>
+<text x="873.0" y="71.0" fill="#1e1e2e" textLength="45.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">↑2 ↓0</text>
+<text x="18.0" y="90.0" fill="#cdd6f4" font-weight="bold" textLength="36.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">docs</text>
+<text x="261.0" y="90.0" fill="#cdd6f4" textLength="36.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">main</text>
+<text x="522.0" y="90.0" fill="#585b70" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">v0.9.0</text>
+<text x="702.0" y="90.0" fill="#a6e3a1" textLength="45.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">clean</text>
+<text x="873.0" y="90.0" fill="#cdd6f4" textLength="45.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">↑0 ↓0</text>
+<text x="18.0" y="109.0" fill="#cdd6f4" font-weight="bold" textLength="45.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">infra</text>
+<text x="261.0" y="109.0" fill="#cdd6f4" textLength="36.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">main</text>
+<text x="522.0" y="109.0" fill="#585b70" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">no tag</text>
+<text x="702.0" y="109.0" fill="#a6e3a1" textLength="45.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">clean</text>
+<text x="873.0" y="109.0" fill="#cdd6f4" textLength="45.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">↑0 ↓1</text>
+<text x="18.0" y="128.0" fill="#cdd6f4" font-weight="bold" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">mobile</text>
+<text x="261.0" y="128.0" fill="#cdd6f4" textLength="117.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">feature/login</text>
+<text x="522.0" y="128.0" fill="#585b70" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">v1.2.0</text>
+<text x="702.0" y="128.0" fill="#a6e3a1" textLength="45.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">clean</text>
+<text x="873.0" y="128.0" fill="#cdd6f4" textLength="45.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">↑0 ↓0</text>
+<text x="18.0" y="147.0" fill="#cdd6f4" font-weight="bold" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">shared</text>
+<text x="261.0" y="147.0" fill="#cdd6f4" textLength="36.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">main</text>
+<text x="522.0" y="147.0" fill="#585b70" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">no tag</text>
+<text x="702.0" y="147.0" fill="#a6e3a1" textLength="45.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">clean</text>
+<text x="873.0" y="147.0" fill="#cdd6f4" textLength="45.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">↑0 ↓0</text>
+<text x="0.0" y="166.0" fill="#94e2d5" textLength="9.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">●</text>
+<text x="18.0" y="166.0" fill="#cdd6f4" font-weight="bold" textLength="27.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">web</text>
+<text x="261.0" y="166.0" fill="#cdd6f4" textLength="36.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">main</text>
+<text x="522.0" y="166.0" fill="#585b70" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">no tag</text>
+<text x="702.0" y="166.0" fill="#f9e2af" textLength="99.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">+0 ~1 ?1 !0</text>
+<text x="873.0" y="166.0" fill="#cdd6f4" textLength="45.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">↑0 ↓0</text>
+<text x="0.0" y="223.0" fill="#585b70" textLength="1062.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text>
+<text x="0.0" y="242.0" fill="#cdd6f4" font-weight="bold" textLength="27.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">api</text>
+<text x="45.0" y="242.0" fill="#585b70" textLength="216.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">/home/axel/code-demo/api</text>
+<text x="279.0" y="242.0" fill="#94e2d5" textLength="9.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">1</text>
+<text x="297.0" y="242.0" fill="#cdd6f4" textLength="126.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">pull --ff-only</text>
+<text x="441.0" y="242.0" fill="#94e2d5" textLength="9.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">2</text>
+<text x="459.0" y="242.0" fill="#cdd6f4" textLength="117.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">pull --rebase</text>
+<text x="594.0" y="242.0" fill="#94e2d5" textLength="9.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">3</text>
+<text x="612.0" y="242.0" fill="#cdd6f4" textLength="36.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">push</text>
+<text x="666.0" y="242.0" fill="#94e2d5" textLength="9.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">4</text>
+<text x="684.0" y="242.0" fill="#cdd6f4" textLength="171.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">fetch --all --prune</text>
+<text x="0.0" y="261.0" fill="#585b70" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">branch</text>
+<text x="72.0" y="261.0" fill="#cdd6f4" textLength="36.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">main</text>
+<text x="0.0" y="280.0" fill="#585b70" textLength="27.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">tag</text>
+<text x="72.0" y="280.0" fill="#cdd6f4" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">no tag</text>
+<text x="0.0" y="299.0" fill="#585b70" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">commit</text>
+<text x="72.0" y="299.0" fill="#cdd6f4" textLength="180.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">006c58f Log requests</text>
+<text x="0.0" y="318.0" fill="#585b70" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">status</text>
+<text x="72.0" y="318.0" fill="#cdd6f4" textLength="117.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">clean   ↑2 ↓0</text>
+<text x="0.0" y="337.0" fill="#585b70" textLength="54.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">remote</text>
+<text x="72.0" y="337.0" fill="#cdd6f4" textLength="342.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">file /home/axel/code-demo/.remotes/api</text>
+<text x="0.0" y="375.0" fill="#cdd6f4" font-weight="bold" textLength="27.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">git</text>
+<text x="36.0" y="375.0" fill="#585b70" textLength="387.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">: to type git arguments, ! for a shell line</text>
+</g></svg>

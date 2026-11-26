@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - On Windows sounds and the Kawaii music play through `ffplay` when installed, otherwise through PowerShell ([mgit-1019](https://github.com/paxel/multigit/issues/93)).
 - `multigit-tui` starts the terminal board, as `multigit --tui` does; on Windows it is the way to start it, and `multigit.exe` opens no console window there ([mgit-1020](https://github.com/paxel/multigit/issues/94)).
 - The Windows programs carry the multigit icon, for the Start menu and the taskbar ([mgit-1021](https://github.com/paxel/multigit/issues/95)).
+- Every release has a Windows zip, `multigit-<version>-x86_64-windows.zip`, with `multigit.exe` and `multigit-tui.exe` ([mgit-1023](https://github.com/paxel/multigit/issues/97)).
 
 ---
 

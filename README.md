@@ -500,6 +500,16 @@ cargo build --release
 packaging/macos/bundle.sh target/release/multigit 0.6.0 .
 ```
 
+### Release zip (Windows x86_64)
+
+Download `multigit-<version>-x86_64-windows.zip` from the
+[releases](https://github.com/paxel/multigit/releases) and unpack it anywhere.
+`multigit.exe` opens the window and `multigit-tui.exe` the terminal board.
+[Git for Windows](https://git-scm.com/download/win) must be installed. The
+programs are not signed: when Windows shows "Windows protected your PC" for a
+zip downloaded in a browser, choose **More info**, then **Run anyway**. On
+Windows on ARM they run through the x64 emulation.
+
 ### From source
 
 ```sh

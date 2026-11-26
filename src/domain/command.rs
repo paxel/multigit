@@ -26,18 +26,50 @@ pub fn display(command: &str) -> String {
     }
 }
 
-/// The shell for `!` lines: the login shell from `$SHELL`, `sh` when unset or empty.
+/// The shell for `!` lines: the login shell from `$SHELL`; when unset or
+/// empty `sh`, and on Windows PowerShell.
 pub fn shell_program(env_shell: Option<OsString>) -> OsString {
     env_shell
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| OsString::from("sh"))
+        .unwrap_or_else(|| OsString::from(fallback_shell(cfg!(windows), || on_path("pwsh.exe"))))
 }
 
-/// Short shell name for the UI (`/usr/bin/fish` → `fish`).
+/// The shell when `$SHELL` names none: `sh`, and on Windows `pwsh` when
+/// `has_pwsh` finds it, otherwise the `powershell` every Windows has.
+pub fn fallback_shell(windows: bool, has_pwsh: impl FnOnce() -> bool) -> &'static str {
+    if !windows {
+        "sh"
+    } else if has_pwsh() {
+        "pwsh"
+    } else {
+        "powershell"
+    }
+}
+
+/// Whether `program` is in a folder of `$PATH`.
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
+/// The flag that makes `shell` run one line: `-Command` for PowerShell,
+/// `/C` for cmd, `-c` for the rest.
+pub fn shell_flag(shell: &OsString) -> &'static str {
+    match shell_name(shell).to_ascii_lowercase().as_str() {
+        "pwsh" | "powershell" => "-Command",
+        "cmd" => "/C",
+        _ => "-c",
+    }
+}
+
+/// Short shell name for the UI (`/usr/bin/fish` → `fish`, `pwsh.exe` → `pwsh`).
 pub fn shell_name(program: &OsString) -> String {
-    std::path::Path::new(program)
-        .file_name()
-        .map_or_else(|| program.to_string_lossy(), |name| name.to_string_lossy())
+    let path = std::path::Path::new(program);
+    let name = match path.extension() {
+        Some(ext) if ext.eq_ignore_ascii_case("exe") => path.file_stem(),
+        _ => path.file_name(),
+    };
+    name.map_or_else(|| program.to_string_lossy(), |name| name.to_string_lossy())
         .into_owned()
 }
 
@@ -150,9 +182,30 @@ mod tests {
             shell_program(Some("/usr/bin/fish".into())),
             OsString::from("/usr/bin/fish")
         );
-        assert_eq!(shell_program(Some("".into())), OsString::from("sh"));
-        assert_eq!(shell_program(None), OsString::from("sh"));
+        if !cfg!(windows) {
+            assert_eq!(shell_program(Some("".into())), OsString::from("sh"));
+        }
+        if !cfg!(windows) {
+            assert_eq!(shell_program(None), OsString::from("sh"));
+        }
         assert_eq!(shell_name(&"/usr/bin/fish".into()), "fish");
         assert_eq!(shell_name(&"sh".into()), "sh");
+    }
+
+    #[test]
+    fn windows_falls_back_to_powershell() {
+        assert_eq!(fallback_shell(false, || true), "sh");
+        assert_eq!(fallback_shell(true, || true), "pwsh");
+        assert_eq!(fallback_shell(true, || false), "powershell");
+        assert_eq!(shell_name(&"powershell.EXE".into()), "powershell");
+    }
+
+    #[test]
+    fn each_shell_gets_its_flag_for_one_line() {
+        assert_eq!(shell_flag(&"pwsh".into()), "-Command");
+        assert_eq!(shell_flag(&"powershell.exe".into()), "-Command");
+        assert_eq!(shell_flag(&"cmd.exe".into()), "/C");
+        assert_eq!(shell_flag(&"/usr/bin/fish".into()), "-c");
+        assert_eq!(shell_flag(&"sh".into()), "-c");
     }
 }

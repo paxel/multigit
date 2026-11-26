@@ -182,7 +182,8 @@ emoji. A repository can be in several.
   label (typing `git` first anyway is fine; it is ignored); Enter runs them in
   all marked repositories. It is disabled while nothing is marked.
 - **Shell lines**: a line starting with `!` runs through your login shell
-  (`$SHELL -c`, or `sh -c` when `$SHELL` is empty) in each marked repository's
+  (`$SHELL -c`, or `sh -c` when `$SHELL` is empty; on Windows `pwsh -Command`, or
+  `powershell -Command` when PowerShell 7 is not installed) in each marked repository's
   folder, for example `!ls | wc -l`. The label in front of the line then shows
   the shell's name. A button whose arguments start with `!` does the same.
   Shell lines always ask for confirmation first, even for one repository

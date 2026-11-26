@@ -1,6 +1,6 @@
 //! Runs the system `git` without a terminal: no prompts, no pager, no editor.
 
-use crate::domain::command::shell_program;
+use crate::domain::command::{shell_flag, shell_program};
 use crate::domain::output::ProcessOutput;
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -201,20 +201,22 @@ impl GitRunner {
             .collect())
     }
 
-    /// The shell `!` lines run in: `$SHELL`, or `sh` when it is unset or empty.
+    /// The shell `!` lines run in: `$SHELL`, or `sh` (PowerShell on Windows)
+    /// when it is unset or empty.
     pub fn shell(&self) -> OsString {
         shell_program(self.env_value("SHELL"))
     }
 
-    /// A `!` line: `<shell> -c <line>` in `dir`, with the same non-interactive
+    /// A `!` line: `<shell> -c <line>` (`-Command` for PowerShell) in `dir`, with the same non-interactive
     /// environment as git commands, so git inside the line never prompts either.
     #[tracing::instrument(skip_all, fields(dir = %dir.display()))]
     pub fn run_shell(&self, dir: &Path, line: &str) -> io::Result<ProcessOutput> {
-        let mut cmd = self.command_for(&self.shell(), dir);
+        let shell = self.shell();
+        let mut cmd = self.command_for(&shell, dir);
         if let Some(ssh) = self.batch_ssh_command(dir) {
             cmd.env("GIT_SSH_COMMAND", ssh);
         }
-        cmd.arg("-c").arg(line);
+        cmd.arg(shell_flag(&shell)).arg(line);
         Self::output(cmd)
     }
 

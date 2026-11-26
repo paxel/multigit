@@ -1,5 +1,7 @@
 //! Tests of the shell scripts shipped in the release tarball and used by the
-//! release workflow. They run in temporary directories only.
+//! release workflow. They run in temporary directories only, and only on
+//! Unix: the scripts are POSIX shell, and the release runs them on Linux.
+#![cfg(unix)]
 
 // The whole file is test code; clippy.toml's allow-in-tests only covers the
 // #[test] functions, not the helpers they share.

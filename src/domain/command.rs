@@ -1,6 +1,7 @@
 //! What a command line or button runs: git arguments, or a shell line when it
 //! starts with `!`.
 
+use crate::domain::system::System;
 use std::ffi::OsString;
 
 /// A command ready for the engine.
@@ -94,12 +95,13 @@ const KNOWN_TERMINALS: &[&[&str]] = &[
 /// The command lines to try, in order, to open a terminal in `dir`: the
 /// first whose program exists is the one. `configured` is the command from
 /// the settings and the only one tried when it is not blank; otherwise
-/// Terminal.app on macOS, and elsewhere `$TERMINAL` and the known terminals.
+/// Terminal.app on macOS, Windows Terminal or a PowerShell console on
+/// Windows, and elsewhere `$TERMINAL` and the known terminals.
 /// `{dir}` in an argument stands for the folder.
 pub fn terminal_commands(
     configured: &str,
     env_terminal: Option<&str>,
-    macos: bool,
+    system: System,
     dir: &str,
 ) -> Result<Vec<Vec<String>>, String> {
     let fill = |args: Vec<String>| -> Vec<String> {
@@ -113,9 +115,18 @@ pub fn terminal_commands(
     if !configured.trim().is_empty() {
         return Ok(vec![fill(split(configured)?)]);
     }
-    if macos {
-        let open = ["open", "-a", "Terminal", DIR_PLACEHOLDER];
-        return Ok(vec![fill(open.map(str::to_owned).to_vec())]);
+    let words = |words: &[&str]| fill(words.iter().map(|s| (*s).to_owned()).collect());
+    match system {
+        System::MacOs => return Ok(vec![words(&["open", "-a", "Terminal", DIR_PLACEHOLDER])]),
+        // `start` gives the console a window of its own; it opens in the
+        // folder the command starts in.
+        System::Windows => {
+            return Ok(vec![
+                words(&["wt.exe", "-d", DIR_PLACEHOLDER]),
+                words(&["cmd", "/C", "start", "", "powershell", "-NoExit"]),
+            ]);
+        }
+        System::Linux => {}
     }
     let mut commands = Vec::new();
     if let Some(terminal) = env_terminal.filter(|t| !t.trim().is_empty()) {
@@ -134,18 +145,23 @@ mod tests {
 
     #[test]
     fn configured_terminal_is_the_only_one_tried() {
-        let commands =
-            terminal_commands(" foot -D '{dir}' ", Some("kitty"), false, "/my repo").unwrap();
+        let commands = terminal_commands(
+            " foot -D '{dir}' ",
+            Some("kitty"),
+            System::Windows,
+            "/my repo",
+        )
+        .unwrap();
         assert_eq!(commands, vec![vec!["foot", "-D", "/my repo"]]);
-        assert!(terminal_commands("foot 'x", None, false, "/r").is_err());
+        assert!(terminal_commands("foot 'x", None, System::Linux, "/r").is_err());
     }
 
     #[test]
     fn without_a_setting_the_terminal_is_detected() {
-        let mac = terminal_commands("", Some("kitty"), true, "/r").unwrap();
+        let mac = terminal_commands("", Some("kitty"), System::MacOs, "/r").unwrap();
         assert_eq!(mac, vec![vec!["open", "-a", "Terminal", "/r"]]);
 
-        let linux = terminal_commands("  ", Some("my-term --here"), false, "/r").unwrap();
+        let linux = terminal_commands("  ", Some("my-term --here"), System::Linux, "/r").unwrap();
         assert_eq!(linux[0], ["my-term", "--here"]);
         assert_eq!(linux[1], ["xdg-terminal-exec"]);
         assert!(linux.contains(&vec!["konsole".into(), "--workdir".into(), "/r".into()]));
@@ -155,10 +171,23 @@ mod tests {
         ]));
         assert_eq!(linux.last().unwrap(), &["xterm"]);
 
-        let none = terminal_commands("", None, false, "/r").unwrap();
+        let none = terminal_commands("", None, System::Linux, "/r").unwrap();
         assert_eq!(none[0], ["xdg-terminal-exec"]);
         assert_eq!(none.len(), linux.len() - 1);
-        assert!(terminal_commands("", Some(" "), false, "/r").unwrap().len() == none.len());
+        assert!(
+            terminal_commands("", Some(" "), System::Linux, "/r")
+                .unwrap()
+                .len()
+                == none.len()
+        );
+
+        let windows = terminal_commands("", Some("kitty"), System::Windows, "/r").unwrap();
+        assert_eq!(windows[0], ["wt.exe", "-d", "/r"]);
+        assert_eq!(
+            windows[1],
+            ["cmd", "/C", "start", "", "powershell", "-NoExit"]
+        );
+        assert_eq!(windows.len(), 2);
     }
 
     #[test]

@@ -22,3 +22,4 @@ pub mod repo;
 pub mod songs;
 pub mod status;
 pub mod switch;
+pub mod system;

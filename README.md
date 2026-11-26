@@ -144,7 +144,8 @@ emoji. A repository can be in several.
   with a shell in that repository. Without a terminal command in Settings,
   multigit takes `$TERMINAL`, then `xdg-terminal-exec`, then the first of
   konsole, gnome-terminal, xfce4-terminal, kitty, alacritty, foot, wezterm and
-  xterm that is installed; on macOS it opens Terminal.app. In a terminal
+  xterm that is installed; on macOS it opens Terminal.app, and on Windows
+  Windows Terminal, or a PowerShell console where Windows Terminal is missing. In a terminal
   command of your own, `{dir}` stands for the repository's folder.
 - **Switching branches**: a right click on a card's branch name (or the sha of
   a detached HEAD) opens a menu for that one repository. **Switch to** lists

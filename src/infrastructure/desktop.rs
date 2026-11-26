@@ -3,6 +3,7 @@
 use crate::application::desktop::Desktop;
 use crate::domain::audio::player_commands;
 use crate::domain::command::terminal_commands;
+use crate::domain::system::System;
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -140,7 +141,7 @@ impl Desktop for SystemDesktop {
         let commands = terminal_commands(
             configured,
             env_terminal.as_deref(),
-            cfg!(target_os = "macos"),
+            System::current(),
             &dir.to_string_lossy(),
         )
         .map_err(io::Error::other)?;

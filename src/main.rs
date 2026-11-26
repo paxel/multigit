@@ -16,7 +16,7 @@ fn main() -> ExitCode {
     init_tracing(tui, paths.as_ref());
     let config = match &paths {
         Some(p) => store::load_config(&p.config_file).map_err(|e| e.to_string()),
-        None => Err("HOME is not set".to_owned()),
+        None => Err(Paths::missing().to_owned()),
     };
     let history = paths
         .as_ref()

@@ -441,7 +441,8 @@ the list of the crates in multigit with their licences.
 | `~/.local/share/icons/hicolor/256x256/apps/multigit.png`       | Icon (Linux only)                                 |
 
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_DATA_HOME` are honoured, on macOS
-as well. If the
+as well. On Windows the config is `%APPDATA%\multigit\config.toml` and the
+history `%LOCALAPPDATA%\multigit\history`, unless the XDG variables are set. If the
 config file cannot be read, the app starts with defaults and does not save
 over it.
 

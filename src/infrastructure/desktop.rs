@@ -133,7 +133,7 @@ impl Desktop for SystemDesktop {
     }
 
     fn play_wait(&self, file: &Path, stop: &AtomicBool) -> io::Result<()> {
-        let commands = player_commands(cfg!(target_os = "macos"), &file.to_string_lossy());
+        let commands = player_commands(System::current(), &file.to_string_lossy());
         run_until(&commands, stop, NO_PLAYER)
     }
 
@@ -154,7 +154,7 @@ impl Desktop for SystemDesktop {
     }
 
     fn play(&self, file: &Path) -> io::Result<()> {
-        let commands = player_commands(cfg!(target_os = "macos"), &file.to_string_lossy());
+        let commands = player_commands(System::current(), &file.to_string_lossy());
         let dir = file.parent().unwrap_or(Path::new("/"));
         spawn_first(&commands, dir, NO_PLAYER)
     }

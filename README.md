@@ -387,8 +387,8 @@ your own command in multigit changed makes no sound. Settings has a volume,
 and per sound a file of your own (WAV, OGG, MP3 or FLAC, its first ten
 seconds), **Default** to go back to the built-in tone, and **Play** to hear
 it. multigit plays through the system's player program: `afplay` on macOS,
-and on Linux the first of `pw-play`, `paplay`, `aplay` and `ffplay` that is
-installed.
+on Linux the first of `pw-play`, `paplay`, `aplay` and `ffplay` that is
+installed, and on Windows `ffplay` or else PowerShell's sound player.
 
 The **Kawaii** theme is round and pastel, in the Fredoka font, with a rainbow
 drifting behind the cards, hearts and stars floating up, cards that bob, grow

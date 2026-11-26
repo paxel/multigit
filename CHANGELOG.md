@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `multigit-tui` starts the terminal board, as `multigit --tui` does; on Windows it is the way to start it, and `multigit.exe` opens no console window there ([mgit-1020](https://github.com/paxel/multigit/issues/94)).
 - The Windows programs carry the multigit icon, for the Start menu and the taskbar ([mgit-1021](https://github.com/paxel/multigit/issues/95)).
 - Every release has a Windows zip, `multigit-<version>-x86_64-windows.zip`, with `multigit.exe` and `multigit-tui.exe` ([mgit-1023](https://github.com/paxel/multigit/issues/97)).
+- multigit can be installed on Windows with Scoop, from the `paxel/scoop-bucket` bucket, with a Start menu entry ([mgit-1024](https://github.com/paxel/multigit/issues/98)).
 
 ---
 

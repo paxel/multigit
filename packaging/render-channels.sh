@@ -1,10 +1,12 @@
 #!/bin/sh
 # Render the Homebrew formula (Linux) and cask (macOS) from the templates in
-# packaging/homebrew, with the checksums of the release artifacts.
+# packaging/homebrew, and the Scoop manifest (Windows) from packaging/scoop,
+# with the checksums of the release artifacts.
 #
 #   packaging/render-channels.sh <version> <dist dir> <out dir>
 #
-# Writes <out dir>/multigit-formula.rb and <out dir>/multigit-cask.rb.
+# Writes <out dir>/multigit-formula.rb, <out dir>/multigit-cask.rb and
+# <out dir>/multigit-scoop.json.
 set -eu
 
 version=$1
@@ -28,9 +30,12 @@ sha() {
 
 linux=$(sha "multigit-$version-x86_64-linux.tar.gz")
 macos=$(sha "multigit-$version-macos-universal.zip")
+windows=$(sha "multigit-$version-x86_64-windows.zip")
 mkdir -p "$out"
 sed -e "s/{{VERSION}}/$version/g" -e "s/{{SHA_LINUX_X86_64}}/$linux/" \
     "$here/homebrew/formula.rb.tmpl" > "$out/multigit-formula.rb"
 sed -e "s/{{VERSION}}/$version/g" -e "s/{{SHA_MACOS_UNIVERSAL}}/$macos/" \
     "$here/homebrew/cask.rb.tmpl" > "$out/multigit-cask.rb"
+sed -e "s/{{VERSION}}/$version/g" -e "s/{{SHA_WINDOWS_X86_64}}/$windows/" \
+    "$here/scoop/multigit.json.tmpl" > "$out/multigit-scoop.json"
 ls -1 "$out"

@@ -239,6 +239,7 @@ fn render_channels_fills_version_and_checksums() {
     fs::create_dir_all(&dist).unwrap();
     fs::write(dist.join("multigit-1.2.3-x86_64-linux.tar.gz"), "linux").unwrap();
     fs::write(dist.join("multigit-1.2.3-macos-universal.zip"), "macos").unwrap();
+    fs::write(dist.join("multigit-1.2.3-x86_64-windows.zip"), "windows").unwrap();
     let render = |version: &str| {
         Command::new("sh")
             .arg(root().join("packaging/render-channels.sh"))
@@ -273,6 +274,14 @@ fn render_channels_fills_version_and_checksums() {
         )
     );
     assert!(!cask.contains("{{"));
+    let scoop = fs::read_to_string(out.join("multigit-scoop.json")).unwrap();
+    assert!(scoop.contains("\"version\": \"1.2.3\""));
+    assert!(scoop.contains("releases/download/v1.2.3/multigit-1.2.3-x86_64-windows.zip"));
+    assert!(scoop.contains(
+        "\"hash\": \"340d600392818df2413382dc7d8325c360d83ea49a262d31760348484bbc10b5\""
+    ));
+    assert!(scoop.contains("\"extract_dir\": \"multigit-1.2.3-x86_64-windows\""));
+    assert!(!scoop.contains("{{"));
 
     // A missing artifact or a bad version renders nothing.
     assert!(!render("9.9.9").status.success());

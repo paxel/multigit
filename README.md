@@ -500,6 +500,16 @@ cargo build --release
 packaging/macos/bundle.sh target/release/multigit 0.6.0 .
 ```
 
+### Scoop (Windows x86_64)
+
+```powershell
+scoop bucket add paxel https://github.com/paxel/scoop-bucket
+scoop install paxel/multigit
+```
+
+Scoop puts `multigit` and `multigit-tui` on the `PATH` and adds multigit to the
+Start menu.
+
 ### Release zip (Windows x86_64)
 
 Download `multigit-<version>-x86_64-windows.zip` from the

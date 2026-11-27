@@ -289,6 +289,7 @@ fn file_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<A
                     return;
                 };
                 let state = details.states.get(&file.path).copied();
+                let state = state.unwrap_or(FileState::guessed(file.kind));
                 let letters = state_text(ui, state, &entry.name);
                 let hover = format!("{}: {}", file.kind.label(), file.path);
                 let path = file.path.clone();
@@ -319,7 +320,7 @@ fn stage_box(ui: &mut Ui, staged: Staged, path: &str, act: &mut Option<Act>) {
 /// A file's two status letters and its name, colored as lazygit colors
 /// them: the staged letter green, the unstaged one red, and the name green
 /// when all of it is staged, red when anything is not.
-fn state_text(ui: &Ui, state: Option<FileState>, name: &str) -> egui::text::LayoutJob {
+fn state_text(ui: &Ui, state: FileState, name: &str) -> egui::text::LayoutJob {
     let (green, red) = (ok_color(ui), ui.visuals().error_fg_color);
     let mono = egui::TextStyle::Monospace.resolve(ui.style());
     let body = egui::TextStyle::Body.resolve(ui.style());
@@ -329,10 +330,6 @@ fn state_text(ui: &Ui, state: Option<FileState>, name: &str) -> egui::text::Layo
         ..Default::default()
     };
     let mut text = egui::text::LayoutJob::default();
-    let state = state.unwrap_or(FileState {
-        index: '.',
-        worktree: 'M',
-    });
     let letters: Vec<char> = state.letters().chars().collect();
     let index = letters.first().copied().unwrap_or(' ');
     let worktree = letters.get(1).copied().unwrap_or(' ');

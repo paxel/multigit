@@ -1,7 +1,7 @@
 //! Staging in the repository view: what is staged of each changed file,
 //! and the git commands that stage, unstage and discard files and folders.
 
-use crate::domain::details::FileChange;
+use crate::domain::details::{ChangeKind, FileChange};
 use std::collections::BTreeMap;
 
 /// The two status letters of a changed file, as `git status` has them:
@@ -18,6 +18,15 @@ impl FileState {
         index: '?',
         worktree: '?',
     };
+
+    /// The letters of a file whose state was not read: changed in the
+    /// working tree the way `kind` says.
+    pub fn guessed(kind: ChangeKind) -> Self {
+        Self {
+            index: '.',
+            worktree: kind.letter(),
+        }
+    }
 
     /// Git does not track the file yet.
     pub fn untracked(self) -> bool {
@@ -240,7 +249,6 @@ pub fn file_steps(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::details::ChangeKind;
 
     fn state(xy: &str) -> FileState {
         let mut c = xy.chars();

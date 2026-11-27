@@ -75,11 +75,7 @@ pub fn line_style(kind: LineKind) -> Style {
 /// A changed file's row: its two status letters and its name, colored as
 /// lazygit colors them: the staged letter green, the unstaged one red, and
 /// the name green when all of it is staged, red when anything is not.
-fn state_line(indent: &str, state: Option<FileState>, name: &str) -> Line<'static> {
-    let state = state.unwrap_or(FileState {
-        index: '.',
-        worktree: 'M',
-    });
+fn state_line(indent: &str, state: FileState, name: &str) -> Line<'static> {
     let letters: Vec<char> = state.letters().chars().collect();
     let index = letters.first().copied().unwrap_or(' ');
     let worktree = letters.get(1).copied().unwrap_or(' ');
@@ -163,7 +159,11 @@ pub fn rows(app: &App) -> Vec<ViewRow> {
                         Some(file) => ViewRow {
                             line: state_line(
                                 &indent,
-                                details.states.get(&file.path).copied(),
+                                details
+                                    .states
+                                    .get(&file.path)
+                                    .copied()
+                                    .unwrap_or(FileState::guessed(file.kind)),
                                 &entry.name,
                             ),
                             pick: Pick::Select(DiffTarget::File(file)),

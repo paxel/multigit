@@ -1246,6 +1246,8 @@ fn repo_view_app() -> Harness<'static, App> {
 #[test]
 fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     let mut h = repo_view_app();
+    // The files of a commit by their whole paths.
+    h.state_mut().config.file_tree = false;
     let space = card_space(&h);
     h.event(egui::Event::PointerMoved(space));
     // Two clicks, one frame apart: within the time of a double click.
@@ -1370,23 +1372,26 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     h.get_by_label("Changed files (4)");
     h.get_by_label("Pick a file to see its changes.");
     assert!(h.query_by_label("AL aaaabbb Fix the thing").is_none());
+    // The Files tab as a tree again.
+    h.state_mut().toggle_file_tree();
+    h.run();
     // A tree: folders first, a chain of single folders as one row, every
     // file with the letter of its change.
     h.get_by_label("src/");
     h.get_by_label("ui/deep/");
-    h.get_by_label("A new.rs");
-    h.get_by_label("D old.rs");
-    h.get_by_label("A notes.txt");
+    h.get_by_label(" A new.rs");
+    h.get_by_label(" D old.rs");
+    h.get_by_label(" A notes.txt");
     // A folder folds away what is in it, and unfolds again.
     h.get_by_label("ui/deep/").click();
     h.run();
-    assert!(h.query_by_label("A new.rs").is_none());
-    h.get_by_label("M main.rs");
+    assert!(h.query_by_label(" A new.rs").is_none());
+    h.get_by_label(" M main.rs");
     h.get_by_label("src/").click();
     h.run();
-    assert!(h.query_by_label("M main.rs").is_none());
+    assert!(h.query_by_label(" M main.rs").is_none());
     assert!(h.query_by_label("ui/deep/").is_none());
-    h.get_by_label("A notes.txt");
+    h.get_by_label(" A notes.txt");
     h.get_by_label("src/").click();
     h.run();
     h.get_by_label("ui/deep/").click();
@@ -1399,15 +1404,15 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     };
     // An added file shows its content, a deleted one what is gone, a
     // modified one its diff.
-    pick(&mut h, "A new.rs");
+    pick(&mut h, " A new.rs");
     h.get_by_label("added");
     h.get_by_label("src/ui/deep/new.rs");
     h.get_by_label("fresh line");
     assert!(h.query_by_label("+fresh line").is_none());
-    pick(&mut h, "D old.rs");
+    pick(&mut h, " D old.rs");
     h.get_by_label("deleted");
     h.get_by_label("gone line");
-    pick(&mut h, "M main.rs");
+    pick(&mut h, " M main.rs");
     h.get_by_label("modified");
     h.get_by_label("+++ b/src/main.rs");
     h.get_by_label("+new");
@@ -1499,6 +1504,8 @@ fn right_click_on_text_of_the_repository_view_copies_the_marked_text_or_all_of_i
     use crate::ui::text_menu::TextOf;
     use egui::PointerButton::{Primary, Secondary};
     let mut h = repo_view_app();
+    // The files of a commit by their whole paths.
+    h.state_mut().config.file_tree = false;
     h.run();
     h.state_mut().open_repo_view(std::path::Path::new("/repo"));
     settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
@@ -1642,7 +1649,7 @@ fn open_in_the_card_menu_and_the_buttons_of_the_view() {
     h.run();
     h.get_by_label("Files").click();
     h.run();
-    h.get_by_label("A notes.txt");
+    h.get_by_label(" A notes.txt");
     h.get_by_label("Refresh").click();
     h.run();
     assert!(h.state().repo_view.is_some());

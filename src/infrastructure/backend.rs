@@ -139,6 +139,10 @@ impl Backend for GitBackend {
     fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String> {
         details::diff(&self.runner, dir, target)
     }
+
+    fn apply_commit(&self, dir: &Path, source: &Path, hash: &str) -> io::Result<ProcessOutput> {
+        crate::infrastructure::apply::apply_commit(&self.runner, dir, source, hash)
+    }
 }
 
 #[cfg(test)]

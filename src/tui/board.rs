@@ -49,6 +49,7 @@ pub const HELP: &[(&str, &str)] = &[
         "  o",
         "Graph: check out the branch or commit (right click: menu)",
     ),
+    ("  a", "apply the picked commit to other repositories"),
     ("  right click", "Files: stage, unstage, discard"),
     ("a d b p", "mark all / dirty / behind / ahead"),
     ("D B P", "show only dirty / behind / ahead"),
@@ -123,8 +124,19 @@ fn draw_board(frame: &mut Frame, app: &mut App) {
         (frame.area().height / 4).max(5)
     };
     let favorites = u16::from(!app.config.favorites.is_empty());
-    let [top, favorites_line, table, detail, out, command, status] = Layout::vertical([
+    let applying = u16::from(app.apply.is_some());
+    let [
+        top,
+        apply_line,
+        favorites_line,
+        table,
+        detail,
+        out,
+        command,
+        status,
+    ] = Layout::vertical([
         Constraint::Length(2),
+        Constraint::Length(applying),
         Constraint::Length(favorites),
         Constraint::Min(3),
         Constraint::Length(DETAIL_HEIGHT),
@@ -139,6 +151,15 @@ fn draw_board(frame: &mut Frame, app: &mut App) {
         let before = toolbar_lines(app).first().map_or(0, Line::width);
         let x = u16::try_from(before).unwrap_or(u16::MAX);
         frame.set_cursor_position((top.x.saturating_add(x), top.y));
+    }
+    if let Some(apply) = &app.apply {
+        let bar = Line::from(vec![
+            Span::styled("Apply ", Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled(apply.title.clone(), Style::new().fg(Color::Yellow)),
+            Span::raw(format!(" from {} to the marked rows", title(&apply.source))),
+            Span::styled("   Ctrl+S applies  Esc cancels", dim()),
+        ]);
+        frame.render_widget(Paragraph::new(bar), apply_line);
     }
     if favorites > 0 {
         let (line, at) = super::favorites::line(app);
@@ -722,7 +743,7 @@ fn draw_confirm(frame: &mut Frame, app: &App) {
                 repositories(names.len())
             ),
         ),
-        (None, Job::Git(_) | Job::Steps(_)) => (
+        (None, Job::Git(_) | Job::Steps(_) | Job::Apply { .. }) => (
             " Destructive command ".to_owned(),
             format!(
                 "Run `{}` in {}? This can discard work.",

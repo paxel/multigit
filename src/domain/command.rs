@@ -14,6 +14,11 @@ pub enum Job {
     /// Git commands one after the other (arguments after `git`); the first
     /// that fails ends the run.
     Steps(Vec<Vec<String>>),
+    /// Commit `hash` of the repository at `source` applied here.
+    Apply {
+        source: std::path::PathBuf,
+        hash: String,
+    },
 }
 
 /// The text after a leading `!`, trimmed; `None` for a git line.

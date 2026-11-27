@@ -1,5 +1,6 @@
 //! Processes and files: git, config/history storage, folder scanning.
 
+pub mod apply;
 pub mod audio;
 pub mod backend;
 pub mod desktop;

@@ -1875,3 +1875,30 @@ fn five_shows_where_head_has_been() {
     let lines = screen(&mut app, 120, 30);
     assert!(shown(&lines, "aaaabbbb [main] [v9]"), "the step's commit");
 }
+
+#[test]
+fn a_on_a_commit_goes_to_the_board_where_ctrl_s_applies_it() {
+    let (mut app, backend) = repo_app();
+    app.cards
+        .push(card("beta", Counts::default(), Upstream::None));
+    open_view(&mut app);
+    press(&mut app, KeyCode::Enter);
+    settle_diff(&mut app);
+    press(&mut app, KeyCode::Char('a'));
+    assert!(app.repo_view.is_none());
+    let lines = screen(&mut app, 120, 30);
+    assert!(
+        shown(&lines, "Apply aaaabbb Fix the thing from alpha"),
+        "{lines:#?}"
+    );
+    app.marked.insert(PathBuf::from("/repos/beta"));
+    on_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+    );
+    assert!(app.apply.is_none());
+    crate::app::tests::settle(&mut app, |_| !backend.runs.lock().unwrap().is_empty());
+    let (dir, args) = backend.runs.lock().unwrap()[0].clone();
+    assert_eq!(dir, PathBuf::from("/repos/beta"));
+    assert_eq!(args[0], "apply");
+}

@@ -135,6 +135,18 @@ pub struct CommitDialog {
     pub running: Option<u64>,
 }
 
+/// A commit on its way to other repositories: the board shows it in a bar
+/// while the repositories it goes to are marked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyMode {
+    /// The repository the commit is in.
+    pub source: PathBuf,
+    /// Its full hash.
+    pub hash: String,
+    /// Its short hash and subject, for the bar.
+    pub title: String,
+}
+
 /// The question for the message of a stash of a file or folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StashPrompt {
@@ -478,6 +490,8 @@ pub struct App<G = ()> {
     pub commit_dialog: Option<CommitDialog>,
     /// The window's question for the message of a stash.
     pub stash_prompt: Option<StashPrompt>,
+    /// The board picks the repositories a commit goes to.
+    pub apply: Option<ApplyMode>,
     pub settings_open: bool,
     pub settings_page: SettingsPage,
     notify: Notify,
@@ -561,6 +575,7 @@ impl<G: Default> App<G> {
             view_runs: HashMap::new(),
             commit_dialog: None,
             stash_prompt: None,
+            apply: None,
             settings_open: false,
             settings_page: SettingsPage::default(),
             notify,
@@ -1174,6 +1189,10 @@ impl<G: Default> App<G> {
         if self.marked.remove(&path) {
             return;
         }
+        if self.apply.as_ref().is_some_and(|a| a.source == path) {
+            self.toast("The commit comes from this repository");
+            return;
+        }
         if self.is_kawaii() {
             self.wobbles.insert(path.clone(), self.kawaii_clock);
         }
@@ -1372,6 +1391,83 @@ impl<G: Default> App<G> {
             .collect();
         self.marked.retain(|p| !shown.contains(p));
         self.marked.extend(picked);
+        // The repository a commit comes from takes no mark while it goes.
+        if let Some(apply) = &self.apply {
+            self.marked.remove(&apply.source);
+        }
+    }
+
+    /// "Apply to repositories…" on a commit of the view: back to the
+    /// board, where the repositories it goes to are marked.
+    pub fn start_apply(&mut self, hash: &str) {
+        let Some(view) = &self.repo_view else {
+            return;
+        };
+        let details = view.details.as_ref().and_then(|d| d.as_ref().ok());
+        let listed = details.and_then(|d| {
+            d.commits
+                .iter()
+                .find(|c| c.hash == hash)
+                .map(|c| c.subject.clone())
+                .or_else(|| {
+                    d.reflog
+                        .iter()
+                        .find(|r| r.hash == hash)
+                        .map(|r| r.message.clone())
+                })
+        });
+        let drawn = match &view.graph {
+            Some(Ok(graph)) => graph
+                .commits
+                .iter()
+                .find(|c| c.hash == hash)
+                .map(|c| c.subject.clone()),
+            _ => None,
+        };
+        let subject = listed.or(drawn).unwrap_or_default();
+        let short: String = hash.chars().take(7).collect();
+        let source = view.repo.clone();
+        self.marked.remove(&source);
+        self.apply = Some(ApplyMode {
+            source,
+            hash: hash.to_owned(),
+            title: format!("{short} {subject}").trim_end().to_owned(),
+        });
+        self.close_repo_view();
+    }
+
+    /// Apply in the bar: the commit goes to every marked repository, as a
+    /// commit with its message and author; where it does not apply, the
+    /// output panel says why.
+    pub fn apply_to_marked(&mut self) {
+        let Some(apply) = self.apply.clone() else {
+            return;
+        };
+        let targets: Vec<PathBuf> = self
+            .marked_repos()
+            .into_iter()
+            .filter(|r| *r != apply.source)
+            .collect();
+        if targets.is_empty() {
+            self.toast("Mark the repositories the commit goes to");
+            return;
+        }
+        self.apply = None;
+        let short: String = apply.hash.chars().take(7).collect();
+        let command = format!("am --3way {short} (from {})", title(&apply.source));
+        let id = self.log.start(&command, &targets);
+        for repo in &targets {
+            let job = Job::Apply {
+                source: apply.source.clone(),
+                hash: apply.hash.clone(),
+            };
+            self.engine.run_command(id, repo, job);
+        }
+    }
+
+    /// Cancel in the bar: the commit goes nowhere.
+    pub fn cancel_apply(&mut self) {
+        self.apply = None;
     }
 
     /// A right click on a mark button: show only the cards that fit it,
@@ -2143,6 +2239,19 @@ pub(crate) mod tests {
                 .unwrap()
                 .clone()
                 .ok_or(ProbeError::NotARepo)
+        }
+        fn apply_commit(&self, dir: &Path, source: &Path, hash: &str) -> io::Result<ProcessOutput> {
+            let args = vec![
+                "apply".to_owned(),
+                source.display().to_string(),
+                hash.to_owned(),
+            ];
+            self.runs.lock().unwrap().push((dir.to_path_buf(), args));
+            Ok(ProcessOutput {
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            })
         }
         fn run(&self, dir: &Path, args: &[String]) -> io::Result<ProcessOutput> {
             self.runs
@@ -3261,6 +3370,54 @@ pub(crate) mod tests {
         };
         assert_eq!(steps[1], ["switch", "--no-guess", "side"]);
         assert!(steps[0].join(" ").contains("before checking out side"));
+    }
+
+    #[test]
+    fn a_commit_goes_to_the_marked_repositories_but_not_where_it_comes_from() {
+        use crate::domain::details::parse_log;
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details {
+            commits: parse_log("abcdef12\tabcdef1\tA\t1\td\t\tFix it\n"),
+            ..Details::default()
+        });
+        let mut app = app_with(backend.clone(), None);
+        for name in ["/x/a", "/x/b", "/x/c"] {
+            app.cards.push(Card::new(PathBuf::from(name)));
+        }
+        app.marked.insert(PathBuf::from("/x/a"));
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| {
+            a.repo_view.as_ref().unwrap().details.is_some()
+        });
+        app.start_apply("abcdef12");
+        assert!(app.repo_view.is_none(), "back to the board");
+        assert_eq!(app.apply.as_ref().unwrap().title, "abcdef1 Fix it");
+        assert!(app.marked.is_empty(), "the source loses its mark");
+        app.apply_to_marked();
+        assert!(app.apply.is_some(), "nothing marked: it stays");
+        app.toggle_mark(PathBuf::from("/x/a"));
+        assert!(app.marked.is_empty(), "the source takes no mark");
+        app.press_mark(MarkBy::All);
+        assert_eq!(app.marked.len(), 2);
+        assert!(!app.marked.contains(Path::new("/x/a")));
+        app.apply_to_marked();
+        assert!(app.apply.is_none());
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 2);
+        let runs = backend.runs.lock().unwrap().clone();
+        for (dir, args) in &runs {
+            assert_ne!(dir, Path::new("/x/a"));
+            assert_eq!(args, &["apply", "/x/a", "abcdef12"]);
+        }
+        assert!(
+            app.log
+                .last()
+                .unwrap()
+                .command
+                .starts_with("am --3way abcdef1")
+        );
+        app.start_apply("abcdef12");
+        app.cancel_apply();
+        assert!(app.apply.is_none());
     }
 
     #[test]

@@ -52,6 +52,13 @@ pub trait Backend: Send + Sync + 'static {
     fn graph(&self, dir: &Path, with_old: bool) -> Result<GraphData, String>;
     /// The diff of a file or commit for the repository view; same rule.
     fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String>;
+    /// Apply commit `hash` of the repository at `source` to the one at
+    /// `dir`, with its message and author; a patch that does not apply
+    /// leaves `dir` as it was.
+    fn apply_commit(&self, dir: &Path, source: &Path, hash: &str) -> io::Result<ProcessOutput> {
+        let _ = (dir, source, hash);
+        Err(io::Error::other("applying commits is not supported here"))
+    }
 }
 
 /// What made a probe run.
@@ -303,6 +310,7 @@ impl Engine {
                     Job::Git(args) => shared.backend.run(&repo, args),
                     Job::Shell(line) => shared.backend.run_shell(&repo, line),
                     Job::Steps(steps) => run_steps(shared.backend.as_ref(), &repo, steps),
+                    Job::Apply { source, hash } => shared.backend.apply_commit(&repo, source, hash),
                 };
                 let state = match result {
                     Ok(out) => SectionState::Done(out),

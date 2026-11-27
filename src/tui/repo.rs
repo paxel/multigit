@@ -455,6 +455,16 @@ fn list_key(app: &mut App, key: KeyEvent) {
                 app.gui.mode = Mode::Menu(super::commits::copy_menu(&commit));
             }
         }
+        KeyCode::Char('a')
+            if app
+                .repo_view
+                .as_ref()
+                .is_some_and(|v| v.tab != RepoTab::Stash) =>
+        {
+            if let Some(commit) = super::commits::picked(app) {
+                app.start_apply(&commit.hash);
+            }
+        }
         KeyCode::Char('p') => {
             if let Some(commit) = super::commits::picked(app) {
                 app.gui.mode = Mode::Menu(super::commits::parents_menu(&commit));

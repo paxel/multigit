@@ -245,6 +245,9 @@ impl App {
         }
 
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
+        if self.apply.is_some() {
+            egui::Panel::top("apply-bar").show(ui, |ui| self.apply_bar(ui));
+        }
         egui::Panel::bottom("cli").show(ui, |ui| {
             ui.add_space(4.0);
             self.cli_line(ui);
@@ -776,6 +779,30 @@ impl App {
             });
     }
 
+    /// The bar over the board while a commit is on its way to other
+    /// repositories.
+    fn apply_bar(&mut self, ui: &mut Ui) {
+        let Some(apply) = &self.apply else {
+            return;
+        };
+        let (mut go, mut cancel) = (false, false);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Apply").strong());
+            ui.label(RichText::new(&apply.title).monospace());
+            ui.label(format!(
+                "from {} to the marked repositories",
+                title(&apply.source)
+            ));
+            go = ui.button("Apply").clicked();
+            cancel = ui.button("Cancel").clicked();
+        });
+        if go {
+            self.apply_to_marked();
+        } else if cancel {
+            self.cancel_apply();
+        }
+    }
+
     /// `enter` confirms, like a click on Run.
     fn confirm_dialog(&mut self, ui: &Ui, enter: bool) {
         let Some(pending) = &self.confirm else {
@@ -792,7 +819,7 @@ impl App {
                     repositories(names.len())
                 ),
             ),
-            (None, Job::Git(_) | Job::Steps(_)) => (
+            (None, Job::Git(_) | Job::Steps(_) | Job::Apply { .. }) => (
                 "Destructive command",
                 format!(
                     "Run `{}` in {}? This can discard work.",

@@ -39,6 +39,8 @@ enum Act {
     Edit(String),
     /// Check out a branch or a commit of the graph.
     Checkout(Checkout),
+    /// Take this commit to the board, to apply it to other repositories.
+    Apply(String),
     /// Apply, pop or drop the stash git names so.
     Stash(StashAct, String),
     /// Stage the file or folder at this path, or unstage it when it is
@@ -146,6 +148,7 @@ impl App {
             Some(Act::StartStash(path)) => self.start_stash(&path),
             Some(Act::Edit(path)) => self.edit_file(&path),
             Some(Act::Checkout(way)) => self.check_out(way),
+            Some(Act::Apply(hash)) => self.start_apply(&hash),
             Some(Act::Stash(stash_act, name)) => self.stash_act(stash_act, &name),
             Some(Act::Stage(path)) => self.toggle_staged(&path),
             Some(Act::File(file_act, path)) => self.file_act(file_act, &path),
@@ -449,7 +452,8 @@ fn reflog_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option
             );
             let hover = format!("{}: {}: {}", step.name, step.action, step.message);
             let target = DiffTarget::Commit(step.hash.clone());
-            row(ui, view, target, text, &hover, act);
+            let shown = row(ui, view, target, text, &hover, act);
+            shown.context_menu(|ui| apply_entry(ui, &step.hash, act));
         }
     });
 }
@@ -534,9 +538,21 @@ fn commit_row(ui: &mut Ui, view: &RepoView, commit: &LogEntry, now: i64, act: &m
             text.append(&commit.subject, 0.0, title);
             let hover = format!("{}, {}\n{}", commit.author, commit.date, commit.subject);
             let target = DiffTarget::Commit(commit.hash.clone());
-            row(ui, view, target, text, &hover, act);
+            let shown = row(ui, view, target, text, &hover, act);
+            shown.context_menu(|ui| apply_entry(ui, &commit.hash, act));
         });
     });
+}
+
+/// "Apply to repositories…": the commit goes to the board, where the
+/// repositories it goes to are marked.
+fn apply_entry(ui: &mut Ui, hash: &str, act: &mut Option<Act>) {
+    let entry = ui
+        .button("Apply to repositories\u{2026}")
+        .on_hover_text("Mark them on the board, then Apply");
+    if entry.clicked() {
+        *act = Some(Act::Apply(hash.to_owned()));
+    }
 }
 
 /// The Commits tab: the history of the checked-out branch. The next page
@@ -732,6 +748,8 @@ fn graph_row_text(
                         *act = Some(Act::Checkout(way));
                     }
                 }
+                ui.separator();
+                apply_entry(ui, hash, act);
             });
         }
     }

@@ -105,6 +105,20 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
 }
 
 fn board_key(app: &mut App, key: KeyEvent) {
+    if app.apply.is_some() {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('s' | 'j') | KeyCode::Enter if ctrl => {
+                app.apply_to_marked();
+                return;
+            }
+            KeyCode::Esc => {
+                app.cancel_apply();
+                return;
+            }
+            _ => {}
+        }
+    }
     match key.code {
         KeyCode::Char('q') => app.gui.quit = true,
         KeyCode::Char('?') => app.gui.help = true,

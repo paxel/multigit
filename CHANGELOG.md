@@ -4,19 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.6.0]
-
-### Added
-
-- On Windows the config is kept in `%APPDATA%\multigit` and the history in `%LOCALAPPDATA%\multigit` ([mgit-1015](https://github.com/paxel/multigit/issues/89)).
-- On Windows `!` lines and the terminal board's shell run in PowerShell when `SHELL` is not set: `pwsh`, or `powershell` without PowerShell 7 ([mgit-1016](https://github.com/paxel/multigit/issues/90)).
-- On Windows the terminal button opens Windows Terminal in the repository, or a PowerShell console without it ([mgit-1017](https://github.com/paxel/multigit/issues/91)).
-- On Windows files and links open with their default program ([mgit-1018](https://github.com/paxel/multigit/issues/92)).
-- On Windows sounds and the Kawaii music play through `ffplay` when installed, otherwise through PowerShell ([mgit-1019](https://github.com/paxel/multigit/issues/93)).
-- `multigit-tui` starts the terminal board, as `multigit --tui` does; on Windows it is the way to start it, and `multigit.exe` opens no console window there ([mgit-1020](https://github.com/paxel/multigit/issues/94)).
-- The Windows programs carry the multigit icon, for the Start menu and the taskbar ([mgit-1021](https://github.com/paxel/multigit/issues/95)).
-- Every release has a Windows zip, `multigit-<version>-x86_64-windows.zip`, with `multigit.exe` and `multigit-tui.exe` ([mgit-1023](https://github.com/paxel/multigit/issues/97)).
-- multigit can be installed on Windows with Scoop, from the `paxel/scoop-bucket` bucket, with a Start menu entry ([mgit-1024](https://github.com/paxel/multigit/issues/98)).
+## [0.7.0]
 
 ---
 

@@ -497,7 +497,7 @@ To build the bundle yourself:
 
 ```sh
 cargo build --release
-packaging/macos/bundle.sh target/release/multigit 0.6.0 .
+packaging/macos/bundle.sh target/release/multigit 0.7.0 .
 ```
 
 ### Scoop (Windows x86_64)

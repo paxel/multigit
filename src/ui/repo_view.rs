@@ -183,16 +183,21 @@ fn list(ui: &mut Ui, heading: &str, tab: RepoTab, rows: impl FnOnce(&mut Ui)) {
 /// tree of folders, or flat. Both lists share it.
 fn tree_switch(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        let hover = if view.tree {
-            "Folders: click for a flat list of the files"
-        } else {
-            "Flat list: click to show the folders"
-        };
-        let switch = egui::Button::selectable(view.tree, "Tree");
-        if ui.add(switch).on_hover_text(hover).clicked() {
-            *act = Some(Act::Tree);
-        }
+        tree_toggle(ui, view, act);
     });
+}
+
+/// The Tree button itself.
+fn tree_toggle(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
+    let hover = if view.tree {
+        "Folders: click for a flat list of the files"
+    } else {
+        "Flat list: click to show the folders"
+    };
+    let switch = egui::Button::selectable(view.tree, "Tree");
+    if ui.add(switch).on_hover_text(hover).clicked() {
+        *act = Some(Act::Tree);
+    }
 }
 
 /// A row of a list; a click picks its target for the right pane.
@@ -267,13 +272,17 @@ fn fold_icon(ui: &Ui, open: bool, response: &egui::Response) {
 fn file_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<Act>) {
     ui.horizontal(|ui| {
         ui.strong(format!("Changed files ({})", details.files.len()));
-        tree_switch(ui, view, act);
-        let commit = ui
-            .button("Commit")
-            .on_hover_text("Commit what is staged (lazygit: c)");
-        if commit.clicked() {
-            *act = Some(Act::Commit);
-        }
+        // Both at the right end: anything after the right-to-left part
+        // would make the list wider than its panel.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let commit = ui
+                .button("Commit")
+                .on_hover_text("Commit what is staged (lazygit: c)");
+            if commit.clicked() {
+                *act = Some(Act::Commit);
+            }
+            tree_toggle(ui, view, act);
+        });
     });
     list(ui, "", RepoTab::Files, |ui| {
         if details.files.is_empty() {

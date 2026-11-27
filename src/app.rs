@@ -24,7 +24,7 @@ use crate::domain::naming::{board_order, title};
 use crate::domain::output::{OutputLog, SectionState};
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use crate::domain::songs::{STYLES, styles_on};
-use crate::domain::staging::{FileAct, Staged, file_steps, files_of, staged};
+use crate::domain::staging::{FileAct, Staged, file_steps, files_of, staged, states_of};
 use crate::domain::status::{RepoState, Upstream};
 use crate::infrastructure::audio::decode;
 use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
@@ -1387,7 +1387,7 @@ impl<G: Default> App<G> {
         };
         let files = files_of(&details.files, path);
         let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
-        let steps = file_steps(act, &details.states, &paths);
+        let steps = file_steps(act, &states_of(&files, &details.states), &paths);
         if steps.is_empty() {
             let what = act.label().to_lowercase();
             self.toast(format!("Nothing to {what} in {path}"));

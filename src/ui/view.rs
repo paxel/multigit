@@ -262,9 +262,10 @@ impl App {
 
         self.toasts_overlay(ui);
         self.copy_flash_overlay(ui);
-        self.confirm_dialog(ui, enter_confirms);
         self.favorite_dialog(ui);
         self.repo_view_dialog(ui);
+        // Over the repository view: a discard there asks here.
+        self.confirm_dialog(ui, enter_confirms);
         self.text_menu_overlay(ui);
         settings::show(self, ui.ctx());
     }

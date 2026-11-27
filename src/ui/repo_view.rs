@@ -105,7 +105,8 @@ impl App {
                     egui::CentralPanel::default().show(ui, |ui| diff_pane(ui, view, &mut act));
                 }
             }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // Esc in a question over the view is that question's.
+            if self.confirm.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 act = Some(Act::Close);
             }
         });

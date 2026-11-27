@@ -2387,3 +2387,25 @@ fn the_fold_triangle_has_three_equal_sides_and_points_right_or_down() {
         }
     }
 }
+
+#[test]
+fn a_discard_from_the_files_menu_asks_over_the_repository_view() {
+    let mut h = repo_view_app();
+    h.run();
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.state_mut()
+        .switch_repo_tab(crate::domain::details::RepoTab::Files);
+    h.run();
+    h.get_by_label(" M main.rs").click_secondary();
+    h.run();
+    h.get_by_label("Discard unstaged changes").click();
+    h.run();
+    assert!(h.state().confirm.is_some(), "{:?}", h.state().toasts);
+    h.get_by_label_contains("Discard the unstaged changes of src/main.rs (1 file)");
+    // Esc answers the question and leaves the view open.
+    h.key_press(Key::Escape);
+    h.run();
+    assert!(h.state().confirm.is_none());
+    assert!(h.state().repo_view.is_some());
+}

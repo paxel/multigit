@@ -97,6 +97,24 @@ pub fn parse_states(porcelain_v2: &str) -> BTreeMap<String, FileState> {
     states
 }
 
+/// The letters of each of `files`: as read, or guessed from the kind of
+/// change for a file whose state was not read.
+pub fn states_of(
+    files: &[&FileChange],
+    states: &BTreeMap<String, FileState>,
+) -> BTreeMap<String, FileState> {
+    files
+        .iter()
+        .map(|f| {
+            let state = states
+                .get(&f.path)
+                .copied()
+                .unwrap_or(FileState::guessed(f.kind));
+            (f.path.clone(), state)
+        })
+        .collect()
+}
+
 /// How much of a file, or of the files in a folder, is staged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Staged {

@@ -54,6 +54,9 @@ pub enum Action {
     Remove(Vec<PathBuf>),
     /// Off the board and remembered, so a scan leaves them out.
     Hide(Vec<PathBuf>),
+    /// Stage, unstage or discard the file or folder at this path in the
+    /// repository view.
+    File(crate::domain::staging::FileAct, String),
 }
 
 /// What a line typed into a [`Prompt`] is for.
@@ -176,6 +179,7 @@ pub fn perform(app: &mut App, action: Action) {
         }
         Action::Remove(repos) => app.remove_cards(&repos),
         Action::Hide(repos) => app.hide_cards(&repos),
+        Action::File(act, path) => app.file_act(act, &path),
     }
 }
 

@@ -11,6 +11,9 @@ pub enum Job {
     Git(Vec<String>),
     /// A line for `<shell> -c`.
     Shell(String),
+    /// Git commands one after the other (arguments after `git`); the first
+    /// that fails ends the run.
+    Steps(Vec<Vec<String>>),
 }
 
 /// The text after a leading `!`, trimmed; `None` for a git line.

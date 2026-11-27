@@ -735,6 +735,7 @@ fn repo_app() -> (App, Arc<FakeBackend>) {
     use crate::domain::details::{ChangeKind, Details, FileChange, parse_log};
     let backend = Arc::new(FakeBackend::default());
     *backend.details.lock().unwrap() = Some(Details {
+        states: Default::default(),
         files: vec![
             FileChange {
                 path: "src/main.rs".into(),

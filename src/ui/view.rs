@@ -781,8 +781,9 @@ impl App {
             return;
         };
         let names: Vec<String> = pending.repos.iter().map(|p| title(p)).collect();
-        let (heading, question) = match &pending.job {
-            Job::Shell(line) => (
+        let (heading, question) = match (&pending.ask, &pending.job) {
+            (Some((heading, question)), _) => (heading.as_str(), question.clone()),
+            (None, Job::Shell(line)) => (
                 "Shell command",
                 format!(
                     "Run `{line}` with {} in {}?",
@@ -790,7 +791,7 @@ impl App {
                     repositories(names.len())
                 ),
             ),
-            Job::Git(_) => (
+            (None, Job::Git(_) | Job::Steps(_)) => (
                 "Destructive command",
                 format!(
                     "Run `{}` in {}? This can discard work.",

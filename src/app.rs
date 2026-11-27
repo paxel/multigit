@@ -24,6 +24,7 @@ use crate::domain::naming::{board_order, title};
 use crate::domain::output::{OutputLog, SectionState};
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use crate::domain::songs::{STYLES, styles_on};
+use crate::domain::staging::{FileAct, Staged, file_steps, files_of, staged};
 use crate::domain::status::{RepoState, Upstream};
 use crate::infrastructure::audio::decode;
 use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
@@ -100,6 +101,9 @@ pub struct PendingRun {
     pub command: String,
     pub job: Job,
     pub repos: Vec<PathBuf>,
+    /// The heading and the question of the confirmation, when the run is
+    /// not a typed command but something picked in the repository view.
+    pub ask: Option<(String, String)>,
 }
 
 /// The open read-only view of one repository.
@@ -245,6 +249,15 @@ impl MarkBy {
             MarkBy::Ahead => card.is_ahead(),
         }
     }
+}
+
+/// Git commands one after the other as the output panel names them.
+fn steps_line(steps: &[Vec<String>]) -> String {
+    steps
+        .iter()
+        .map(shell_words::join)
+        .collect::<Vec<_>>()
+        .join(" && git ")
 }
 
 /// The whole application state.
@@ -405,6 +418,9 @@ pub struct App<G = ()> {
     /// of the mark.
     wobbles: HashMap<PathBuf, f64>,
     pub confirm: Option<PendingRun>,
+    /// Runs started from the repository view: the view is read again when
+    /// each ends.
+    view_runs: HashSet<u64>,
     pub settings_open: bool,
     pub settings_page: SettingsPage,
     notify: Notify,
@@ -485,6 +501,7 @@ impl<G: Default> App<G> {
             kawaii_awake: 0.0,
             wobbles: HashMap::new(),
             confirm: None,
+            view_runs: HashSet::new(),
             settings_open: false,
             settings_page: SettingsPage::default(),
             notify,
@@ -1310,6 +1327,7 @@ impl<G: Default> App<G> {
                     command: command.to_owned(),
                     job: Job::Shell(line.to_owned()),
                     repos,
+                    ask: None,
                 });
             }
             return;
@@ -1326,6 +1344,7 @@ impl<G: Default> App<G> {
             command: command.to_owned(),
             job: Job::Git(args),
             repos,
+            ask: None,
         };
         if destructive {
             self.confirm = Some(pending);
@@ -1339,6 +1358,85 @@ impl<G: Default> App<G> {
         for repo in &run.repos {
             self.engine.run_command(id, repo, run.job.clone());
         }
+        if run.ask.is_some() {
+            self.view_runs.insert(id);
+        }
+    }
+
+    /// Run `steps` (git arguments, one command after the other) in the
+    /// repository of the open view, in the output panel like any command.
+    /// The view is read again when they end.
+    pub fn run_in_view(&mut self, steps: Vec<Vec<String>>) -> Option<u64> {
+        let repo = self.repo_view.as_ref()?.repo.clone();
+        let id = self
+            .log
+            .start(&steps_line(&steps), std::slice::from_ref(&repo));
+        self.engine.run_command(id, &repo, Job::Steps(steps));
+        self.view_runs.insert(id);
+        Some(id)
+    }
+
+    /// Stage, unstage or discard the file or the folder (its path ends
+    /// with `/`) at `path` in the Files tab. Discarding asks first.
+    pub fn file_act(&mut self, act: FileAct, path: &str) {
+        let Some(view) = &self.repo_view else {
+            return;
+        };
+        let Some(Ok(details)) = &view.details else {
+            return;
+        };
+        let files = files_of(&details.files, path);
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        let steps = file_steps(act, &details.states, &paths);
+        if steps.is_empty() {
+            let what = act.label().to_lowercase();
+            self.toast(format!("Nothing to {what} in {path}"));
+            return;
+        }
+        if act.discards() {
+            let count = match paths.len() {
+                1 => "1 file".to_owned(),
+                n => format!("{n} files"),
+            };
+            let what = match act {
+                FileAct::DiscardUnstaged => "the unstaged changes",
+                _ => "all changes",
+            };
+            let question = format!("Discard {what} of {path} ({count})? This cannot be undone.");
+            self.confirm = Some(PendingRun {
+                command: steps_line(&steps),
+                job: Job::Steps(steps),
+                repos: vec![view.repo.clone()],
+                ask: Some((act.label().to_owned(), question)),
+            });
+            return;
+        }
+        self.run_in_view(steps);
+    }
+
+    /// The checkbox of a file or folder, or Space: stage what is not
+    /// staged yet, or unstage what is staged whole.
+    pub fn toggle_staged(&mut self, path: &str) {
+        let staged = self.staged_of(path);
+        let act = if staged == Staged::All {
+            FileAct::Unstage
+        } else {
+            FileAct::Stage
+        };
+        self.file_act(act, path);
+    }
+
+    /// How much of the file or folder at `path` in the Files tab is
+    /// staged.
+    pub fn staged_of(&self, path: &str) -> Staged {
+        let Some(Ok(details)) = self.repo_view.as_ref().and_then(|v| v.details.as_ref()) else {
+            return Staged::Nothing;
+        };
+        let paths: Vec<&str> = files_of(&details.files, path)
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect();
+        staged(&details.states, &paths)
     }
 
     /// A link of the About page: a web page or a mail in the system's
@@ -1499,7 +1597,15 @@ impl<G: Default> App<G> {
                         self.wake_kawaii();
                     }
                 }
+                let ended = state.outcome().is_some();
                 self.log.update(run, &repo, state);
+                // What was done in the view shows in its lists.
+                if ended
+                    && self.view_runs.remove(&run)
+                    && self.repo_view.as_ref().is_some_and(|v| v.repo == repo)
+                {
+                    self.refresh_repo_view();
+                }
             }
             Event::Commands { all, builtins } => {
                 self.vocab.subcommands = all;
@@ -2646,6 +2752,62 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn files_are_staged_from_the_view_and_a_discard_asks_first() {
+        use crate::domain::details::ChangeKind;
+        use crate::domain::staging::{FileAct, FileState, Staged};
+        let backend = Arc::new(FakeBackend::default());
+        let state = |index, worktree| FileState { index, worktree };
+        *backend.details.lock().unwrap() = Some(Details {
+            files: vec![
+                FileChange {
+                    path: "src/a.rs".into(),
+                    kind: ChangeKind::Modified,
+                },
+                FileChange {
+                    path: "src/b.rs".into(),
+                    kind: ChangeKind::Modified,
+                },
+            ],
+            states: [
+                ("src/a.rs".to_string(), state('M', '.')),
+                ("src/b.rs".to_string(), state('.', 'M')),
+            ]
+            .into_iter()
+            .collect(),
+            ..Details::default()
+        });
+        let mut app = app_with(backend.clone(), None);
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| {
+            a.repo_view.as_ref().unwrap().details.is_some()
+        });
+        assert_eq!(app.staged_of("src/a.rs"), Staged::All);
+        assert_eq!(app.staged_of("src/"), Staged::Partly);
+
+        let read = *backend.details_read.lock().unwrap();
+        app.toggle_staged("src/a.rs");
+        settle(&mut app, |_| *backend.details_read.lock().unwrap() > read);
+        let ran = backend.runs.lock().unwrap().last().unwrap().1.join(" ");
+        assert_eq!(ran, "--literal-pathspecs reset --quiet -- src/a.rs");
+        app.toggle_staged("src/");
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 2);
+        let ran = backend.runs.lock().unwrap().last().unwrap().1.join(" ");
+        assert_eq!(ran, "--literal-pathspecs add --all -- src/a.rs src/b.rs");
+
+        app.file_act(FileAct::DiscardUnstaged, "src/");
+        let pending = app.confirm.clone().expect("a discard asks");
+        assert_eq!(pending.repos, [PathBuf::from("/x/a")]);
+        let (heading, question) = pending.ask.unwrap();
+        assert_eq!(heading, "Discard unstaged changes");
+        assert!(question.contains("src/ (2 files)"), "{question}");
+        assert_eq!(backend.runs.lock().unwrap().len(), 2, "nothing ran yet");
+        app.confirm_run();
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 3);
+        let ran = backend.runs.lock().unwrap().last().unwrap().1.join(" ");
+        assert_eq!(ran, "--literal-pathspecs restore --worktree -- src/b.rs");
+    }
+
+    #[test]
     fn repository_view_loads_its_lists_follows_the_card_and_keeps_a_held_selection() {
         use crate::domain::details::{ChangeKind, FileChange, parse_log};
         let backend = Arc::new(FakeBackend::default());
@@ -2656,6 +2818,7 @@ pub(crate) mod tests {
             kind: ChangeKind::Modified,
         };
         let lists = |files: &[&str]| Details {
+            states: Default::default(),
             files: files.iter().map(|f| file(f)).collect(),
             commits: parse_log("aaaa\taa\tAda\t1\tthen\t\tone\n"),
             branches: vec![],

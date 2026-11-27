@@ -12,6 +12,7 @@ use crate::domain::graph::{
     parse_refs,
 };
 use crate::domain::output::ProcessOutput;
+use crate::domain::staging::parse_states;
 use crate::domain::status::{Head, parse_porcelain_v2};
 use crate::infrastructure::git::GitRunner;
 use std::path::Path;
@@ -151,6 +152,7 @@ pub fn details(runner: &GitRunner, dir: &Path, commits: usize) -> Result<Details
     )?;
     Ok(Details {
         files: parse_changes(&status),
+        states: parse_states(&status),
         commits,
         branches: parse_branches(&branches, current.as_deref()),
     })
@@ -287,6 +289,53 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         assert!(details(&runner, dir.path(), 0).is_err(), "not a repository");
+    }
+
+    #[test]
+    fn files_and_folders_are_staged_unstaged_and_discarded() {
+        use crate::domain::staging::{FileAct, file_steps, files_of};
+        let repo = TestRepo::new();
+        let runner = isolated_runner();
+        repo.commit("kept.txt", "one\n");
+        std::fs::create_dir(repo.path().join("dir")).unwrap();
+        repo.commit("dir/a*.txt", "a\n");
+        repo.write("kept.txt", "one\ntwo\n");
+        repo.write("dir/a*.txt", "changed\n");
+        repo.write("dir/new.txt", "new\n");
+        // `a*.txt` must not stand for every file that starts with `a`.
+        repo.write("dir/ab.txt", "other\n");
+        let act = |act: FileAct, row: &str| {
+            let d = details(&runner, repo.path(), 0).unwrap();
+            let paths: Vec<&str> = files_of(&d.files, row)
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect();
+            for step in file_steps(act, &d.states, &paths) {
+                let out = runner.run(repo.path(), &step).unwrap();
+                assert!(out.success(), "{step:?}: {}", out.stderr);
+            }
+        };
+        let status = || repo.git(&["status", "--porcelain"]);
+        act(FileAct::Stage, "dir/a*.txt");
+        assert!(status().contains("M  dir/a*.txt"), "{}", status());
+        assert!(status().contains("?? dir/ab.txt"), "{}", status());
+        act(FileAct::Stage, "dir/");
+        assert!(status().contains("A  dir/new.txt"), "{}", status());
+        act(FileAct::Unstage, "dir/");
+        assert!(status().contains("?? dir/new.txt"), "{}", status());
+        assert!(status().contains(" M dir/a*.txt"), "{}", status());
+        act(FileAct::DiscardUnstaged, "dir/");
+        assert!(!repo.path().join("dir/new.txt").exists(), "untracked goes");
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("dir/a*.txt")).unwrap(),
+            "a\n"
+        );
+        repo.write("dir/added.txt", "x\n");
+        repo.git(&["add", "dir/added.txt"]);
+        act(FileAct::Stage, "kept.txt");
+        act(FileAct::DiscardAll, "kept.txt");
+        act(FileAct::DiscardAll, "dir/");
+        assert_eq!(status(), "", "back to the last commit");
     }
 
     #[test]

@@ -161,6 +161,30 @@ impl Shared {
     }
 }
 
+/// Git commands one after the other in `dir`, their output together; the
+/// first that fails ends them, and its exit code is the result's.
+fn run_steps(
+    backend: &dyn Backend,
+    dir: &Path,
+    steps: &[Vec<String>],
+) -> io::Result<ProcessOutput> {
+    let mut all = ProcessOutput {
+        exit_code: Some(0),
+        stdout: String::new(),
+        stderr: String::new(),
+    };
+    for args in steps {
+        let out = backend.run(dir, args)?;
+        all.stdout.push_str(&out.stdout);
+        all.stderr.push_str(&out.stderr);
+        if !out.success() {
+            all.exit_code = out.exit_code;
+            break;
+        }
+    }
+    Ok(all)
+}
+
 /// Owns the worker budgets and per-repository slots; lives on the UI thread.
 pub struct Engine {
     shared: Shared,
@@ -278,6 +302,7 @@ impl Engine {
                 let result = match &job {
                     Job::Git(args) => shared.backend.run(&repo, args),
                     Job::Shell(line) => shared.backend.run_shell(&repo, line),
+                    Job::Steps(steps) => run_steps(shared.backend.as_ref(), &repo, steps),
                 };
                 let state = match result {
                     Ok(out) => SectionState::Done(out),

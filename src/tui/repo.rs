@@ -2,12 +2,15 @@
 //! on the left, what is picked in it on the right, Back and Forward.
 
 use super::App;
+use super::actions::Action;
 use super::actions::copy;
 use super::commits::PaneRow;
 use super::state::Mode;
+use super::widgets::{Item, Menu};
 use crate::app::{RepoView, TextOf};
 use crate::domain::details::{ChangeKind, DiffTarget, LineKind, RepoTab, file_lines, file_rows};
 use crate::domain::naming::title;
+use crate::domain::staging::{FileAct, FileState};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
@@ -69,6 +72,62 @@ pub fn line_style(kind: LineKind) -> Style {
     }
 }
 
+/// A changed file's row: its two status letters and its name, colored as
+/// lazygit colors them: the staged letter green, the unstaged one red, and
+/// the name green when all of it is staged, red when anything is not.
+fn state_line(indent: &str, state: Option<FileState>, name: &str) -> Line<'static> {
+    let state = state.unwrap_or(FileState {
+        index: '.',
+        worktree: 'M',
+    });
+    let letters: Vec<char> = state.letters().chars().collect();
+    let index = letters.first().copied().unwrap_or(' ');
+    let worktree = letters.get(1).copied().unwrap_or(' ');
+    let red = Style::new().fg(Color::Red);
+    let green = Style::new().fg(Color::Green);
+    Line::from(vec![
+        Span::raw(format!("{indent}  ")),
+        Span::styled(
+            index.to_string(),
+            if state.untracked() { red } else { green },
+        ),
+        Span::styled(worktree.to_string(), red),
+        Span::styled(
+            format!(" {name}"),
+            if state.unstaged() { red } else { green },
+        ),
+    ])
+}
+
+/// The path of a Files tab row: a file's, or a folder's with its `/`.
+fn row_path(row: &ViewRow) -> Option<String> {
+    match &row.pick {
+        Pick::Fold(path) => Some(path.clone()),
+        Pick::Select(DiffTarget::File(file)) => Some(file.path.clone()),
+        _ => None,
+    }
+}
+
+/// The menu of a Files tab row: stage, unstage and the two discards, or
+/// the discards alone.
+fn file_menu(path: &str, discard_only: bool) -> Menu {
+    let acts: &[FileAct] = if discard_only {
+        &[FileAct::DiscardAll, FileAct::DiscardUnstaged]
+    } else {
+        &[
+            FileAct::Stage,
+            FileAct::Unstage,
+            FileAct::DiscardAll,
+            FileAct::DiscardUnstaged,
+        ]
+    };
+    let items = acts
+        .iter()
+        .map(|act| Item::new(act.label(), Action::File(*act, path.to_owned())))
+        .collect();
+    Menu::new(path.to_owned(), items)
+}
+
 /// The rows of the shown tab's list.
 pub fn rows(app: &App) -> Vec<ViewRow> {
     let Some(view) = &app.repo_view else {
@@ -102,9 +161,10 @@ pub fn rows(app: &App) -> Vec<ViewRow> {
                             }
                         }
                         Some(file) => ViewRow {
-                            line: Line::styled(
-                                format!("{indent}  {} {}", file.kind.letter(), entry.name),
-                                Style::new().fg(change_color(file.kind)),
+                            line: state_line(
+                                &indent,
+                                details.states.get(&file.path).copied(),
+                                &entry.name,
                             ),
                             pick: Pick::Select(DiffTarget::File(file)),
                         },
@@ -248,6 +308,13 @@ pub fn key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// The Files tab is shown.
+fn files_tab(app: &App) -> bool {
+    app.repo_view
+        .as_ref()
+        .is_some_and(|v| v.tab == RepoTab::Files)
+}
+
 fn list_key(app: &mut App, key: KeyEvent) {
     let all = rows(app);
     let at = cursor(app, all.len());
@@ -290,6 +357,16 @@ fn list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('G') | KeyCode::End => {
             set_cursor(app, last);
             read_on(app, last);
+        }
+        KeyCode::Char(' ') if files_tab(app) => {
+            if let Some(path) = all.get(at).and_then(row_path) {
+                app.toggle_staged(&path);
+            }
+        }
+        KeyCode::Char('d') if files_tab(app) => {
+            if let Some(path) = all.get(at).and_then(row_path) {
+                app.gui.mode = Mode::Menu(file_menu(&path, true));
+            }
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
             if let Some(row) = all.get(at) {
@@ -457,6 +534,14 @@ pub fn mouse(app: &mut App, column: u16, row: u16, kind: MouseAt) {
                 pick(app, entry);
             }
         }
+        (MouseAt::RightClick, true) => {
+            let index = app.gui.list_top + usize::from(row.saturating_sub(area.y));
+            if let Some(path) = all.get(index).filter(|_| files_tab(app)).and_then(row_path) {
+                set_cursor(app, index);
+                app.gui.mode = Mode::Menu(file_menu(&path, false));
+            }
+        }
+        (MouseAt::RightClick, false) => {}
         (MouseAt::Down, true) => set_cursor(app, at.saturating_add(3).min(last)),
         (MouseAt::Up, true) => set_cursor(app, at.saturating_sub(3)),
         (MouseAt::Down, false) => app.gui.pane_scroll = app.gui.pane_scroll.saturating_add(3),
@@ -469,6 +554,7 @@ pub fn mouse(app: &mut App, column: u16, row: u16, kind: MouseAt) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAt {
     Click,
+    RightClick,
     Down,
     Up,
 }

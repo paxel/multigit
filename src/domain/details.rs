@@ -418,6 +418,8 @@ impl<T: PartialEq> Trail<T> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Details {
     pub files: Vec<FileChange>,
+    /// What is staged of each changed file, by path.
+    pub states: BTreeMap<String, crate::domain::staging::FileState>,
     pub commits: Vec<LogEntry>,
     pub branches: Vec<BranchEntry>,
 }
@@ -956,6 +958,7 @@ mod tests {
     #[test]
     fn a_selection_outlives_a_reload_only_while_the_lists_hold_it() {
         let details = Details {
+            states: Default::default(),
             files: vec![file("a.rs", ChangeKind::Modified)],
             commits: parse_log("aaaa\taa\tAda\t1\tthen\t\tone\n"),
             branches: vec![],

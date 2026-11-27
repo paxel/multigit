@@ -9,6 +9,7 @@ use crate::domain::details::{
 };
 use crate::domain::graph::{GraphData, GraphRow, LabelKind, RowKind, graph_rows, labels};
 use crate::domain::naming::title;
+use crate::domain::staging::{FileAct, FileState, Staged, files_of, staged};
 use crate::ui::app::{App, RepoView};
 use crate::ui::text_menu::{self, TextOf};
 use crate::ui::view::ok_color;
@@ -29,6 +30,11 @@ enum Act {
     FoldCommit(String),
     /// Flip the file lists between a tree and a flat list.
     Tree,
+    /// Stage the file or folder at this path, or unstage it when it is
+    /// staged whole.
+    Stage(String),
+    /// Stage, unstage or discard the file or folder at this path.
+    File(FileAct, String),
     /// The end of the commit list came into view.
     More,
     /// Unfold the run of the graph that starts with this commit.
@@ -113,6 +119,8 @@ impl App {
             Some(Act::Unfold(path)) => self.toggle_commit_file(&path),
             Some(Act::FoldCommit(path)) => self.toggle_commit_folder(&path),
             Some(Act::Tree) => self.toggle_file_tree(),
+            Some(Act::Stage(path)) => self.toggle_staged(&path),
+            Some(Act::File(file_act, path)) => self.file_act(file_act, &path),
             Some(Act::More) => self.load_more_commits(),
             Some(Act::Run(first)) => self.unfold_graph_run(&first),
             Some(Act::Old) => self.show_old_branches(),
@@ -189,12 +197,14 @@ fn row(
     text: impl Into<egui::WidgetText>,
     hover: &str,
     act: &mut Option<Act>,
-) {
+) -> egui::Response {
     let picked = view.selected.as_ref() == Some(&target);
     let entry = egui::Button::selectable(picked, text.into()).truncate();
-    if ui.add(entry).on_hover_text(hover).clicked() {
+    let response = ui.add(entry).on_hover_text(hover);
+    if response.clicked() {
         *act = Some(Act::Select(target));
     }
+    response
 }
 
 /// The color that says how a file changed.
@@ -260,31 +270,92 @@ fn file_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<A
         for entry in file_rows(&details.files, &view.closed, view.tree) {
             ui.horizontal(|ui| {
                 ui.add_space(entry.depth as f32 * INDENT);
+                let paths: Vec<&str> = files_of(&details.files, &entry.path)
+                    .iter()
+                    .map(|f| f.path.as_str())
+                    .collect();
+                stage_box(ui, staged(&details.states, &paths), &entry.path, act);
                 let Some(file) = entry.file else {
                     let size = egui::vec2(INDENT, ui.spacing().interact_size.y);
                     let (_, icon) = ui.allocate_exact_size(size, egui::Sense::click());
                     fold_icon(ui, entry.open, &icon);
                     let name = egui::Button::new(format!("{}/", entry.name)).frame(false);
                     let hover = if entry.open { "Fold" } else { "Unfold" };
-                    if ui.add(name).on_hover_text(hover).clicked() || icon.clicked() {
-                        *act = Some(Act::Fold(entry.path));
+                    let name = ui.add(name).on_hover_text(hover);
+                    if name.clicked() || icon.clicked() {
+                        *act = Some(Act::Fold(entry.path.clone()));
                     }
+                    file_menu(&name, &entry.path, act);
                     return;
                 };
-                ui.add_space(INDENT);
-                let color = change_color(ui, file.kind);
-                let text = format!("{} {}", file.kind.letter(), entry.name);
+                let state = details.states.get(&file.path).copied();
+                let letters = state_text(ui, state, &entry.name);
                 let hover = format!("{}: {}", file.kind.label(), file.path);
+                let path = file.path.clone();
                 let target = DiffTarget::File(file);
-                row(
-                    ui,
-                    view,
-                    target,
-                    RichText::new(text).color(color),
-                    &hover,
-                    act,
-                );
+                let shown = row(ui, view, target, letters, &hover, act);
+                file_menu(&shown, &path, act);
             });
+        }
+    });
+}
+
+/// The checkbox in front of a file or folder: checked when all of it is
+/// staged, half filled when a part is. A click stages it, or unstages it
+/// when it is staged whole.
+fn stage_box(ui: &mut Ui, staged: Staged, path: &str, act: &mut Option<Act>) {
+    let mut checked = staged == Staged::All;
+    let hover = match staged {
+        Staged::All => "Staged: click to unstage",
+        Staged::Partly => "Partly staged: click to stage all of it",
+        Staged::Nothing => "Not staged: click to stage",
+    };
+    let check = egui::Checkbox::without_text(&mut checked).indeterminate(staged == Staged::Partly);
+    if ui.add(check).on_hover_text(hover).clicked() {
+        *act = Some(Act::Stage(path.to_owned()));
+    }
+}
+
+/// A file's two status letters and its name, colored as lazygit colors
+/// them: the staged letter green, the unstaged one red, and the name green
+/// when all of it is staged, red when anything is not.
+fn state_text(ui: &Ui, state: Option<FileState>, name: &str) -> egui::text::LayoutJob {
+    let (green, red) = (ok_color(ui), ui.visuals().error_fg_color);
+    let mono = egui::TextStyle::Monospace.resolve(ui.style());
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let part = |font: &egui::FontId, color| egui::TextFormat {
+        font_id: font.clone(),
+        color,
+        ..Default::default()
+    };
+    let mut text = egui::text::LayoutJob::default();
+    let state = state.unwrap_or(FileState {
+        index: '.',
+        worktree: 'M',
+    });
+    let letters: Vec<char> = state.letters().chars().collect();
+    let index = letters.first().copied().unwrap_or(' ');
+    let worktree = letters.get(1).copied().unwrap_or(' ');
+    let index_color = if state.untracked() { red } else { green };
+    text.append(&index.to_string(), 0.0, part(&mono, index_color));
+    text.append(&worktree.to_string(), 0.0, part(&mono, red));
+    let name_color = if state.unstaged() { red } else { green };
+    text.append(&format!(" {name}"), 0.0, part(&body, name_color));
+    text
+}
+
+/// The right-click menu of a file or folder in the Files tab.
+fn file_menu(response: &egui::Response, path: &str, act: &mut Option<Act>) {
+    response.context_menu(|ui| {
+        for file_act in [
+            FileAct::Stage,
+            FileAct::Unstage,
+            FileAct::DiscardAll,
+            FileAct::DiscardUnstaged,
+        ] {
+            if ui.button(file_act.label()).clicked() {
+                *act = Some(Act::File(file_act, path.to_owned()));
+            }
         }
     });
 }

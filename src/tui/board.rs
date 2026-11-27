@@ -38,6 +38,8 @@ pub const HELP: &[(&str, &str)] = &[
     ("  Tab", "keys to the right pane and back"),
     ("  c / p", "a commit's values to copy / its parents"),
     ("  `", "file lists: a tree of folders or flat"),
+    ("  space / d", "Files: stage or unstage / discard"),
+    ("  right click", "Files: stage, unstage, discard"),
     ("a d b p", "mark all / dirty / behind / ahead"),
     ("D B P", "show only dirty / behind / ahead"),
     ("A", "show all again"),
@@ -697,17 +699,18 @@ fn draw_confirm(frame: &mut Frame, app: &App) {
         return;
     };
     let names: Vec<String> = pending.repos.iter().map(|p| title(p)).collect();
-    let (heading, question) = match &pending.job {
-        Job::Shell(line) => (
-            " Shell command ",
+    let (heading, question) = match (&pending.ask, &pending.job) {
+        (Some((heading, question)), _) => (format!(" {heading} "), question.clone()),
+        (None, Job::Shell(line)) => (
+            " Shell command ".to_owned(),
             format!(
                 "Run `{line}` with {} in {}?",
                 cli::login_shell_name(),
                 repositories(names.len())
             ),
         ),
-        Job::Git(_) => (
-            " Destructive command ",
+        (None, Job::Git(_) | Job::Steps(_)) => (
+            " Destructive command ".to_owned(),
             format!(
                 "Run `{}` in {}? This can discard work.",
                 display(&pending.command),

@@ -256,6 +256,7 @@ pub fn on_mouse(app: &mut App, mouse: MouseEvent) {
     if app.repo_view.is_some() {
         let kind = match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => super::repo::MouseAt::Click,
+            MouseEventKind::Down(MouseButton::Right) => super::repo::MouseAt::RightClick,
             MouseEventKind::ScrollDown => super::repo::MouseAt::Down,
             MouseEventKind::ScrollUp => super::repo::MouseAt::Up,
             _ => return,

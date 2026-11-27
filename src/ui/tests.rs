@@ -1173,6 +1173,7 @@ fn repo_view_app() -> Harness<'static, App> {
     use crate::domain::details::{BranchEntry, ChangeKind, Details, FileChange, parse_log};
     let backend = Arc::new(FakeBackend::default());
     *backend.details.lock().unwrap() = Some(Details {
+        states: Default::default(),
         files: vec![
             FileChange {
                 path: "src/main.rs".into(),

@@ -10,7 +10,7 @@ use super::widgets::{Item, Menu};
 use crate::app::{RepoView, TextOf};
 use crate::domain::details::{ChangeKind, DiffTarget, LineKind, RepoTab, file_lines, file_rows};
 use crate::domain::naming::title;
-use crate::domain::staging::{FileAct, FileState};
+use crate::domain::staging::{FileAct, FileState, StashAct};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
@@ -117,11 +117,39 @@ fn file_menu(path: &str, discard_only: bool) -> Menu {
             FileAct::DiscardUnstaged,
         ]
     };
-    let items = acts
+    let mut items: Vec<Item> = acts
         .iter()
         .map(|act| Item::new(act.label(), Action::File(*act, path.to_owned())))
         .collect();
+    if !discard_only {
+        items.push(Item::new(
+            "Stash\u{2026}",
+            Action::StartStash(path.to_owned()),
+        ));
+    }
     Menu::new(path.to_owned(), items)
+}
+
+/// The name git gives the stash of a Stash tab row (`stash@{0}`).
+fn stash_name(app: &App, row: &ViewRow) -> Option<String> {
+    let Pick::Select(DiffTarget::Commit(hash)) = &row.pick else {
+        return None;
+    };
+    let view = app.repo_view.as_ref().filter(|v| v.tab == RepoTab::Stash)?;
+    let Some(Ok(details)) = &view.details else {
+        return None;
+    };
+    let stash = details.stashes.iter().find(|s| &s.hash == hash)?;
+    Some(stash.name.clone())
+}
+
+/// The menu of a stash: apply, pop, drop.
+fn stash_menu(name: &str) -> Menu {
+    let items = [StashAct::Apply, StashAct::Pop, StashAct::Drop]
+        .into_iter()
+        .map(|act| Item::new(act.label(), Action::Stash(act, name.to_owned())))
+        .collect();
+    Menu::new(name.to_owned(), items)
 }
 
 /// The rows of the shown tab's list.
@@ -174,6 +202,22 @@ pub fn rows(app: &App) -> Vec<ViewRow> {
         }
         RepoTab::Commits => super::commits::rows(details, view),
         RepoTab::Graph => super::graph::rows(details, view),
+        RepoTab::Stash => {
+            if details.stashes.is_empty() {
+                return vec![ViewRow::note("no stashes")];
+            }
+            details
+                .stashes
+                .iter()
+                .map(|stash| ViewRow {
+                    line: Line::from(vec![
+                        Span::styled(format!("{} ", stash.name), dim()),
+                        Span::raw(stash.subject.clone()),
+                    ]),
+                    pick: Pick::Select(DiffTarget::Commit(stash.hash.clone())),
+                })
+                .collect()
+        }
     }
 }
 
@@ -233,6 +277,7 @@ fn pane_lines(view: &RepoView) -> Vec<PaneRow> {
             let hint = match view.tab {
                 RepoTab::Files => "Pick a file to see its changes.",
                 RepoTab::Commits | RepoTab::Graph => "Pick a commit to see it.",
+                RepoTab::Stash => "Pick a stash to see it.",
             };
             return text(Line::styled(hint, dim()));
         }
@@ -329,6 +374,7 @@ fn list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('1') => app.switch_repo_tab(RepoTab::Files),
         KeyCode::Char('2') => app.switch_repo_tab(RepoTab::Commits),
         KeyCode::Char('3') => app.switch_repo_tab(RepoTab::Graph),
+        KeyCode::Char('4') => app.switch_repo_tab(RepoTab::Stash),
         KeyCode::Char('[') | KeyCode::Backspace => app.repo_view_back(),
         KeyCode::Char(']') => app.repo_view_forward(),
         KeyCode::Char('r') => app.refresh_repo_view(),
@@ -361,6 +407,18 @@ fn list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('G') | KeyCode::End => {
             set_cursor(app, last);
             read_on(app, last);
+        }
+        KeyCode::Char(' ' | 'P' | 'd')
+            if all.get(at).and_then(|r| stash_name(app, r)).is_some() =>
+        {
+            if let Some(name) = all.get(at).and_then(|r| stash_name(app, r)) {
+                let act = match key.code {
+                    KeyCode::Char(' ') => StashAct::Apply,
+                    KeyCode::Char('P') => StashAct::Pop,
+                    _ => StashAct::Drop,
+                };
+                app.stash_act(act, &name);
+            }
         }
         KeyCode::Char(' ') if files_tab(app) => {
             if let Some(path) = all.get(at).and_then(row_path) {
@@ -540,6 +598,11 @@ pub fn mouse(app: &mut App, column: u16, row: u16, kind: MouseAt) {
         }
         (MouseAt::RightClick, true) => {
             let index = app.gui.list_top + usize::from(row.saturating_sub(area.y));
+            if let Some(name) = all.get(index).and_then(|r| stash_name(app, r)) {
+                set_cursor(app, index);
+                app.gui.mode = Mode::Menu(stash_menu(&name));
+                return;
+            }
             if let Some(path) = all.get(index).filter(|_| files_tab(app)).and_then(row_path) {
                 set_cursor(app, index);
                 app.gui.mode = Mode::Menu(file_menu(&path, false));

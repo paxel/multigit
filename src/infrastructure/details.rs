@@ -5,7 +5,7 @@
 
 use crate::domain::details::{
     COMMIT_FORMAT, ChangeKind, Details, DiffTarget, LOG_DATE, LOG_FORMAT, LOG_NAMES, LOG_PAGE,
-    LogEntry, cut_diff, parse_branches, parse_changes, parse_log,
+    LogEntry, STASH_FORMAT, cut_diff, parse_branches, parse_changes, parse_log, parse_stashes,
 };
 use crate::domain::graph::{
     GRAPH_FORMAT, GRAPH_LIMIT, GraphData, REF_FORMAT, RefKind, drawn_refs, parse_graph_log,
@@ -150,7 +150,12 @@ pub fn details(runner: &GitRunner, dir: &Path, commits: usize) -> Result<Details
             "refs/heads",
         ],
     )?;
+    // Fails before the first commit: no stashes then.
+    let stashes = stdout(runner, dir, &["stash", "list", STASH_FORMAT])
+        .map(|out| parse_stashes(&out))
+        .unwrap_or_default();
     Ok(Details {
+        stashes,
         files: parse_changes(&status),
         states: parse_states(&status),
         commits,
@@ -336,6 +341,41 @@ mod tests {
         act(FileAct::DiscardAll, "kept.txt");
         act(FileAct::DiscardAll, "dir/");
         assert_eq!(status(), "", "back to the last commit");
+    }
+
+    #[test]
+    fn a_folder_is_stashed_with_its_new_files_and_the_stash_is_listed() {
+        use crate::domain::staging::{StashAct, stash_push};
+        let repo = TestRepo::new();
+        let runner = isolated_runner();
+        repo.commit("kept.txt", "one\n");
+        std::fs::create_dir(repo.path().join("dir")).unwrap();
+        repo.commit("dir/a.txt", "a\n");
+        repo.write("dir/a.txt", "changed\n");
+        repo.write("dir/new.txt", "new\n");
+        repo.write("kept.txt", "two\n");
+        let run = |args: Vec<String>| {
+            let out = runner.run(repo.path(), &args).unwrap();
+            assert!(out.success(), "{args:?}: {}", out.stderr);
+        };
+        run(stash_push(&["dir/a.txt", "dir/new.txt"], "dir/"));
+        assert!(!repo.path().join("dir/new.txt").exists());
+        let d = details(&runner, repo.path(), 0).unwrap();
+        assert_eq!(d.files.len(), 1, "kept.txt stays changed");
+        assert_eq!(d.stashes.len(), 1);
+        assert_eq!(d.stashes[0].name, "stash@{0}");
+        assert!(d.stashes[0].subject.ends_with("dir/"), "{:?}", d.stashes);
+        // The pane shows it like a commit.
+        let shown = diff(
+            &runner,
+            repo.path(),
+            &DiffTarget::Commit(d.stashes[0].hash.clone()),
+        );
+        assert!(shown.unwrap().contains("dir/a.txt"));
+        run(StashAct::Apply.args("stash@{0}"));
+        assert!(repo.path().join("dir/new.txt").exists());
+        run(StashAct::Drop.args("stash@{0}"));
+        assert!(details(&runner, repo.path(), 0).unwrap().stashes.is_empty());
     }
 
     #[test]

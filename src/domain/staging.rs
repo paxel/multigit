@@ -264,6 +264,45 @@ pub fn file_steps(
     steps
 }
 
+/// `git stash push` of the files at `paths`, untracked ones too, with
+/// `message`; an empty message leaves git's own.
+pub fn stash_push(paths: &[&str], message: &str) -> Vec<String> {
+    let mut command = vec!["stash", "push", "--include-untracked"];
+    let message = message.trim();
+    if !message.is_empty() {
+        command.extend(["--message", message]);
+    }
+    literal(&command, paths)
+}
+
+/// What can be done with a stash in the Stash tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StashAct {
+    Apply,
+    Pop,
+    Drop,
+}
+
+impl StashAct {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Apply => "Apply",
+            Self::Pop => "Pop",
+            Self::Drop => "Drop",
+        }
+    }
+
+    /// The git command for the stash git names `name` (`stash@{0}`).
+    pub fn args(self, name: &str) -> Vec<String> {
+        let verb = match self {
+            Self::Apply => "apply",
+            Self::Pop => "pop",
+            Self::Drop => "drop",
+        };
+        ["stash", verb, name].map(str::to_owned).to_vec()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,5 +434,22 @@ mod tests {
         );
         assert!(file_steps(FileAct::Unstage, &states, &["work.rs"]).is_empty());
         assert!(FileAct::DiscardAll.discards() && !FileAct::Stage.discards());
+    }
+
+    #[test]
+    fn stashes_are_pushed_with_their_message_and_named_for_the_rest() {
+        assert_eq!(
+            stash_push(&["src/a.rs", "new*.txt"], " src/ ").join(" "),
+            "--literal-pathspecs stash push --include-untracked --message src/ -- src/a.rs new*.txt"
+        );
+        assert_eq!(
+            stash_push(&["a.rs"], "").join(" "),
+            "--literal-pathspecs stash push --include-untracked -- a.rs"
+        );
+        assert_eq!(
+            StashAct::Pop.args("stash@{1}"),
+            ["stash", "pop", "stash@{1}"]
+        );
+        assert_eq!(StashAct::Drop.label(), "Drop");
     }
 }

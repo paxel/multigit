@@ -9,7 +9,7 @@ use crate::domain::details::{
 };
 use crate::domain::graph::{GraphData, GraphRow, LabelKind, RowKind, graph_rows, labels};
 use crate::domain::naming::title;
-use crate::domain::staging::{FileAct, FileState, Staged, files_of, staged};
+use crate::domain::staging::{FileAct, FileState, Staged, StashAct, files_of, staged};
 use crate::ui::app::{App, RepoView};
 use crate::ui::text_menu::{self, TextOf};
 use crate::ui::view::ok_color;
@@ -32,6 +32,10 @@ enum Act {
     Tree,
     /// Commit what is staged.
     Commit,
+    /// Ask for the message of a stash of the file or folder at this path.
+    StartStash(String),
+    /// Apply, pop or drop the stash git names so.
+    Stash(StashAct, String),
     /// Stage the file or folder at this path, or unstage it when it is
     /// staged whole.
     Stage(String),
@@ -87,7 +91,7 @@ impl App {
                     // Each tab has a width of its own, kept while the app
                     // runs; the graph needs room for lanes, names and titles.
                     let width = match view.tab {
-                        RepoTab::Files | RepoTab::Commits => LIST_WIDTH,
+                        RepoTab::Files | RepoTab::Commits | RepoTab::Stash => LIST_WIDTH,
                         RepoTab::Graph => (ui.available_width() * GRAPH_SHARE).max(LIST_WIDTH),
                     };
                     egui::Panel::left(egui::Id::new(("repo-view-lists", view.tab)))
@@ -102,13 +106,16 @@ impl App {
                                 RepoTab::Files => file_list(ui, details, view, &mut act),
                                 RepoTab::Commits => commit_list(ui, details, view, &mut act),
                                 RepoTab::Graph => graph_list(ui, details, view, &mut act),
+                                RepoTab::Stash => stash_list(ui, details, view, &mut act),
                             }
                         });
                     egui::CentralPanel::default().show(ui, |ui| diff_pane(ui, view, &mut act));
                 }
             }
             // Esc in a question or dialog over the view is theirs.
-            let over = self.confirm.is_some() || self.commit_dialog.is_some();
+            let over = self.confirm.is_some()
+                || self.commit_dialog.is_some()
+                || self.stash_prompt.is_some();
             if !over && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 act = Some(Act::Close);
             }
@@ -124,6 +131,8 @@ impl App {
             Some(Act::FoldCommit(path)) => self.toggle_commit_folder(&path),
             Some(Act::Tree) => self.toggle_file_tree(),
             Some(Act::Commit) => self.start_commit(),
+            Some(Act::StartStash(path)) => self.start_stash(&path),
+            Some(Act::Stash(stash_act, name)) => self.stash_act(stash_act, &name),
             Some(Act::Stage(path)) => self.toggle_staged(&path),
             Some(Act::File(file_act, path)) => self.file_act(file_act, &path),
             Some(Act::More) => self.load_more_commits(),
@@ -134,6 +143,7 @@ impl App {
             None => {}
         }
         self.commit_dialog_window(ui);
+        self.stash_prompt_window(ui);
     }
 }
 
@@ -374,6 +384,43 @@ fn file_menu(response: &egui::Response, path: &str, act: &mut Option<Act>) {
             if ui.button(file_act.label()).clicked() {
                 *act = Some(Act::File(file_act, path.to_owned()));
             }
+        }
+        if ui.button("Stash\u{2026}").clicked() {
+            *act = Some(Act::StartStash(path.to_owned()));
+        }
+    });
+}
+
+/// The Stash tab: the stashes, newest first. A click picks one for the
+/// right pane; its right-click menu applies, pops or drops it.
+fn stash_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<Act>) {
+    list(ui, "Stashes", RepoTab::Stash, |ui| {
+        if details.stashes.is_empty() {
+            ui.weak("no stashes");
+        }
+        for stash in &details.stashes {
+            let mut text = egui::text::LayoutJob::default();
+            let mono = egui::TextStyle::Monospace.resolve(ui.style());
+            let body = egui::TextStyle::Body.resolve(ui.style());
+            text.append(
+                &format!("{} ", stash.name),
+                0.0,
+                egui::TextFormat::simple(mono, ui.visuals().weak_text_color()),
+            );
+            text.append(
+                &stash.subject,
+                0.0,
+                egui::TextFormat::simple(body, ui.visuals().text_color()),
+            );
+            let target = DiffTarget::Commit(stash.hash.clone());
+            let shown = row(ui, view, target, text, &stash.subject, act);
+            shown.context_menu(|ui| {
+                for stash_act in [StashAct::Apply, StashAct::Pop, StashAct::Drop] {
+                    if ui.button(stash_act.label()).clicked() {
+                        *act = Some(Act::Stash(stash_act, stash.name.clone()));
+                    }
+                }
+            });
         }
     });
 }
@@ -621,6 +668,7 @@ fn diff_pane(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
             ui.weak(match view.tab {
                 RepoTab::Files => "Pick a file to see its changes.",
                 RepoTab::Commits | RepoTab::Graph => "Pick a commit to see it.",
+                RepoTab::Stash => "Pick a stash to see it.",
             });
             return;
         }

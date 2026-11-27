@@ -57,6 +57,10 @@ pub enum Action {
     /// Stage, unstage or discard the file or folder at this path in the
     /// repository view.
     File(crate::domain::staging::FileAct, String),
+    /// Ask for the message of a stash of the file or folder at this path.
+    StartStash(String),
+    /// Apply, pop or drop the stash git names so.
+    Stash(crate::domain::staging::StashAct, String),
 }
 
 /// What a line typed into a [`Prompt`] is for.
@@ -70,6 +74,8 @@ pub enum PromptFor {
     ButtonLabel(usize),
     /// The git arguments of card button `n`.
     ButtonArgs(usize),
+    /// The message of a stash of the file or folder at this path.
+    Stash(String),
 }
 
 /// A question that wants a line of text.
@@ -98,6 +104,7 @@ pub fn answer(app: &mut App, purpose: PromptFor, text: &str) {
                 button.args = text.to_owned();
             }
         }
+        PromptFor::Stash(path) => app.stash_files(&path, text),
         PromptFor::AddFolder => {
             if text.trim().is_empty() {
                 return;
@@ -180,6 +187,14 @@ pub fn perform(app: &mut App, action: Action) {
         Action::Remove(repos) => app.remove_cards(&repos),
         Action::Hide(repos) => app.hide_cards(&repos),
         Action::File(act, path) => app.file_act(act, &path),
+        Action::StartStash(path) => {
+            app.gui.mode = Mode::Prompt(Prompt {
+                title: format!("stash {path}: message (empty: git's own)"),
+                input: Input::new(path.clone()),
+                purpose: PromptFor::Stash(path),
+            });
+        }
+        Action::Stash(act, name) => app.stash_act(act, &name),
     }
 }
 

@@ -112,4 +112,42 @@ impl App {
             self.cancel_commit();
         }
     }
+
+    /// The question for the message of a stash, when it is open.
+    pub(super) fn stash_prompt_window(&mut self, ui: &Ui) {
+        let Some(prompt) = &mut self.stash_prompt else {
+            return;
+        };
+        let (mut send, mut cancel) = (false, false);
+        egui::Modal::new(egui::Id::new("stash-prompt")).show(ui.ctx(), |ui| {
+            ui.set_width(420.0);
+            ui.heading("Stash");
+            ui.label(format!(
+                "Stash the changes of {}, untracked files too.",
+                prompt.path
+            ));
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut prompt.message)
+                    .hint_text("message (empty: git's own)")
+                    .desired_width(f32::INFINITY),
+            );
+            if !field.has_focus() && !field.lost_focus() {
+                field.request_focus();
+            }
+            if field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                send = true;
+            }
+            ui.horizontal(|ui| {
+                send |= ui.button("Stash").clicked();
+                cancel |= ui.button("Cancel").clicked();
+            });
+            cancel |= ui.input(|i| i.key_pressed(Key::Escape));
+        });
+        if send {
+            let (path, message) = (prompt.path.clone(), prompt.message.clone());
+            self.stash_files(&path, &message);
+        } else if cancel {
+            self.stash_prompt = None;
+        }
+    }
 }

@@ -736,6 +736,7 @@ fn repo_app() -> (App, Arc<FakeBackend>) {
     let backend = Arc::new(FakeBackend::default());
     *backend.details.lock().unwrap() = Some(Details {
         states: Default::default(),
+        stashes: Vec::new(),
         files: vec![
             FileChange {
                 path: "src/main.rs".into(),
@@ -1827,4 +1828,30 @@ fn c_opens_the_commit_box_where_ctrl_s_or_three_enters_send() {
     let runs = backend.runs.lock().unwrap();
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[1].1[..2], ["commit", "--file"]);
+}
+
+#[test]
+fn the_stash_tab_lists_the_stashes_and_space_applies_one() {
+    use crate::domain::details::StashEntry;
+    let (mut app, backend) = repo_app();
+    if let Some(details) = backend.details.lock().unwrap().as_mut() {
+        details.stashes.push(StashEntry {
+            hash: "cafe".into(),
+            name: "stash@{0}".into(),
+            subject: "On main: src/".into(),
+        });
+    }
+    open_view(&mut app);
+    press(&mut app, KeyCode::Char('4'));
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, " 4 Stash "));
+    assert!(shown(&lines, "stash@{0} On main: src/"));
+    press(&mut app, KeyCode::Char(' '));
+    crate::app::tests::settle(&mut app, |_| !backend.runs.lock().unwrap().is_empty());
+    assert_eq!(
+        backend.runs.lock().unwrap()[0].1,
+        ["stash", "apply", "stash@{0}"]
+    );
+    press(&mut app, KeyCode::Char('d'));
+    assert!(app.confirm.is_some(), "a drop asks");
 }

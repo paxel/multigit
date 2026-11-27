@@ -334,10 +334,12 @@ pub enum RepoTab {
     Commits,
     /// All branches.
     Graph,
+    /// The stashes.
+    Stash,
 }
 
 impl RepoTab {
-    pub const ALL: [Self; 3] = [Self::Files, Self::Commits, Self::Graph];
+    pub const ALL: [Self; 4] = [Self::Files, Self::Commits, Self::Graph, Self::Stash];
 
     /// As its tab names it.
     pub fn label(self) -> &'static str {
@@ -345,6 +347,7 @@ impl RepoTab {
             Self::Files => "Files",
             Self::Commits => "Commits",
             Self::Graph => "Graph",
+            Self::Stash => "Stash",
         }
     }
 
@@ -421,6 +424,38 @@ pub struct Details {
     pub states: BTreeMap<String, crate::domain::staging::FileState>,
     pub commits: Vec<LogEntry>,
     pub branches: Vec<BranchEntry>,
+    /// The stashes, newest first.
+    pub stashes: Vec<StashEntry>,
+}
+
+/// A stash in the Stash tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashEntry {
+    /// Its commit, by its full hash.
+    pub hash: String,
+    /// How git names it now: `stash@{0}` is the newest.
+    pub name: String,
+    /// What it says: its message, or git's "WIP on main: …".
+    pub subject: String,
+}
+
+/// The `--format` of `git stash list`: hash, name and subject, tab
+/// separated.
+pub const STASH_FORMAT: &str = "--format=%H%x09%gd%x09%gs";
+
+/// The stashes in the output of `git stash list` with [`STASH_FORMAT`].
+pub fn parse_stashes(output: &str) -> Vec<StashEntry> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            Some(StashEntry {
+                hash: fields.next().filter(|h| !h.is_empty())?.to_owned(),
+                name: fields.next()?.to_owned(),
+                subject: fields.next().unwrap_or_default().to_owned(),
+            })
+        })
+        .collect()
 }
 
 /// What the diff pane shows.
@@ -442,7 +477,10 @@ impl Details {
     pub fn holds(&self, target: &DiffTarget) -> bool {
         match target {
             DiffTarget::File(file) => self.files.contains(file),
-            DiffTarget::Commit(hash) => self.commits.iter().any(|c| &c.hash == hash),
+            DiffTarget::Commit(hash) => {
+                self.commits.iter().any(|c| &c.hash == hash)
+                    || self.stashes.iter().any(|s| &s.hash == hash)
+            }
             // Never picked by itself: it is shown inside its commit.
             DiffTarget::CommitFile { .. } => false,
         }
@@ -838,10 +876,26 @@ mod tests {
     }
 
     #[test]
+    fn stashes_are_read_with_their_names_and_held_as_commits() {
+        let stashes = parse_stashes(
+            "aaaa\tstash@{0}\tOn main: src/ui/\nbbbb\tstash@{1}\tWIP on main: 1a2b Fix\n\n",
+        );
+        assert_eq!(stashes.len(), 2);
+        assert_eq!(stashes[0].name, "stash@{0}");
+        assert_eq!(stashes[1].subject, "WIP on main: 1a2b Fix");
+        let details = Details {
+            stashes,
+            ..Details::default()
+        };
+        assert!(details.holds(&DiffTarget::Commit("bbbb".into())));
+        assert!(!details.holds(&DiffTarget::Commit("cccc".into())));
+    }
+
+    #[test]
     fn tabs_are_named_and_a_repository_opens_on_its_changes_or_its_history() {
         assert_eq!(
             RepoTab::ALL.map(RepoTab::label),
-            ["Files", "Commits", "Graph"]
+            ["Files", "Commits", "Graph", "Stash"]
         );
         assert_eq!(RepoTab::opening(true), RepoTab::Files);
         assert_eq!(RepoTab::opening(false), RepoTab::Commits);
@@ -958,6 +1012,7 @@ mod tests {
     fn a_selection_outlives_a_reload_only_while_the_lists_hold_it() {
         let details = Details {
             states: Default::default(),
+            stashes: Vec::new(),
             files: vec![file("a.rs", ChangeKind::Modified)],
             commits: parse_log("aaaa\taa\tAda\t1\tthen\t\tone\n"),
             branches: vec![],

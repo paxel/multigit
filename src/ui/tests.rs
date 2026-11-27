@@ -1174,6 +1174,7 @@ fn repo_view_app() -> Harness<'static, App> {
     let backend = Arc::new(FakeBackend::default());
     *backend.details.lock().unwrap() = Some(Details {
         states: Default::default(),
+        stashes: Vec::new(),
         files: vec![
             FileChange {
                 path: "src/main.rs".into(),

@@ -25,7 +25,9 @@ use crate::domain::naming::{board_order, title};
 use crate::domain::output::{OutputLog, ProcessOutput, SectionState};
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use crate::domain::songs::{STYLES, styles_on};
-use crate::domain::staging::{FileAct, Staged, file_steps, files_of, staged, states_of};
+use crate::domain::staging::{
+    FileAct, Staged, StashAct, file_steps, files_of, staged, stash_push, states_of,
+};
 use crate::domain::status::{RepoState, Upstream};
 use crate::infrastructure::audio::decode;
 use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
@@ -127,6 +129,14 @@ pub struct CommitDialog {
     pub error: Option<String>,
     /// The commit runs as this run of the output panel.
     pub running: Option<u64>,
+}
+
+/// The question for the message of a stash of a file or folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashPrompt {
+    /// The file, or the folder with its `/`.
+    pub path: String,
+    pub message: String,
 }
 
 /// What a failed command said, for a dialog: its error lines, or its
@@ -462,6 +472,8 @@ pub struct App<G = ()> {
     view_runs: HashMap<u64, AfterRun>,
     /// The open commit dialog of the repository view.
     pub commit_dialog: Option<CommitDialog>,
+    /// The window's question for the message of a stash.
+    pub stash_prompt: Option<StashPrompt>,
     pub settings_open: bool,
     pub settings_page: SettingsPage,
     notify: Notify,
@@ -544,6 +556,7 @@ impl<G: Default> App<G> {
             confirm: None,
             view_runs: HashMap::new(),
             commit_dialog: None,
+            stash_prompt: None,
             settings_open: false,
             settings_page: SettingsPage::default(),
             notify,
@@ -1587,6 +1600,60 @@ impl<G: Default> App<G> {
             return;
         }
         self.run_in_view(steps);
+    }
+
+    /// "Stash" on a file or folder: the question for the stash's message,
+    /// which starts as the file's or folder's path.
+    pub fn start_stash(&mut self, path: &str) {
+        self.stash_prompt = Some(StashPrompt {
+            path: path.to_owned(),
+            message: path.to_owned(),
+        });
+    }
+
+    /// Stash the file or folder at `path` with `message`, untracked files
+    /// too; an empty message leaves git's own.
+    pub fn stash_files(&mut self, path: &str, message: &str) {
+        self.stash_prompt = None;
+        let Some(Ok(details)) = self.repo_view.as_ref().and_then(|v| v.details.as_ref()) else {
+            return;
+        };
+        let paths: Vec<&str> = files_of(&details.files, path)
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect();
+        if paths.is_empty() {
+            self.toast(format!("Nothing to stash in {path}"));
+            return;
+        }
+        let step = stash_push(&paths, message);
+        self.run_in_view(vec![step]);
+    }
+
+    /// Apply, pop or drop the stash git names `name`. Dropping asks first.
+    pub fn stash_act(&mut self, act: StashAct, name: &str) {
+        let Some(view) = &self.repo_view else {
+            return;
+        };
+        let step = act.args(name);
+        if act == StashAct::Drop {
+            let subject = view
+                .details
+                .as_ref()
+                .and_then(|d| d.as_ref().ok())
+                .and_then(|d| d.stashes.iter().find(|s| s.name == name))
+                .map_or(String::new(), |s| format!(" ({})", s.subject));
+            let question = format!("Drop {name}{subject}? Its changes are gone then.");
+            self.confirm = Some(PendingRun {
+                command: steps_line(std::slice::from_ref(&step)),
+                job: Job::Steps(vec![step]),
+                repos: vec![view.repo.clone()],
+                ask: Some(("Drop stash".to_owned(), question)),
+                commit_after: false,
+            });
+            return;
+        }
+        self.run_in_view(vec![step]);
     }
 
     /// The checkbox of a file or folder, or Space: stage what is not
@@ -3073,6 +3140,49 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_folder_is_stashed_with_a_message_and_a_drop_asks_first() {
+        use crate::domain::details::{ChangeKind, StashEntry};
+        use crate::domain::staging::StashAct;
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details {
+            files: vec![FileChange {
+                path: "src/a.rs".into(),
+                kind: ChangeKind::Modified,
+            }],
+            stashes: vec![StashEntry {
+                hash: "cafe".into(),
+                name: "stash@{0}".into(),
+                subject: "On main: old".into(),
+            }],
+            ..Details::default()
+        });
+        let mut app = app_with(backend.clone(), None);
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| {
+            a.repo_view.as_ref().unwrap().details.is_some()
+        });
+        app.start_stash("src/");
+        assert_eq!(app.stash_prompt.as_ref().unwrap().message, "src/");
+        app.stash_files("src/", "work in src");
+        assert!(app.stash_prompt.is_none());
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 1);
+        assert_eq!(
+            backend.runs.lock().unwrap()[0].1.join(" "),
+            "--literal-pathspecs stash push --include-untracked --message work in src -- src/a.rs"
+        );
+        app.stash_act(StashAct::Drop, "stash@{0}");
+        let (_, question) = app.confirm.clone().unwrap().ask.unwrap();
+        assert!(question.contains("stash@{0} (On main: old)"), "{question}");
+        app.cancel_run();
+        app.stash_act(StashAct::Pop, "stash@{0}");
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 2);
+        assert_eq!(
+            backend.runs.lock().unwrap()[1].1,
+            ["stash", "pop", "stash@{0}"]
+        );
+    }
+
+    #[test]
     fn the_commit_dialog_starts_with_the_ticket_key_of_the_branch() {
         use crate::domain::details::{BranchEntry, ChangeKind, parse_log};
         use crate::domain::staging::FileState;
@@ -3096,6 +3206,7 @@ pub(crate) mod tests {
                 name: "feature/ABC-12-login".into(),
                 current: true,
             }],
+            stashes: Vec::new(),
         });
         let mut app = app_with(backend, None);
         app.open_repo_view(Path::new("/x/a"));
@@ -3118,6 +3229,7 @@ pub(crate) mod tests {
         };
         let lists = |files: &[&str]| Details {
             states: Default::default(),
+            stashes: Vec::new(),
             files: files.iter().map(|f| file(f)).collect(),
             commits: parse_log("aaaa\taa\tAda\t1\tthen\t\tone\n"),
             branches: vec![],

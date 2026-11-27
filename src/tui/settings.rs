@@ -27,6 +27,7 @@ pub enum Row {
     ScanDepth,
     Theme,
     SingleMatch,
+    Editor,
     Button(usize),
     AddButton,
     AddPreset,
@@ -55,6 +56,7 @@ pub fn rows(app: &App) -> Vec<Row> {
                 Row::ScanDepth,
                 Row::Theme,
                 Row::SingleMatch,
+                Row::Editor,
                 Row::Heading("Card buttons".to_owned()),
             ];
             rows.extend((0..app.config.buttons.len()).map(Row::Button));
@@ -137,6 +139,17 @@ pub fn line(app: &App, row: &Row) -> Line<'static> {
             };
             Line::raw(format!("{mark} Tab inserts a single completion directly"))
         }
+        Row::Editor => Line::from(vec![
+            Span::raw(format!("{:<30}", "Editor command")),
+            Span::styled(
+                if config.editor.is_empty() {
+                    "$VISUAL, $EDITOR or vi".to_owned()
+                } else {
+                    config.editor.clone()
+                },
+                Style::new().fg(Color::Cyan),
+            ),
+        ]),
         Row::Button(i) => match config.buttons.get(*i) {
             Some(b) => Line::from(vec![
                 Span::raw(format!("  {:<16}", b.label)),
@@ -218,6 +231,13 @@ fn step(app: &mut App, row: &Row, up: bool) {
 fn enter(app: &mut App, row: &Row) {
     match row {
         Row::SingleMatch | Row::Theme => step(app, row, true),
+        Row::Editor => {
+            app.gui.mode = Mode::Prompt(Prompt {
+                title: "editor command ({file} stands for the file; empty: $EDITOR)".to_owned(),
+                input: Input::new(app.config.editor.clone()),
+                purpose: PromptFor::Editor,
+            });
+        }
         Row::Button(i) => {
             let label = app.config.buttons.get(*i).map(|b| b.label.clone());
             if let Some(label) = label {

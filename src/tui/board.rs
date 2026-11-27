@@ -39,6 +39,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("  c / p", "a commit's values to copy / its parents"),
     ("  `", "file lists: a tree of folders or flat"),
     ("  space / d", "Files: stage or unstage / discard"),
+    ("  e", "edit the file in $EDITOR (in the pane too)"),
     ("  c", "Files: commit what is staged (Ctrl+S sends)"),
     (
         "  space / P / d",

@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Commit what is staged from the Files tab with the Commit button or `c`: one box whose first line is the subject, Ctrl+Enter (Ctrl+S in the terminal) or Enter three times at the end commits, the empty line before the body is added, nothing staged offers to stage everything, and git's error stays in the box ([mgit-1030](https://github.com/paxel/multigit/issues/105)).
 - The commit box starts with the ticket key of the branch, or of the last commit, written the way the last commit wrote it, or as `[KEY] ` ([mgit-1031](https://github.com/paxel/multigit/issues/106)).
 - A file or folder of the Files tab is stashed from its menu, untracked files too, with a message; the new Stash tab (`4`) lists the stashes with their changes and applies, pops or drops one (Space, `P`, `d` in the terminal), and a drop asks first ([mgit-1028](https://github.com/paxel/multigit/issues/103)).
+- "Edit" on a file of the repository view (`e` in the terminal) opens its copy in the working tree in the editor command of the settings, or the system's default program; the terminal hands itself to `$VISUAL` or `$EDITOR` until the editor ends ([mgit-1029](https://github.com/paxel/multigit/issues/104)).
 
 ### Changed
 

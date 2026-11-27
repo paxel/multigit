@@ -23,4 +23,11 @@ pub trait Desktop: Send + Sync {
     /// Open a terminal window with a shell in `dir`. `configured` is the
     /// terminal command from the settings; blank means find one.
     fn open_terminal(&self, dir: &Path, configured: &str) -> io::Result<()>;
+
+    /// Open `file` to edit it. `configured` is the editor command from the
+    /// settings; blank means the system's default program for the file.
+    fn edit_file(&self, file: &Path, configured: &str) -> io::Result<()> {
+        let _ = configured;
+        self.open_file(file)
+    }
 }

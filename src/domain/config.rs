@@ -113,6 +113,11 @@ pub struct Config {
     /// folder. Empty: the app finds a terminal.
     #[serde(default)]
     pub terminal: String,
+    /// Command that edits a file; `{file}` stands for it, else the file
+    /// goes at the end. Empty: the system's default program, and in a
+    /// terminal `$VISUAL` or `$EDITOR`.
+    #[serde(default)]
+    pub editor: String,
     /// Lofi music in the Kawaii theme.
     #[serde(default)]
     pub music: bool,
@@ -163,6 +168,7 @@ impl Default for Config {
             auto_insert_single_match: true,
             theme: Theme::default(),
             terminal: String::new(),
+            editor: String::new(),
             music: false,
             music_volume: default_music_volume(),
             music_off: Vec::new(),

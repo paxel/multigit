@@ -126,6 +126,9 @@ fn file_menu(path: &str, discard_only: bool) -> Menu {
             "Stash\u{2026}",
             Action::StartStash(path.to_owned()),
         ));
+        if !path.ends_with('/') {
+            items.insert(0, Item::new("Edit", Action::Edit(path.to_owned())));
+        }
     }
     Menu::new(path.to_owned(), items)
 }
@@ -327,6 +330,11 @@ fn pane_key(app: &mut App, key: KeyEvent) {
     let at = app.gui.pane_cursor.min(last);
     match key.code {
         KeyCode::Tab | KeyCode::Esc => app.gui.pane_focus = false,
+        KeyCode::Char('e') => {
+            if let Some(path) = rows.get(at).and_then(|row| row.file.clone()) {
+                app.edit_file(&path);
+            }
+        }
         KeyCode::Char('j') | KeyCode::Down => app.gui.pane_cursor = at.saturating_add(1).min(last),
         KeyCode::Char('k') | KeyCode::Up => app.gui.pane_cursor = at.saturating_sub(1),
         KeyCode::Char('g') | KeyCode::Home => app.gui.pane_cursor = 0,
@@ -423,6 +431,11 @@ fn list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') if files_tab(app) => {
             if let Some(path) = all.get(at).and_then(row_path) {
                 app.toggle_staged(&path);
+            }
+        }
+        KeyCode::Char('e') if files_tab(app) => {
+            if let Some(path) = all.get(at).and_then(row_path).filter(|p| !p.ends_with('/')) {
+                app.edit_file(&path);
             }
         }
         KeyCode::Char('d') if files_tab(app) => {

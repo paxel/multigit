@@ -1602,6 +1602,30 @@ impl<G: Default> App<G> {
         self.run_in_view(steps);
     }
 
+    /// "Edit" on a file of the view: today's copy of it in the working
+    /// tree, in the editor of the settings or the system's program.
+    pub fn edit_file(&mut self, path: &str) {
+        let Some(view) = &self.repo_view else {
+            return;
+        };
+        let file = view.repo.join(path);
+        if !file.is_file() {
+            self.toast(format!("{path} is not in the working tree"));
+            return;
+        }
+        if let Err(e) = self.desktop.edit_file(&file, &self.config.editor) {
+            self.toast(format!("Cannot edit {path}: {e}"));
+        }
+    }
+
+    /// Whether "Edit" can open the file at `path`: it is in the working
+    /// tree.
+    pub fn can_edit(&self, path: &str) -> bool {
+        self.repo_view
+            .as_ref()
+            .is_some_and(|v| v.repo.join(path).is_file())
+    }
+
     /// "Stash" on a file or folder: the question for the stash's message,
     /// which starts as the file's or folder's path.
     pub fn start_stash(&mut self, path: &str) {
@@ -3137,6 +3161,32 @@ pub(crate) mod tests {
         app.start_commit();
         app.cancel_commit();
         assert!(app.commit_dialog.is_none(), "Esc closes it");
+    }
+
+    #[test]
+    fn edit_opens_the_working_tree_copy_and_not_a_file_that_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "x").unwrap();
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details::default());
+        let desktop = Arc::new(FakeDesktop::default());
+        let mut app = app_on(backend, desktop.clone(), None);
+        app.open_repo_view(dir.path());
+        assert!(app.can_edit("src/a.rs"));
+        assert!(!app.can_edit("src/gone.rs"));
+        app.edit_file("src/a.rs");
+        assert_eq!(
+            *desktop.files.lock().unwrap(),
+            [dir.path().join("src/a.rs")]
+        );
+        app.edit_file("src/gone.rs");
+        assert_eq!(desktop.files.lock().unwrap().len(), 1);
+        assert!(
+            app.toasts
+                .iter()
+                .any(|t| t.text.contains("not in the working tree"))
+        );
     }
 
     #[test]

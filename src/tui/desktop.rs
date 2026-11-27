@@ -3,7 +3,7 @@
 //! steps aside; nothing opens a browser or plays a sound.
 
 use crate::application::desktop::Desktop;
-use crate::domain::command::shell_program;
+use crate::domain::command::{editor_command, shell_program};
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,9 @@ pub enum Foreground {
     Pager(PathBuf),
     /// The login shell in a repository's folder.
     Shell(PathBuf),
+    /// A file in the editor: the command of the settings, or `$VISUAL`,
+    /// `$EDITOR`, `vi`.
+    Editor { file: PathBuf, configured: String },
 }
 
 impl Foreground {
@@ -25,6 +28,13 @@ impl Foreground {
     pub fn command(&self, pager: Option<OsString>, shell: Option<OsString>) -> Vec<OsString> {
         match self {
             Self::Shell(_) => vec![shell_program(shell)],
+            Self::Editor { file, configured } => {
+                let environment = std::env::var("VISUAL")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+                    .or_else(|| std::env::var("EDITOR").ok());
+                editor_words(configured, environment.as_deref(), file)
+            }
             Self::Pager(file) => {
                 let pager = pager
                     .and_then(|p| p.into_string().ok())
@@ -43,6 +53,7 @@ impl Foreground {
         match self {
             Self::Pager(_) => None,
             Self::Shell(dir) => Some(dir),
+            Self::Editor { file, .. } => file.parent(),
         }
     }
 
@@ -51,6 +62,7 @@ impl Foreground {
         match self {
             Self::Pager(_) => "the pager",
             Self::Shell(_) => "the shell",
+            Self::Editor { .. } => "the editor",
         }
     }
 }
@@ -81,6 +93,15 @@ impl TerminalDesktop {
     }
 }
 
+/// The editor's command line for `file`; `vi` when nothing names one.
+fn editor_words(configured: &str, environment: Option<&str>, file: &Path) -> Vec<OsString> {
+    let name = file.to_string_lossy();
+    match editor_command(configured, environment, &name) {
+        Ok(Some(words)) => words.into_iter().map(OsString::from).collect(),
+        _ => vec![OsString::from("vi"), file.as_os_str().to_owned()],
+    }
+}
+
 fn none(what: &str) -> io::Error {
     io::Error::other(format!("{what} cannot be opened in the terminal"))
 }
@@ -107,6 +128,14 @@ impl Desktop for TerminalDesktop {
     fn open_terminal(&self, dir: &Path, _configured: &str) -> io::Result<()> {
         self.push(Foreground::Shell(dir.to_path_buf()))
     }
+
+    /// The editor in this terminal, while the board steps aside.
+    fn edit_file(&self, file: &Path, configured: &str) -> io::Result<()> {
+        self.push(Foreground::Editor {
+            file: file.to_path_buf(),
+            configured: configured.to_owned(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -129,6 +158,33 @@ mod tests {
             file.command(Some("".into()), None)[0],
             OsString::from("less")
         );
+    }
+
+    #[test]
+    fn the_editor_is_the_setting_or_the_environments_or_vi() {
+        let file = Path::new("/repos/alpha/src/a b.rs");
+        let words = |configured, env| -> Vec<String> {
+            editor_words(configured, env, file)
+                .into_iter()
+                .map(|w| w.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(words("hx", Some("nano")), ["hx", "/repos/alpha/src/a b.rs"]);
+        assert_eq!(
+            words("code --wait {file}", None),
+            ["code", "--wait", "/repos/alpha/src/a b.rs"]
+        );
+        assert_eq!(
+            words("", Some("nvim -p")),
+            ["nvim", "-p", "/repos/alpha/src/a b.rs"]
+        );
+        assert_eq!(words("", None), ["vi", "/repos/alpha/src/a b.rs"]);
+        let editor = Foreground::Editor {
+            file: file.to_path_buf(),
+            configured: String::new(),
+        };
+        assert_eq!(editor.dir(), Some(Path::new("/repos/alpha/src")));
+        assert_eq!(editor.what(), "the editor");
     }
 
     #[test]

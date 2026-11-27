@@ -59,6 +59,8 @@ pub enum Action {
     File(crate::domain::staging::FileAct, String),
     /// Ask for the message of a stash of the file or folder at this path.
     StartStash(String),
+    /// Edit the file at this path of the repository view.
+    Edit(String),
     /// Apply, pop or drop the stash git names so.
     Stash(crate::domain::staging::StashAct, String),
 }
@@ -76,6 +78,8 @@ pub enum PromptFor {
     ButtonArgs(usize),
     /// The message of a stash of the file or folder at this path.
     Stash(String),
+    /// The editor command.
+    Editor,
 }
 
 /// A question that wants a line of text.
@@ -105,6 +109,7 @@ pub fn answer(app: &mut App, purpose: PromptFor, text: &str) {
             }
         }
         PromptFor::Stash(path) => app.stash_files(&path, text),
+        PromptFor::Editor => app.config.editor = text.trim().to_owned(),
         PromptFor::AddFolder => {
             if text.trim().is_empty() {
                 return;
@@ -195,6 +200,7 @@ pub fn perform(app: &mut App, action: Action) {
             });
         }
         Action::Stash(act, name) => app.stash_act(act, &name),
+        Action::Edit(path) => app.edit_file(&path),
     }
 }
 

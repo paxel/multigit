@@ -34,6 +34,8 @@ enum Act {
     Commit,
     /// Ask for the message of a stash of the file or folder at this path.
     StartStash(String),
+    /// Edit the file at this path in the working tree.
+    Edit(String),
     /// Apply, pop or drop the stash git names so.
     Stash(StashAct, String),
     /// Stage the file or folder at this path, or unstage it when it is
@@ -132,6 +134,7 @@ impl App {
             Some(Act::Tree) => self.toggle_file_tree(),
             Some(Act::Commit) => self.start_commit(),
             Some(Act::StartStash(path)) => self.start_stash(&path),
+            Some(Act::Edit(path)) => self.edit_file(&path),
             Some(Act::Stash(stash_act, name)) => self.stash_act(stash_act, &name),
             Some(Act::Stage(path)) => self.toggle_staged(&path),
             Some(Act::File(file_act, path)) => self.file_act(file_act, &path),
@@ -316,7 +319,7 @@ fn file_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<A
                     if name.clicked() || icon.clicked() {
                         *act = Some(Act::Fold(entry.path.clone()));
                     }
-                    file_menu(&name, &entry.path, act);
+                    file_menu(&name, &view.repo, &entry.path, act);
                     return;
                 };
                 let state = details.states.get(&file.path).copied();
@@ -326,7 +329,7 @@ fn file_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<A
                 let path = file.path.clone();
                 let target = DiffTarget::File(file);
                 let shown = row(ui, view, target, letters, &hover, act);
-                file_menu(&shown, &path, act);
+                file_menu(&shown, &view.repo, &path, act);
             });
         }
     });
@@ -373,8 +376,11 @@ fn state_text(ui: &Ui, state: FileState, name: &str) -> egui::text::LayoutJob {
 }
 
 /// The right-click menu of a file or folder in the Files tab.
-fn file_menu(response: &egui::Response, path: &str, act: &mut Option<Act>) {
+fn file_menu(response: &egui::Response, repo: &std::path::Path, path: &str, act: &mut Option<Act>) {
     response.context_menu(|ui| {
+        if !path.ends_with('/') {
+            edit_entry(ui, repo, path, act);
+        }
         for file_act in [
             FileAct::Stage,
             FileAct::Unstage,
@@ -389,6 +395,18 @@ fn file_menu(response: &egui::Response, path: &str, act: &mut Option<Act>) {
             *act = Some(Act::StartStash(path.to_owned()));
         }
     });
+}
+
+/// "Edit": today's copy of the file in the working tree; greyed out when
+/// it is not there.
+fn edit_entry(ui: &mut Ui, repo: &std::path::Path, path: &str, act: &mut Option<Act>) {
+    let there = repo.join(path).is_file();
+    let edit = ui
+        .add_enabled(there, egui::Button::new("Edit"))
+        .on_disabled_hover_text("Not in the working tree");
+    if edit.clicked() {
+        *act = Some(Act::Edit(path.to_owned()));
+    }
 }
 
 /// The Stash tab: the stashes, newest first. A click picks one for the
@@ -838,9 +856,11 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
                             let text = RichText::new(text).color(change_color(ui, file.kind));
                             let name = egui::Button::new(text).frame(false);
                             let hover = if *open { "Fold" } else { "Show what changed" };
-                            if ui.add(name).on_hover_text(hover).clicked() || icon.clicked() {
+                            let name = ui.add(name).on_hover_text(hover);
+                            if name.clicked() || icon.clicked() {
                                 *act = Some(Act::Unfold(file.path.clone()));
                             }
+                            name.context_menu(|ui| edit_entry(ui, &view.repo, &file.path, act));
                             match lines {
                                 Some(lines) => line_counts(ui, *lines),
                                 None => {

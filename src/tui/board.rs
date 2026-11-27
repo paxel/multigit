@@ -39,6 +39,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("  c / p", "a commit's values to copy / its parents"),
     ("  `", "file lists: a tree of folders or flat"),
     ("  space / d", "Files: stage or unstage / discard"),
+    ("  c", "Files: commit what is staged (Ctrl+S sends)"),
     ("  right click", "Files: stage, unstage, discard"),
     ("a d b p", "mark all / dirty / behind / ahead"),
     ("D B P", "show only dirty / behind / ahead"),
@@ -88,6 +89,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let Mode::Favorite(form) = &app.gui.mode {
         draw_favorite_form(frame, app, form);
+    }
+    if app.commit_dialog.is_some() {
+        super::commit::draw(frame, app);
     }
     if app.confirm.is_some() {
         draw_confirm(frame, app);

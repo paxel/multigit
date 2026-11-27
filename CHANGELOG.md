@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The file lists of the repository view switch between a tree of folders and a flat list of paths, with the Tree button of a list or `` ` `` in the terminal; the choice is saved, and the files of a commit fold by folder too ([mgit-1026](https://github.com/paxel/multigit/issues/101)).
 - The Files tab of the repository view stages, unstages and discards files and folders: a checkbox and a right-click menu in the window, Space, `d` and a right click in the terminal; each file shows its staged and unstaged letters in the colors lazygit uses, and a discard asks first ([mgit-1027](https://github.com/paxel/multigit/issues/102)).
+- Commit what is staged from the Files tab with the Commit button or `c`: one box whose first line is the subject, Ctrl+Enter (Ctrl+S in the terminal) or Enter three times at the end commits, the empty line before the body is added, nothing staged offers to stage everything, and git's error stays in the box ([mgit-1030](https://github.com/paxel/multigit/issues/105)).
 
 ### Changed
 

@@ -68,6 +68,9 @@ pub struct Tui {
     pub help_scroll: usize,
     /// The Settings page's cursor row.
     pub settings_cursor: usize,
+    /// The cursor in the commit dialog's text, a byte position; past the
+    /// end puts it at the end.
+    pub commit_cursor: usize,
 }
 
 /// What has the keys.
@@ -118,6 +121,7 @@ impl Default for Tui {
             pane_cursor: 0,
             help_scroll: 0,
             settings_cursor: 0,
+            commit_cursor: 0,
         }
     }
 }

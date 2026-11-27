@@ -338,6 +338,10 @@ fn list_key(app: &mut App, key: KeyEvent) {
             app.gui.pane_focus = true;
             app.gui.pane_cursor = 0;
         }
+        KeyCode::Char('c') if files_tab(app) => {
+            app.gui.commit_cursor = usize::MAX;
+            app.start_commit();
+        }
         KeyCode::Char('c') => {
             if let Some(commit) = super::commits::picked(app) {
                 app.gui.mode = Mode::Menu(super::commits::copy_menu(&commit));

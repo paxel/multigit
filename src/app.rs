@@ -8,6 +8,7 @@ use crate::application::schedule::{Due, Schedule};
 use crate::domain::audio::{self, SAMPLE_RATE, Sound};
 use crate::domain::board::{SortKey, Sorted, compare, is_ahead, matches_filter};
 use crate::domain::command::{Job, display, shell_line};
+use crate::domain::commit_message::finish;
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::{Config, Theme};
 use crate::domain::critters::{News, Troupe};
@@ -21,7 +22,7 @@ use crate::domain::graph::GraphData;
 use crate::domain::history::History;
 use crate::domain::kawaii;
 use crate::domain::naming::{board_order, title};
-use crate::domain::output::{OutputLog, SectionState};
+use crate::domain::output::{OutputLog, ProcessOutput, SectionState};
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
 use crate::domain::songs::{STYLES, styles_on};
 use crate::domain::staging::{FileAct, Staged, file_steps, files_of, staged, states_of};
@@ -104,6 +105,44 @@ pub struct PendingRun {
     /// The heading and the question of the confirmation, when the run is
     /// not a typed command but something picked in the repository view.
     pub ask: Option<(String, String)>,
+    /// The commit dialog opens when it is confirmed.
+    pub commit_after: bool,
+}
+
+/// What follows when a run started from the repository view ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterRun {
+    /// The view is read again.
+    Refresh,
+    /// The same, and the commit dialog closes, or shows the error.
+    Commit,
+}
+
+/// The commit dialog of the repository view: one box whose first line is
+/// the subject.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommitDialog {
+    pub text: String,
+    /// git's error from the last try; the message stays.
+    pub error: Option<String>,
+    /// The commit runs as this run of the output panel.
+    pub running: Option<u64>,
+}
+
+/// What a failed command said, for a dialog: its error lines, or its
+/// output when it wrote none.
+fn first_error(out: &ProcessOutput) -> String {
+    let text = if out.stderr.trim().is_empty() {
+        &out.stdout
+    } else {
+        &out.stderr
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        "git failed".to_owned()
+    } else {
+        text.to_owned()
+    }
 }
 
 /// The open read-only view of one repository.
@@ -420,7 +459,9 @@ pub struct App<G = ()> {
     pub confirm: Option<PendingRun>,
     /// Runs started from the repository view: the view is read again when
     /// each ends.
-    view_runs: HashSet<u64>,
+    view_runs: HashMap<u64, AfterRun>,
+    /// The open commit dialog of the repository view.
+    pub commit_dialog: Option<CommitDialog>,
     pub settings_open: bool,
     pub settings_page: SettingsPage,
     notify: Notify,
@@ -501,7 +542,8 @@ impl<G: Default> App<G> {
             kawaii_awake: 0.0,
             wobbles: HashMap::new(),
             confirm: None,
-            view_runs: HashSet::new(),
+            view_runs: HashMap::new(),
+            commit_dialog: None,
             settings_open: false,
             settings_page: SettingsPage::default(),
             notify,
@@ -1071,6 +1113,24 @@ impl<G: Default> App<G> {
         }
     }
 
+    /// A run started from the repository view ended, with git's error
+    /// when it failed.
+    fn after_view_run(&mut self, after: AfterRun, repo: &Path, error: Option<String>) {
+        if after == AfterRun::Commit
+            && let Some(dialog) = &mut self.commit_dialog
+        {
+            dialog.running = None;
+            match error {
+                None => self.commit_dialog = None,
+                Some(error) => dialog.error = Some(error),
+            }
+        }
+        // What was done in the view shows in its lists.
+        if self.repo_view.as_ref().is_some_and(|v| v.repo == repo) {
+            self.refresh_repo_view();
+        }
+    }
+
     pub fn is_kawaii(&self) -> bool {
         self.config.theme == Theme::Kawaii
     }
@@ -1328,6 +1388,7 @@ impl<G: Default> App<G> {
                     job: Job::Shell(line.to_owned()),
                     repos,
                     ask: None,
+                    commit_after: false,
                 });
             }
             return;
@@ -1345,6 +1406,7 @@ impl<G: Default> App<G> {
             job: Job::Git(args),
             repos,
             ask: None,
+            commit_after: false,
         };
         if destructive {
             self.confirm = Some(pending);
@@ -1359,7 +1421,10 @@ impl<G: Default> App<G> {
             self.engine.run_command(id, repo, run.job.clone());
         }
         if run.ask.is_some() {
-            self.view_runs.insert(id);
+            self.view_runs.insert(id, AfterRun::Refresh);
+        }
+        if run.commit_after {
+            self.open_commit_dialog();
         }
     }
 
@@ -1372,8 +1437,101 @@ impl<G: Default> App<G> {
             .log
             .start(&steps_line(&steps), std::slice::from_ref(&repo));
         self.engine.run_command(id, &repo, Job::Steps(steps));
-        self.view_runs.insert(id);
+        self.view_runs.insert(id, AfterRun::Refresh);
         Some(id)
+    }
+
+    /// Commit in the Files tab: the commit dialog when something is
+    /// staged; with nothing staged first the offer to stage everything.
+    pub fn start_commit(&mut self) {
+        let Some(view) = &self.repo_view else {
+            return;
+        };
+        let Some(Ok(details)) = &view.details else {
+            return;
+        };
+        if details.states.values().any(|s| s.staged()) {
+            self.open_commit_dialog();
+            return;
+        }
+        let count = details.files.len();
+        if count == 0 {
+            self.toast("Nothing to commit: the working tree is clean");
+            return;
+        }
+        let files = if count == 1 {
+            "the 1 changed file".to_owned()
+        } else {
+            format!("all {count} changed files")
+        };
+        self.confirm = Some(PendingRun {
+            command: "add --all".to_owned(),
+            job: Job::Steps(vec![vec!["add".to_owned(), "--all".to_owned()]]),
+            repos: vec![view.repo.clone()],
+            ask: Some((
+                "Nothing staged".to_owned(),
+                format!("Nothing is staged. Stage {files} (git add -A) and commit?"),
+            )),
+            commit_after: true,
+        });
+    }
+
+    fn open_commit_dialog(&mut self) {
+        self.commit_dialog = Some(CommitDialog::default());
+    }
+
+    /// Send the message of the commit dialog: `git commit` with it, in the
+    /// output panel. The dialog closes when the commit is made and shows
+    /// git's error when it is not.
+    pub fn send_commit(&mut self) {
+        let Some(dialog) = &self.commit_dialog else {
+            return;
+        };
+        if dialog.running.is_some() {
+            return;
+        }
+        let message = finish(&dialog.text);
+        if message.is_empty() {
+            self.set_commit_error("Write a message first.");
+            return;
+        }
+        let file = match write_scratch_file(&self.scratch, "commit-message.txt", &message) {
+            Ok(file) => file,
+            Err(e) => {
+                self.set_commit_error(&format!("Cannot write the message: {e}"));
+                return;
+            }
+        };
+        let args = vec![
+            "commit".to_owned(),
+            "--file".to_owned(),
+            file.to_string_lossy().into_owned(),
+        ];
+        let run = self.run_in_view(vec![args]);
+        if let Some(run) = run {
+            self.view_runs.insert(run, AfterRun::Commit);
+        }
+        if let Some(dialog) = &mut self.commit_dialog {
+            dialog.running = run;
+            dialog.error = None;
+        }
+    }
+
+    fn set_commit_error(&mut self, error: &str) {
+        if let Some(dialog) = &mut self.commit_dialog {
+            dialog.error = Some(error.to_owned());
+        }
+    }
+
+    /// Esc in the commit dialog: it closes, unless the commit is running.
+    pub fn cancel_commit(&mut self) {
+        if self
+            .commit_dialog
+            .as_ref()
+            .is_some_and(|d| d.running.is_none())
+        {
+            self.commit_dialog = None;
+        }
     }
 
     /// Stage, unstage or discard the file or the folder (its path ends
@@ -1408,6 +1566,7 @@ impl<G: Default> App<G> {
                 job: Job::Steps(steps),
                 repos: vec![view.repo.clone()],
                 ask: Some((act.label().to_owned(), question)),
+                commit_after: false,
             });
             return;
         }
@@ -1597,14 +1756,15 @@ impl<G: Default> App<G> {
                         self.wake_kawaii();
                     }
                 }
+                let error = match &state {
+                    SectionState::Done(out) if !out.success() => Some(first_error(out)),
+                    SectionState::SpawnFailed(e) => Some(e.clone()),
+                    _ => None,
+                };
                 let ended = state.outcome().is_some();
                 self.log.update(run, &repo, state);
-                // What was done in the view shows in its lists.
-                if ended
-                    && self.view_runs.remove(&run)
-                    && self.repo_view.as_ref().is_some_and(|v| v.repo == repo)
-                {
-                    self.refresh_repo_view();
+                if let Some(after) = ended.then(|| self.view_runs.remove(&run)).flatten() {
+                    self.after_view_run(after, &repo, error);
                 }
             }
             Event::Commands { all, builtins } => {
@@ -2805,6 +2965,95 @@ pub(crate) mod tests {
         settle(&mut app, |_| backend.runs.lock().unwrap().len() == 3);
         let ran = backend.runs.lock().unwrap().last().unwrap().1.join(" ");
         assert_eq!(ran, "--literal-pathspecs restore --worktree -- src/b.rs");
+    }
+
+    #[test]
+    fn a_commit_is_written_in_its_dialog_and_a_failure_keeps_the_message() {
+        use crate::domain::details::ChangeKind;
+        use crate::domain::staging::FileState;
+        let backend = Arc::new(FakeBackend::default());
+        let lists = |index| Details {
+            files: vec![FileChange {
+                path: "a.rs".into(),
+                kind: ChangeKind::Modified,
+            }],
+            states: [(
+                "a.rs".to_string(),
+                FileState {
+                    index,
+                    worktree: 'M',
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Details::default()
+        };
+        // Nothing staged: Commit offers to stage everything first.
+        *backend.details.lock().unwrap() = Some(lists('.'));
+        let mut app = app_with(backend.clone(), None);
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| {
+            a.repo_view.as_ref().unwrap().details.is_some()
+        });
+        app.start_commit();
+        assert!(app.commit_dialog.is_none());
+        let pending = app.confirm.clone().expect("the offer");
+        assert!(pending.ask.unwrap().1.contains("Stage the 1 changed file"));
+        app.confirm_run();
+        assert!(app.commit_dialog.is_some(), "the dialog opens at once");
+        settle(&mut app, |_| !backend.runs.lock().unwrap().is_empty());
+        assert_eq!(backend.runs.lock().unwrap()[0].1, ["add", "--all"]);
+
+        // Something staged: the dialog opens straight away.
+        app.commit_dialog = None;
+        *backend.details.lock().unwrap() = Some(lists('M'));
+        app.refresh_repo_view();
+        settle(&mut app, |a| {
+            a.repo_view
+                .as_ref()
+                .unwrap()
+                .details
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .states["a.rs"]
+                .staged()
+        });
+        app.start_commit();
+        app.send_commit();
+        assert_eq!(
+            app.commit_dialog.as_ref().unwrap().error.as_deref(),
+            Some("Write a message first.")
+        );
+        app.commit_dialog.as_mut().unwrap().text = "Fix it\nBecause.\n\n".into();
+        app.send_commit();
+        let run = app.commit_dialog.as_ref().unwrap().running.expect("runs");
+        // git refuses: the dialog stays with the message and the error.
+        app.handle_event(Event::Section {
+            run,
+            repo: "/x/a".into(),
+            state: SectionState::Done(ProcessOutput {
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: "pre-commit hook failed\n".into(),
+            }),
+        });
+        let dialog = app.commit_dialog.clone().expect("stays open");
+        assert_eq!(dialog.error.as_deref(), Some("pre-commit hook failed"));
+        assert_eq!(dialog.text, "Fix it\nBecause.\n\n");
+        assert!(dialog.running.is_none());
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 2);
+        let args = backend.runs.lock().unwrap()[1].1.clone();
+        assert_eq!(args[..2], ["commit", "--file"]);
+        let message = std::fs::read_to_string(&args[2]).unwrap();
+        assert_eq!(message, "Fix it\n\nBecause.");
+        // The next try goes through and closes it.
+        app.send_commit();
+        settle(&mut app, |a| a.commit_dialog.is_none());
+        app.start_commit();
+        app.cancel_commit();
+        assert!(app.commit_dialog.is_none(), "Esc closes it");
     }
 
     #[test]

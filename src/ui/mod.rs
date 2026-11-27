@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod commit;
 pub mod critter;
 pub mod repo_view;
 pub mod settings;

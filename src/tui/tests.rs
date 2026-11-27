@@ -1783,3 +1783,48 @@ fn backtick_flips_the_file_list_between_tree_and_flat() {
     let lines = screen(&mut app, 120, 30);
     assert!(shown(&lines, "\u{25be} src/"));
 }
+
+#[test]
+fn c_opens_the_commit_box_where_ctrl_s_or_three_enters_send() {
+    use crate::domain::staging::FileState;
+    let (mut app, backend) = repo_app();
+    if let Some(details) = backend.details.lock().unwrap().as_mut() {
+        details.states.insert(
+            "src/main.rs".into(),
+            FileState {
+                index: 'M',
+                worktree: '.',
+            },
+        );
+    }
+    app.cards[0].probe = Some(Ok(snapshot(
+        Counts {
+            modified: 1,
+            ..Counts::default()
+        },
+        Upstream::None,
+        &["main"],
+    )));
+    open_view(&mut app);
+    press(&mut app, KeyCode::Char('c'));
+    assert!(app.commit_dialog.is_some());
+    type_line(&mut app, "Fix it");
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, " Commit "));
+    assert!(shown(&lines, "Ctrl+S commits"));
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Enter);
+    }
+    assert!(app.commit_dialog.as_ref().unwrap().running.is_some());
+    crate::app::tests::settle(&mut app, |a| a.commit_dialog.is_none());
+    press(&mut app, KeyCode::Char('c'));
+    type_line(&mut app, "Again");
+    on_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+    );
+    crate::app::tests::settle(&mut app, |a| a.commit_dialog.is_none());
+    let runs = backend.runs.lock().unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].1[..2], ["commit", "--file"]);
+}

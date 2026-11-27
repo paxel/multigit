@@ -55,6 +55,10 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
         }
         return;
     }
+    if app.commit_dialog.is_some() {
+        super::commit::key(app, key);
+        return;
+    }
     match std::mem::take(&mut app.gui.mode) {
         Mode::Board if app.settings_open => super::settings::key(app, key),
         Mode::Board if app.repo_view.is_some() => super::repo::key(app, key),

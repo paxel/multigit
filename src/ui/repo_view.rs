@@ -30,6 +30,8 @@ enum Act {
     FoldCommit(String),
     /// Flip the file lists between a tree and a flat list.
     Tree,
+    /// Commit what is staged.
+    Commit,
     /// Stage the file or folder at this path, or unstage it when it is
     /// staged whole.
     Stage(String),
@@ -105,8 +107,9 @@ impl App {
                     egui::CentralPanel::default().show(ui, |ui| diff_pane(ui, view, &mut act));
                 }
             }
-            // Esc in a question over the view is that question's.
-            if self.confirm.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // Esc in a question or dialog over the view is theirs.
+            let over = self.confirm.is_some() || self.commit_dialog.is_some();
+            if !over && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 act = Some(Act::Close);
             }
         });
@@ -120,6 +123,7 @@ impl App {
             Some(Act::Unfold(path)) => self.toggle_commit_file(&path),
             Some(Act::FoldCommit(path)) => self.toggle_commit_folder(&path),
             Some(Act::Tree) => self.toggle_file_tree(),
+            Some(Act::Commit) => self.start_commit(),
             Some(Act::Stage(path)) => self.toggle_staged(&path),
             Some(Act::File(file_act, path)) => self.file_act(file_act, &path),
             Some(Act::More) => self.load_more_commits(),
@@ -129,6 +133,7 @@ impl App {
             Some(Act::Copy(text, at)) => self.copy(ui, text, at),
             None => {}
         }
+        self.commit_dialog_window(ui);
     }
 }
 
@@ -263,6 +268,12 @@ fn file_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<A
     ui.horizontal(|ui| {
         ui.strong(format!("Changed files ({})", details.files.len()));
         tree_switch(ui, view, act);
+        let commit = ui
+            .button("Commit")
+            .on_hover_text("Commit what is staged (lazygit: c)");
+        if commit.clicked() {
+            *act = Some(Act::Commit);
+        }
     });
     list(ui, "", RepoTab::Files, |ui| {
         if details.files.is_empty() {

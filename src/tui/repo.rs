@@ -106,7 +106,7 @@ fn row_path(row: &ViewRow) -> Option<String> {
 
 /// The menu of a Files tab row: stage, unstage and the two discards, or
 /// the discards alone.
-fn file_menu(path: &str, discard_only: bool) -> Menu {
+fn file_menu(path: &str, discard_only: bool, editable: bool) -> Menu {
     let acts: &[FileAct] = if discard_only {
         &[FileAct::DiscardAll, FileAct::DiscardUnstaged]
     } else {
@@ -127,7 +127,12 @@ fn file_menu(path: &str, discard_only: bool) -> Menu {
             Action::StartStash(path.to_owned()),
         ));
         if !path.ends_with('/') {
-            items.insert(0, Item::new("Edit", Action::Edit(path.to_owned())));
+            let edit = if editable {
+                Item::new("Edit", Action::Edit(path.to_owned()))
+            } else {
+                Item::disabled("Edit (not in the working tree)")
+            };
+            items.insert(0, edit);
         }
     }
     Menu::new(path.to_owned(), items)
@@ -509,7 +514,7 @@ fn list_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('d') if files_tab(app) => {
             if let Some(path) = all.get(at).and_then(row_path) {
-                app.gui.mode = Mode::Menu(file_menu(&path, true));
+                app.gui.mode = Mode::Menu(file_menu(&path, true, false));
             }
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
@@ -698,7 +703,8 @@ pub fn mouse(app: &mut App, column: u16, row: u16, kind: MouseAt) {
             }
             if let Some(path) = all.get(index).filter(|_| files_tab(app)).and_then(row_path) {
                 set_cursor(app, index);
-                app.gui.mode = Mode::Menu(file_menu(&path, false));
+                let editable = app.can_edit(&path);
+                app.gui.mode = Mode::Menu(file_menu(&path, false, editable));
             }
         }
         (MouseAt::RightClick, false) => {}

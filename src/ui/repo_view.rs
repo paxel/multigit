@@ -938,7 +938,18 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
                             if name.clicked() || icon.clicked() {
                                 *act = Some(Act::Unfold(file.path.clone()));
                             }
-                            name.context_menu(|ui| edit_entry(ui, &view.repo, &file.path, act));
+                            // A right click here opens the pane's text menu, so
+                            // Edit is a button of the row.
+                            let there = view.repo.join(&file.path).is_file();
+                            let edit =
+                                egui::Button::new(RichText::new("edit").small()).frame(false);
+                            let edit = ui
+                                .add_enabled(there, edit)
+                                .on_hover_text("Edit the file in the working tree")
+                                .on_disabled_hover_text("Not in the working tree");
+                            if edit.clicked() {
+                                *act = Some(Act::Edit(file.path.clone()));
+                            }
                             match lines {
                                 Some(lines) => line_counts(ui, *lines),
                                 None => {

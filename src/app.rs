@@ -7,6 +7,7 @@ use crate::application::music::Music;
 use crate::application::schedule::{Due, Schedule};
 use crate::domain::audio::{self, SAMPLE_RATE, Sound};
 use crate::domain::board::{SortKey, Sorted, compare, is_ahead, matches_filter};
+use crate::domain::checkout::{Checkout, checkouts, refused_for_changes, stash_before};
 use crate::domain::command::{Job, display, shell_line};
 use crate::domain::commit_message::{finish, prefill};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
@@ -112,12 +113,15 @@ pub struct PendingRun {
 }
 
 /// What follows when a run started from the repository view ends.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum AfterRun {
     /// The view is read again.
     Refresh,
     /// The same, and the commit dialog closes, or shows the error.
     Commit,
+    /// The same; when local changes stopped the checkout, the offer to
+    /// stash them and check out.
+    Checkout(Checkout),
 }
 
 /// The commit dialog of the repository view: one box whose first line is
@@ -1129,7 +1133,23 @@ impl<G: Default> App<G> {
     /// A run started from the repository view ended, with git's error
     /// when it failed.
     fn after_view_run(&mut self, after: AfterRun, repo: &Path, error: Option<String>) {
-        if after == AfterRun::Commit
+        if let AfterRun::Checkout(way) = &after
+            && error.as_deref().is_some_and(refused_for_changes)
+        {
+            let question = format!(
+                "Local changes stop the checkout of {}. Stash them, untracked files too, and check out? The stash stays in the Stash tab.",
+                way.what
+            );
+            let steps = vec![stash_before(&way.what), way.args.clone()];
+            self.confirm = Some(PendingRun {
+                command: steps_line(&steps),
+                job: Job::Steps(steps),
+                repos: vec![repo.to_path_buf()],
+                ask: Some(("Stash and check out".to_owned(), question)),
+                commit_after: false,
+            });
+        }
+        if matches!(after, AfterRun::Commit)
             && let Some(dialog) = &mut self.commit_dialog
         {
             dialog.running = None;
@@ -1600,6 +1620,43 @@ impl<G: Default> App<G> {
             return;
         }
         self.run_in_view(steps);
+    }
+
+    /// The ways to check out the commit `hash` of the Graph tab: its
+    /// branches, then the commit itself.
+    pub fn checkouts_of(&self, hash: &str) -> Vec<Checkout> {
+        let Some(view) = &self.repo_view else {
+            return Vec::new();
+        };
+        let Some(Ok(graph)) = &view.graph else {
+            return Vec::new();
+        };
+        let head = view
+            .details
+            .as_ref()
+            .and_then(|d| d.as_ref().ok())
+            .and_then(|d| d.branches.iter().find(|b| b.current))
+            .map(|b| b.name.as_str());
+        checkouts(&graph.refs, hash, head)
+    }
+
+    /// Check out a branch or a commit from the Graph tab. When local
+    /// changes stop it, the offer to stash them first follows.
+    pub fn check_out(&mut self, way: Checkout) {
+        if let Some(run) = self.run_in_view(vec![way.args.clone()]) {
+            self.view_runs.insert(run, AfterRun::Checkout(way));
+        }
+    }
+
+    /// "detached at 1a2b3c4" when the repository of the open view is on
+    /// no branch.
+    pub fn view_detached(&self) -> Option<String> {
+        let repo = &self.repo_view.as_ref()?.repo;
+        let card = self.cards.iter().find(|c| &c.path == repo)?;
+        match &card.snapshot()?.status.head {
+            crate::domain::status::Head::Detached(sha) => Some(format!("detached at {sha}")),
+            _ => None,
+        }
     }
 
     /// "Edit" on a file of the view: today's copy of it in the working
@@ -3161,6 +3218,49 @@ pub(crate) mod tests {
         app.start_commit();
         app.cancel_commit();
         assert!(app.commit_dialog.is_none(), "Esc closes it");
+    }
+
+    #[test]
+    fn a_checkout_stopped_by_local_changes_offers_to_stash_them() {
+        use crate::domain::graph::{GraphRef, RefKind};
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details::default());
+        let mut app = app_with(backend.clone(), None);
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| {
+            a.repo_view.as_ref().unwrap().details.is_some()
+        });
+        if let Some(view) = &mut app.repo_view {
+            view.graph = Some(Ok(GraphData {
+                refs: vec![GraphRef {
+                    name: "side".into(),
+                    kind: RefKind::Local,
+                    hash: "abc".into(),
+                    time: 0,
+                }],
+                ..GraphData::default()
+            }));
+        }
+        let ways = app.checkouts_of("abc");
+        assert_eq!(ways.len(), 2);
+        app.check_out(ways[0].clone());
+        let run = *app.view_runs.keys().next().unwrap();
+        app.handle_event(Event::Section {
+            run,
+            repo: "/x/a".into(),
+            state: SectionState::Done(ProcessOutput {
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: "error: Your local changes to the following files would be overwritten by checkout:\n".into(),
+            }),
+        });
+        let offer = app.confirm.clone().expect("the offer");
+        assert_eq!(offer.ask.unwrap().0, "Stash and check out");
+        let Job::Steps(steps) = offer.job else {
+            panic!("steps")
+        };
+        assert_eq!(steps[1], ["switch", "--no-guess", "side"]);
+        assert!(steps[0].join(" ").contains("before checking out side"));
     }
 
     #[test]

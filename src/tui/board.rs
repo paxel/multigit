@@ -45,6 +45,10 @@ pub const HELP: &[(&str, &str)] = &[
         "  space / P / d",
         "Stash: apply / pop / drop (right click: menu)",
     ),
+    (
+        "  o",
+        "Graph: check out the branch or commit (right click: menu)",
+    ),
     ("  right click", "Files: stage, unstage, discard"),
     ("a d b p", "mark all / dirty / behind / ahead"),
     ("D B P", "show only dirty / behind / ahead"),

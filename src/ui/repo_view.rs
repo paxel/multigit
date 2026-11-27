@@ -3,6 +3,7 @@
 //! the right, and Back and Forward through what was looked at.
 
 use crate::app::{CommitRow, commit_rows};
+use crate::domain::checkout::{Checkout, checkouts};
 use crate::domain::details::{
     ChangeKind, Details, DiffTarget, LineKind, LogEntry, RepoTab, author_hue, file_lines,
     file_rows, initials, parse_commit, short_age,
@@ -36,6 +37,8 @@ enum Act {
     StartStash(String),
     /// Edit the file at this path in the working tree.
     Edit(String),
+    /// Check out a branch or a commit of the graph.
+    Checkout(Checkout),
     /// Apply, pop or drop the stash git names so.
     Stash(StashAct, String),
     /// Stage the file or folder at this path, or unstage it when it is
@@ -64,9 +67,13 @@ impl App {
         egui::Modal::new(egui::Id::new("repo-view")).show(ui.ctx(), |ui| {
             ui.set_width((screen.width() - 80.0).max(400.0));
             ui.set_height((screen.height() - 80.0).max(300.0));
+            let detached = self.view_detached();
             ui.horizontal(|ui| {
                 ui.heading(title(&view.repo));
                 ui.weak(view.repo.display().to_string());
+                if let Some(detached) = &detached {
+                    ui.colored_label(ui.visuals().warn_fg_color, detached);
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").clicked() {
                         act = Some(Act::Close);
@@ -138,6 +145,7 @@ impl App {
             Some(Act::Commit) => self.start_commit(),
             Some(Act::StartStash(path)) => self.start_stash(&path),
             Some(Act::Edit(path)) => self.edit_file(&path),
+            Some(Act::Checkout(way)) => self.check_out(way),
             Some(Act::Stash(stash_act, name)) => self.stash_act(stash_act, &name),
             Some(Act::Stage(path)) => self.toggle_staged(&path),
             Some(Act::File(file_act, path)) => self.file_act(file_act, &path),
@@ -622,6 +630,7 @@ fn graph_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<
     let head = details.branches.iter().find(|b| b.current);
     let names = labels(&graph.refs, head.map(|b| b.name.as_str()));
     let rows = graph_rows(&graph.commits, &names, &view.graph_open);
+    let ways = |hash: &str| checkouts(&graph.refs, hash, head.map(|b| b.name.as_str()));
     let lanes = rows.iter().map(GraphRow::width).max().unwrap_or(1);
     ui.strong("All branches");
     graph_notes(ui, graph, view, act);
@@ -640,7 +649,7 @@ fn graph_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<
                     let size = egui::vec2(lanes as f32 * LANE, GRAPH_ROW);
                     let (gutter, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                     graph_lines(ui, gutter, entry);
-                    graph_row_text(ui, view, entry, act);
+                    graph_row_text(ui, view, entry, &ways, act);
                 });
             }
         });
@@ -668,7 +677,13 @@ fn graph_notes(ui: &mut Ui, graph: &GraphData, view: &RepoView, act: &mut Option
 
 /// What stands beside the lines of a row: the names on the commit and its
 /// title, or how many commits a folded run holds.
-fn graph_row_text(ui: &mut Ui, view: &RepoView, entry: &GraphRow, act: &mut Option<Act>) {
+fn graph_row_text(
+    ui: &mut Ui,
+    view: &RepoView,
+    entry: &GraphRow,
+    ways: &dyn Fn(&str) -> Vec<Checkout>,
+    act: &mut Option<Act>,
+) {
     match &entry.kind {
         RowKind::Fold { count, first } => {
             let text = RichText::new(format!("{count} commits")).weak();
@@ -710,7 +725,14 @@ fn graph_row_text(ui: &mut Ui, view: &RepoView, entry: &GraphRow, act: &mut Opti
             }
             let target = DiffTarget::Commit(hash.clone());
             let hover = format!("{author}\n{subject}");
-            row(ui, view, target, RichText::new(subject), &hover, act);
+            let shown = row(ui, view, target, RichText::new(subject), &hover, act);
+            shown.context_menu(|ui| {
+                for way in ways(hash) {
+                    if ui.button(&way.label).clicked() {
+                        *act = Some(Act::Checkout(way));
+                    }
+                }
+            });
         }
     }
 }

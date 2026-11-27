@@ -61,6 +61,8 @@ pub enum Action {
     StartStash(String),
     /// Edit the file at this path of the repository view.
     Edit(String),
+    /// Check out a branch or a commit of the Graph tab.
+    Checkout(crate::domain::checkout::Checkout),
     /// Apply, pop or drop the stash git names so.
     Stash(crate::domain::staging::StashAct, String),
 }
@@ -201,6 +203,7 @@ pub fn perform(app: &mut App, action: Action) {
         }
         Action::Stash(act, name) => app.stash_act(act, &name),
         Action::Edit(path) => app.edit_file(&path),
+        Action::Checkout(way) => app.check_out(way),
     }
 }
 

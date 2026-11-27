@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A file or folder of the Files tab is stashed from its menu, untracked files too, with a message; the new Stash tab (`4`) lists the stashes with their changes and applies, pops or drops one (Space, `P`, `d` in the terminal), and a drop asks first ([mgit-1028](https://github.com/paxel/multigit/issues/103)).
 - "Edit" on a file of the repository view (`e` in the terminal) opens its copy in the working tree in the editor command of the settings, or the system's default program; the terminal hands itself to `$VISUAL` or `$EDITOR` until the editor ends ([mgit-1029](https://github.com/paxel/multigit/issues/104)).
 - The Reflog tab (`5`) of the repository view lists where HEAD has been, each step with its commit, what moved HEAD there and its message; a picked step shows its commit ([mgit-1034](https://github.com/paxel/multigit/issues/109)).
+- A row of the Graph tab checks out one of its branches or its commit from its right-click menu (`o` in the terminal); a remote branch gets its local tracking branch, local changes in the way can be stashed first, and the view says when HEAD is detached ([mgit-1033](https://github.com/paxel/multigit/issues/108)).
 
 ### Changed
 

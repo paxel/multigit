@@ -146,6 +146,41 @@ fn stash_name(app: &App, row: &ViewRow) -> Option<String> {
     Some(stash.name.clone())
 }
 
+/// The commit of a Graph tab row.
+fn graph_commit(app: &App, row: &ViewRow) -> Option<String> {
+    let Pick::Select(DiffTarget::Commit(hash)) = &row.pick else {
+        return None;
+    };
+    app.repo_view
+        .as_ref()
+        .filter(|v| v.tab == RepoTab::Graph)
+        .map(|_| hash.clone())
+}
+
+/// The menu of a graph row: its branches and the commit to check out.
+fn checkout_menu(app: &App, hash: &str) -> Menu {
+    let items = app
+        .checkouts_of(hash)
+        .into_iter()
+        .map(|way| Item::new(way.label.clone(), Action::Checkout(way)))
+        .collect();
+    Menu::new("check out", items)
+}
+
+/// `o` on a graph row: its one branch straight away; with several or
+/// none the menu.
+fn check_out_row(app: &mut App, hash: &str) {
+    let ways = app.checkouts_of(hash);
+    let mut branches = ways.iter().filter(|w| w.branch);
+    match (branches.next(), branches.next()) {
+        (Some(only), None) => {
+            let only = only.clone();
+            app.check_out(only);
+        }
+        _ => app.gui.mode = Mode::Menu(checkout_menu(app, hash)),
+    }
+}
+
 /// The menu of a stash: apply, pop, drop.
 fn stash_menu(name: &str) -> Menu {
     let items = [StashAct::Apply, StashAct::Pop, StashAct::Drop]
@@ -452,6 +487,11 @@ fn list_key(app: &mut App, key: KeyEvent) {
                 app.toggle_staged(&path);
             }
         }
+        KeyCode::Char('o') if all.get(at).and_then(|r| graph_commit(app, r)).is_some() => {
+            if let Some(hash) = all.get(at).and_then(|r| graph_commit(app, r)) {
+                check_out_row(app, &hash);
+            }
+        }
         KeyCode::Char('e') if files_tab(app) => {
             if let Some(path) = all.get(at).and_then(row_path).filter(|p| !p.ends_with('/')) {
                 app.edit_file(&path);
@@ -498,6 +538,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Paragraph::new(Line::from(vec![
             Span::styled(title(&view.repo), Style::new().add_modifier(Modifier::BOLD)),
             Span::styled(format!("  {}", view.repo.display()), dim()),
+            Span::styled(
+                app.view_detached()
+                    .map(|d| format!("  {d}"))
+                    .unwrap_or_default(),
+                Style::new().fg(Color::Yellow),
+            ),
             Span::styled("   Tab pane  r refresh  y copy all  Esc close", dim()),
         ])),
         head,
@@ -633,6 +679,11 @@ pub fn mouse(app: &mut App, column: u16, row: u16, kind: MouseAt) {
             if let Some(name) = all.get(index).and_then(|r| stash_name(app, r)) {
                 set_cursor(app, index);
                 app.gui.mode = Mode::Menu(stash_menu(&name));
+                return;
+            }
+            if let Some(hash) = all.get(index).and_then(|r| graph_commit(app, r)) {
+                set_cursor(app, index);
+                app.gui.mode = Mode::Menu(checkout_menu(app, &hash));
                 return;
             }
             if let Some(path) = all.get(index).filter(|_| files_tab(app)).and_then(row_path) {

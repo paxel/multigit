@@ -413,6 +413,47 @@ mod tests {
     }
 
     #[test]
+    fn a_branch_or_commit_of_the_graph_is_checked_out_and_changes_can_stop_it() {
+        use crate::domain::checkout::{checkouts, refused_for_changes, stash_before};
+        use crate::domain::graph::RefKind;
+        let remote = TestRepo::bare();
+        let pusher = TestRepo::clone_of(&remote);
+        pusher.commit("a.txt", "one\n");
+        pusher.git(&["push", "-q", "origin", "HEAD:main"]);
+        pusher.git(&["checkout", "-q", "-b", "feature/x"]);
+        pusher.commit("a.txt", "two\n");
+        pusher.git(&["push", "-q", "origin", "feature/x"]);
+        let repo = TestRepo::clone_of(&remote);
+        let runner = isolated_runner();
+        let run = |args: &[String]| runner.run(repo.path(), args).unwrap();
+        let graph = graph(&runner, repo.path(), 0, true).unwrap();
+        let tip = graph
+            .refs
+            .iter()
+            .find(|r| r.name == "origin/feature/x" && r.kind == RefKind::Remote)
+            .unwrap()
+            .hash
+            .clone();
+        let ways = checkouts(&graph.refs, &tip, Some("main"));
+        assert_eq!(ways[0].label, "Check out origin/feature/x");
+        // Local changes to a file the branch changes stop it.
+        repo.write("a.txt", "mine\n");
+        let out = run(&ways[0].args);
+        assert!(!out.success());
+        assert!(refused_for_changes(&out.stderr), "{}", out.stderr);
+        assert!(run(&stash_before(&ways[0].what)).success());
+        assert!(run(&ways[0].args).success());
+        assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "feature/x");
+        let upstream = repo.git(&["rev-parse", "--abbrev-ref", "@{upstream}"]);
+        assert_eq!(upstream.trim(), "origin/feature/x");
+        assert_eq!(details(&runner, repo.path(), 0).unwrap().stashes.len(), 1);
+        // The commit itself: on no branch.
+        let commit = ways.last().unwrap();
+        assert!(run(&commit.args).success());
+        assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "");
+    }
+
+    #[test]
     fn the_log_is_read_in_pages_and_a_merge_shows_what_it_brought() {
         let repo = TestRepo::new();
         let runner = isolated_runner();

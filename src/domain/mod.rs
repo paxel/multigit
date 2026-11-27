@@ -3,6 +3,7 @@
 pub mod about;
 pub mod audio;
 pub mod board;
+pub mod checkout;
 pub mod command;
 pub mod commit_message;
 pub mod completion;

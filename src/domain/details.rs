@@ -123,6 +123,26 @@ pub fn tree_rows(files: &[FileChange], closed: &HashSet<String>) -> Vec<TreeRow>
     rows
 }
 
+/// The changed files as rows: with `tree` the tree of [`tree_rows`],
+/// without it every file once, by its whole path, in path order.
+pub fn file_rows(files: &[FileChange], closed: &HashSet<String>, tree: bool) -> Vec<TreeRow> {
+    if tree {
+        return tree_rows(files, closed);
+    }
+    let mut files = files.to_vec();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files
+        .into_iter()
+        .map(|file| TreeRow {
+            depth: 0,
+            name: file.path.clone(),
+            path: file.path.clone(),
+            file: Some(file),
+            open: false,
+        })
+        .collect()
+}
+
 /// A commit in the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogEntry {
@@ -670,6 +690,30 @@ mod tests {
             ["conflict", "added", "modified", "deleted"]
         );
         assert_eq!(all.map(ChangeKind::letter), ['!', 'A', 'M', 'D']);
+    }
+
+    #[test]
+    fn changed_files_are_a_flat_list_of_whole_paths_without_the_tree() {
+        use ChangeKind::{Added, Modified};
+        let files = [
+            file("zeta.txt", Modified),
+            file("src/ui/view.rs", Modified),
+            file("alpha.txt", Added),
+        ];
+        let closed = ["src/".to_string()].into_iter().collect();
+        let flat: Vec<(usize, String)> = file_rows(&files, &closed, false)
+            .into_iter()
+            .map(|r| (r.depth, r.name))
+            .collect();
+        assert_eq!(
+            flat,
+            [
+                (0, "alpha.txt".to_string()),
+                (0, "src/ui/view.rs".to_string()),
+                (0, "zeta.txt".to_string()),
+            ]
+        );
+        assert_eq!(file_rows(&files, &closed, true), tree_rows(&files, &closed));
     }
 
     #[test]

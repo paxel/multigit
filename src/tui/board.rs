@@ -37,6 +37,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("  r / y / Esc", "refresh / copy the pane / close"),
     ("  Tab", "keys to the right pane and back"),
     ("  c / p", "a commit's values to copy / its parents"),
+    ("  `", "file lists: a tree of folders or flat"),
     ("a d b p", "mark all / dirty / behind / ahead"),
     ("D B P", "show only dirty / behind / ahead"),
     ("A", "show all again"),

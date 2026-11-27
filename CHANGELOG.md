@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.7.0]
 
+### Added
+
+- The file lists of the repository view switch between a tree of folders and a flat list of paths, with the Tree button of a list or `` ` `` in the terminal; the choice is saved, and the files of a commit fold by folder too ([mgit-1026](https://github.com/paxel/multigit/issues/101)).
+
 ### Changed
 
 - The fold triangles of the repository view in the window have three equal sides instead of a stretched shape ([mgit-1025](https://github.com/paxel/multigit/issues/100)).

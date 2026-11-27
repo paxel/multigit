@@ -4,8 +4,8 @@
 
 use crate::app::{CommitRow, commit_rows};
 use crate::domain::details::{
-    ChangeKind, Details, DiffTarget, LineKind, LogEntry, RepoTab, author_hue, file_lines, initials,
-    parse_commit, short_age, tree_rows,
+    ChangeKind, Details, DiffTarget, LineKind, LogEntry, RepoTab, author_hue, file_lines,
+    file_rows, initials, parse_commit, short_age,
 };
 use crate::domain::graph::{GraphData, GraphRow, LabelKind, RowKind, graph_rows, labels};
 use crate::domain::naming::title;
@@ -25,6 +25,10 @@ enum Act {
     Fold(String),
     /// Unfold or fold the diff of this file of the picked commit.
     Unfold(String),
+    /// Fold or unfold this folder of the picked commit's files.
+    FoldCommit(String),
+    /// Flip the file lists between a tree and a flat list.
+    Tree,
     /// The end of the commit list came into view.
     More,
     /// Unfold the run of the graph that starts with this commit.
@@ -107,6 +111,8 @@ impl App {
             Some(Act::Tab(tab)) => self.switch_repo_tab(tab),
             Some(Act::Fold(path)) => self.toggle_repo_folder(&path),
             Some(Act::Unfold(path)) => self.toggle_commit_file(&path),
+            Some(Act::FoldCommit(path)) => self.toggle_commit_folder(&path),
+            Some(Act::Tree) => self.toggle_file_tree(),
             Some(Act::More) => self.load_more_commits(),
             Some(Act::Run(first)) => self.unfold_graph_run(&first),
             Some(Act::Old) => self.show_old_branches(),
@@ -150,11 +156,29 @@ fn navigation(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
 /// A list of the view under its heading, scrolling on its own. Each tab's
 /// list keeps its own scroll position.
 fn list(ui: &mut Ui, heading: &str, tab: RepoTab, rows: impl FnOnce(&mut Ui)) {
-    ui.strong(heading);
+    if !heading.is_empty() {
+        ui.strong(heading);
+    }
     egui::ScrollArea::vertical()
         .id_salt(tab)
         .auto_shrink([false, false])
         .show(ui, rows);
+}
+
+/// The switch at the right end of a file list's heading: the files as a
+/// tree of folders, or flat. Both lists share it.
+fn tree_switch(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let hover = if view.tree {
+            "Folders: click for a flat list of the files"
+        } else {
+            "Flat list: click to show the folders"
+        };
+        let switch = egui::Button::selectable(view.tree, "Tree");
+        if ui.add(switch).on_hover_text(hover).clicked() {
+            *act = Some(Act::Tree);
+        }
+    });
 }
 
 /// A row of a list; a click picks its target for the right pane.
@@ -225,12 +249,15 @@ fn fold_icon(ui: &Ui, open: bool, response: &egui::Response) {
 /// The Files tab: the changed files as a tree. A folder folds on a click;
 /// a file is picked for the right pane.
 fn file_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<Act>) {
-    let heading = format!("Changed files ({})", details.files.len());
-    list(ui, &heading, RepoTab::Files, |ui| {
+    ui.horizontal(|ui| {
+        ui.strong(format!("Changed files ({})", details.files.len()));
+        tree_switch(ui, view, act);
+    });
+    list(ui, "", RepoTab::Files, |ui| {
         if details.files.is_empty() {
             ui.weak("none: the working tree is clean");
         }
-        for entry in tree_rows(&details.files, &view.closed) {
+        for entry in file_rows(&details.files, &view.closed, view.tree) {
             ui.horizontal(|ui| {
                 ui.add_space(entry.depth as f32 * INDENT);
                 let Some(file) = entry.file else {
@@ -639,6 +666,7 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
         if count > 0 {
             line_counts(ui, commit.total_lines());
         }
+        tree_switch(ui, view, act);
     });
     let rows = commit_rows(&commit, view);
     let row_height = ui.spacing().interact_size.y;
@@ -652,11 +680,24 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
                 ui.horizontal(|ui| {
                     ui.set_height(row_height);
                     match entry {
-                        CommitRow::File(file, open, lines) => {
+                        CommitRow::Folder(folder) => {
+                            ui.add_space(folder.depth as f32 * INDENT);
+                            let size = egui::vec2(INDENT, row_height);
+                            let (_, icon) = ui.allocate_exact_size(size, egui::Sense::click());
+                            fold_icon(ui, folder.open, &icon);
+                            let name = egui::Button::new(format!("{}/", folder.name)).frame(false);
+                            let hover = if folder.open { "Fold" } else { "Unfold" };
+                            if ui.add(name).on_hover_text(hover).clicked() || icon.clicked() {
+                                *act = Some(Act::FoldCommit(folder.path.clone()));
+                            }
+                        }
+                        CommitRow::File(row, open, lines) => {
+                            let file = row.file;
+                            ui.add_space(row.depth as f32 * INDENT);
                             let size = egui::vec2(INDENT, row_height);
                             let (_, icon) = ui.allocate_exact_size(size, egui::Sense::click());
                             fold_icon(ui, *open, &icon);
-                            let text = format!("{} {}", file.kind.letter(), file.path);
+                            let text = format!("{} {}", file.kind.letter(), row.name);
                             let text = RichText::new(text).color(change_color(ui, file.kind));
                             let name = egui::Button::new(text).frame(false);
                             let hover = if *open { "Fold" } else { "Show what changed" };

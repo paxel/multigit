@@ -1755,3 +1755,26 @@ fn a_destructive_command_in_several_rows_asks_first() {
     press(&mut app, KeyCode::Esc);
     assert!(app.confirm.is_none());
 }
+
+#[test]
+fn backtick_flips_the_file_list_between_tree_and_flat() {
+    let (mut app, _) = repo_app();
+    app.cards[0].probe = Some(Ok(snapshot(
+        Counts {
+            modified: 1,
+            ..Counts::default()
+        },
+        Upstream::None,
+        &["main"],
+    )));
+    open_view(&mut app);
+    press(&mut app, KeyCode::Char('`'));
+    assert!(!app.config.file_tree);
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, "M src/main.rs"));
+    assert!(shown(&lines, "A src/ui/deep/new.rs"));
+    assert!(!shown(&lines, "\u{25be} src/"));
+    press(&mut app, KeyCode::Char('`'));
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, "\u{25be} src/"));
+}

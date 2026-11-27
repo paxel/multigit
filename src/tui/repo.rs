@@ -6,7 +6,7 @@ use super::actions::copy;
 use super::commits::PaneRow;
 use super::state::Mode;
 use crate::app::{RepoView, TextOf};
-use crate::domain::details::{ChangeKind, DiffTarget, LineKind, RepoTab, file_lines, tree_rows};
+use crate::domain::details::{ChangeKind, DiffTarget, LineKind, RepoTab, file_lines, file_rows};
 use crate::domain::naming::title;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -89,7 +89,7 @@ pub fn rows(app: &App) -> Vec<ViewRow> {
             if details.files.is_empty() {
                 return vec![ViewRow::note("none: the working tree is clean")];
             }
-            tree_rows(&details.files, &view.closed)
+            file_rows(&details.files, &view.closed, view.tree)
                 .into_iter()
                 .map(|entry| {
                     let indent = "  ".repeat(entry.depth);
@@ -226,11 +226,15 @@ fn pane_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('k') | KeyCode::Up => app.gui.pane_cursor = at.saturating_sub(1),
         KeyCode::Char('g') | KeyCode::Home => app.gui.pane_cursor = 0,
         KeyCode::Char('G') | KeyCode::End => app.gui.pane_cursor = last,
-        KeyCode::Enter | KeyCode::Char(' ') => {
-            if let Some(path) = rows.get(at).and_then(|row| row.file.clone()) {
-                app.toggle_commit_file(&path);
-            }
-        }
+        KeyCode::Enter | KeyCode::Char(' ') => match rows.get(at) {
+            Some(PaneRow {
+                folder: Some(path), ..
+            }) => app.toggle_commit_folder(&path.clone()),
+            Some(PaneRow {
+                file: Some(path), ..
+            }) => app.toggle_commit_file(&path.clone()),
+            _ => {}
+        },
         _ => list_key(app, key),
     }
 }
@@ -261,6 +265,7 @@ fn list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('[') | KeyCode::Backspace => app.repo_view_back(),
         KeyCode::Char(']') => app.repo_view_forward(),
         KeyCode::Char('r') => app.refresh_repo_view(),
+        KeyCode::Char('`') => app.toggle_file_tree(),
         KeyCode::Char('?') => app.gui.help = true,
         KeyCode::Tab => {
             app.gui.pane_focus = true;

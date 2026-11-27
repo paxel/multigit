@@ -92,12 +92,19 @@ pub fn rows(details: &Details, view: &RepoView) -> Vec<ViewRow> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaneRow {
     pub line: Line<'static>,
+    /// The commit's file on this row, whose diff Enter unfolds.
     pub file: Option<String>,
+    /// The folder of the commit's file tree on this row, which Enter folds.
+    pub folder: Option<String>,
 }
 
 impl PaneRow {
     pub fn text(line: Line<'static>) -> Self {
-        Self { line, file: None }
+        Self {
+            line,
+            file: None,
+            folder: None,
+        }
     }
 }
 
@@ -182,10 +189,21 @@ pub fn pane(view: &RepoView, raw: &str) -> Vec<PaneRow> {
     rows.push(PaneRow::text(Line::from(files)));
     for row in commit_rows(&commit, view) {
         rows.push(match row {
-            CommitRow::File(file, open, lines) => {
+            CommitRow::Folder(folder) => {
+                let arrow = if folder.open { "\u{25be}" } else { "\u{25b8}" };
+                let indent = "  ".repeat(folder.depth);
+                PaneRow {
+                    line: Line::raw(format!("{indent}{arrow} {}/", folder.name)),
+                    file: None,
+                    folder: Some(folder.path),
+                }
+            }
+            CommitRow::File(row, open, lines) => {
+                let file = row.file;
                 let arrow = if open { "\u{25be}" } else { "\u{25b8}" };
+                let indent = "  ".repeat(row.depth);
                 let mut spans = vec![Span::styled(
-                    format!("{arrow} {} {}", file.kind.letter(), file.path),
+                    format!("{indent}{arrow} {} {}", file.kind.letter(), row.name),
                     Style::new().fg(change_color(file.kind)),
                 )];
                 match lines {
@@ -195,6 +213,7 @@ pub fn pane(view: &RepoView, raw: &str) -> Vec<PaneRow> {
                 PaneRow {
                     line: Line::from(spans),
                     file: Some(file.path.clone()),
+                    folder: None,
                 }
             }
             CommitRow::Line(kind, line) => {

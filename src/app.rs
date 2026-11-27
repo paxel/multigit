@@ -14,7 +14,7 @@ use crate::domain::critters::{News, Troupe};
 use crate::domain::destructive::is_destructive;
 use crate::domain::details::{
     CommitDetail, Details, DiffTarget, FileChange, LineKind, LogEntry, Place, RepoTab, Trail,
-    file_lines, parse_commit,
+    TreeRow, file_lines, file_rows, parse_commit,
 };
 use crate::domain::favorites::{FavoriteDraft, active_after_delete, forget};
 use crate::domain::graph::GraphData;
@@ -118,6 +118,12 @@ pub struct RepoView {
     pub trail: Trail<Place>,
     /// The folders of the file tree that are folded, by path.
     pub closed: HashSet<String>,
+    /// The file lists are a tree of folders, not a flat list (the setting
+    /// of the same name, kept here for the lists).
+    pub tree: bool,
+    /// The folders of the picked commit's file tree that are folded, by
+    /// path; they open again when another commit is picked.
+    pub commit_closed: HashSet<String>,
     /// The files of the picked commit that are unfolded, by path, each
     /// with its diff; `None` while it is read.
     pub unfolded: HashMap<String, Option<Result<String, String>>>,
@@ -155,6 +161,7 @@ impl RepoView {
             self.selected = None;
             self.diff = None;
             self.unfolded.clear();
+            self.commit_closed.clear();
         }
         let mut kept = std::mem::take(&mut self.kept);
         kept.retain(|_, target| self.holds(target));
@@ -245,10 +252,22 @@ impl MarkBy {
 /// of its diff when it is unfolded.
 pub fn commit_rows<'a>(commit: &'a CommitDetail, view: &'a RepoView) -> Vec<CommitRow<'a>> {
     let mut rows = Vec::new();
-    for file in &commit.files {
+    for entry in file_rows(&commit.files, &view.commit_closed, view.tree) {
+        let Some(file) = commit.files.iter().find(|f| f.path == entry.path) else {
+            rows.push(CommitRow::Folder(entry));
+            continue;
+        };
         let diff = view.unfolded.get(&file.path);
         let lines = commit.lines.get(&file.path).copied();
-        rows.push(CommitRow::File(file, diff.is_some(), lines));
+        rows.push(CommitRow::File(
+            CommitFile {
+                file,
+                depth: entry.depth,
+                name: entry.name,
+            },
+            diff.is_some(),
+            lines,
+        ));
         match diff {
             None => {}
             Some(None) => rows.push(CommitRow::Note("loading")),
@@ -289,9 +308,15 @@ impl RepoView {
                 let lines: Vec<String> = commit_rows(&commit, self)
                     .into_iter()
                     .map(|row| match row {
-                        CommitRow::File(file, ..) => {
-                            format!("{} {}", file.kind.letter(), file.path)
+                        CommitRow::Folder(folder) => {
+                            format!("{}{}/", "  ".repeat(folder.depth), folder.name)
                         }
+                        CommitRow::File(row, ..) => format!(
+                            "{}{} {}",
+                            "  ".repeat(row.depth),
+                            row.file.kind.letter(),
+                            row.name
+                        ),
                         CommitRow::Line(_, line) => line.to_owned(),
                         CommitRow::Note(note) => note.to_owned(),
                     })
@@ -303,11 +328,22 @@ impl RepoView {
     }
 }
 
+/// A file among the files of a commit, where it stands in their list.
+pub struct CommitFile<'a> {
+    pub file: &'a FileChange,
+    /// How deep it sits in the tree; 0 in the flat list.
+    pub depth: usize,
+    /// What the row shows: its name in the tree, its path in the flat list.
+    pub name: String,
+}
+
 /// A row under the header of a commit.
 pub enum CommitRow<'a> {
+    /// A folder of the tree of its files.
+    Folder(TreeRow),
     /// A file, whether its diff is unfolded, and its lines added and taken
     /// away (a binary file has none).
-    File(&'a FileChange, bool, Option<(u32, u32)>),
+    File(CommitFile<'a>, bool, Option<(u32, u32)>),
     Line(LineKind, &'a str),
     Note(&'a str),
 }
@@ -773,6 +809,8 @@ impl<G: Default> App<G> {
             kept: HashMap::new(),
             trail: Trail::new((tab, None)),
             closed: HashSet::new(),
+            tree: self.config.file_tree,
+            commit_closed: HashSet::new(),
             unfolded: HashMap::new(),
             graph: None,
             graph_open: HashSet::new(),
@@ -822,6 +860,7 @@ impl<G: Default> App<G> {
         view.selected = held.clone();
         view.diff = None;
         view.unfolded.clear();
+        view.commit_closed.clear();
         if let Some(target) = held {
             self.engine.load_diff(view.repo.clone(), target);
         }
@@ -835,6 +874,7 @@ impl<G: Default> App<G> {
             view.selected = Some(target.clone());
             view.diff = None;
             view.unfolded.clear();
+            view.commit_closed.clear();
             self.engine.load_diff(view.repo.clone(), target);
         }
     }
@@ -937,6 +977,25 @@ impl<G: Default> App<G> {
             && !view.closed.remove(path)
         {
             view.closed.insert(path.to_owned());
+        }
+    }
+
+    /// A click on a folder of the picked commit's file tree: fold it, or
+    /// unfold it.
+    pub fn toggle_commit_folder(&mut self, path: &str) {
+        if let Some(view) = &mut self.repo_view
+            && !view.commit_closed.remove(path)
+        {
+            view.commit_closed.insert(path.to_owned());
+        }
+    }
+
+    /// The switch of the file lists: a tree of folders, or a flat list.
+    /// The choice is a setting, saved with the others.
+    pub fn toggle_file_tree(&mut self) {
+        self.config.file_tree = !self.config.file_tree;
+        if let Some(view) = &mut self.repo_view {
+            view.tree = self.config.file_tree;
         }
     }
 
@@ -2754,6 +2813,56 @@ pub(crate) mod tests {
             result: Err("closed".into()),
         });
         assert!(app.repo_view.is_none());
+    }
+
+    #[test]
+    fn the_file_lists_switch_between_tree_and_flat_and_commit_folders_fold() {
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details::default());
+        let mut app = app_with(backend, None);
+        assert!(app.config.file_tree, "a tree when nothing was chosen");
+        app.open_repo_view(Path::new("/x/a"));
+        let file = |path: &str| FileChange {
+            path: path.into(),
+            kind: crate::domain::details::ChangeKind::Modified,
+        };
+        let commit = CommitDetail {
+            hash: "a".repeat(40),
+            parents: vec![],
+            author: "A".into(),
+            email: "a@x".into(),
+            committer: None,
+            date: String::new(),
+            refs: vec![],
+            message: "m".into(),
+            files: vec![file("src/ui/view.rs"), file("README.md")],
+            lines: Default::default(),
+        };
+        let shape = |app: &App| -> Vec<String> {
+            let view = app.repo_view.as_ref().unwrap();
+            commit_rows(&commit, view)
+                .into_iter()
+                .map(|row| match row {
+                    CommitRow::Folder(f) => format!("{}{}/", "  ".repeat(f.depth), f.name),
+                    CommitRow::File(f, ..) => format!("{}{}", "  ".repeat(f.depth), f.name),
+                    CommitRow::Line(..) | CommitRow::Note(_) => "line".into(),
+                })
+                .collect()
+        };
+        assert_eq!(shape(&app), ["src/ui/", "  view.rs", "README.md"]);
+        app.toggle_commit_folder("src/ui/");
+        assert_eq!(shape(&app), ["src/ui/", "README.md"]);
+        // Another commit starts unfolded.
+        app.select_in_repo_view(DiffTarget::Commit("b".repeat(40)));
+        assert_eq!(shape(&app), ["src/ui/", "  view.rs", "README.md"]);
+
+        app.toggle_file_tree();
+        assert!(!app.config.file_tree, "the choice is a setting");
+        assert_eq!(shape(&app), ["README.md", "src/ui/view.rs"]);
+        // A view opened later takes the setting.
+        app.close_repo_view();
+        app.open_repo_view(Path::new("/x/a"));
+        assert!(!app.repo_view.as_ref().unwrap().tree);
     }
 
     #[test]

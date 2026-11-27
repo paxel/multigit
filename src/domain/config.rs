@@ -148,6 +148,10 @@ pub struct Config {
     /// In the order they were made, which is the order of their buttons.
     #[serde(default)]
     pub favorites: Vec<Favorite>,
+    /// The file lists of the repository view are a tree of folders; a flat
+    /// list of whole paths without it.
+    #[serde(default = "default_true")]
+    pub file_tree: bool,
 }
 
 impl Default for Config {
@@ -171,6 +175,7 @@ impl Default for Config {
             hidden: Vec::new(),
             buttons: default_buttons(),
             favorites: Vec::new(),
+            file_tree: true,
         }
     }
 }
@@ -239,6 +244,17 @@ mod tests {
         let by_hand = Config::from_toml("[[favorites]]\nname = \"a\"\ncolor = \"blue\"").unwrap();
         assert_eq!(by_hand.favorites[0].repos, Vec::<PathBuf>::new());
         assert_eq!(by_hand.favorites[0].emoji, None);
+    }
+
+    #[test]
+    fn the_file_lists_are_a_tree_unless_the_file_says_flat() {
+        assert!(Config::from_toml("").unwrap().file_tree);
+        let config = Config {
+            file_tree: false,
+            ..Config::default()
+        };
+        let text = config.to_toml().unwrap();
+        assert!(!Config::from_toml(&text).unwrap().file_tree);
     }
 
     #[test]

@@ -2360,3 +2360,22 @@ fn buttons_have_room_around_their_text() {
     );
     assert!(rect.height() >= 28.0);
 }
+
+#[test]
+fn the_fold_triangle_has_three_equal_sides_and_points_right_or_down() {
+    use crate::ui::repo_view::fold_triangle;
+    let center = egui::pos2(10.0, 10.0);
+    for open in [false, true] {
+        let [a, b, c] = fold_triangle(center, open);
+        let sides = [a.distance(b), b.distance(c), c.distance(a)];
+        for side in sides {
+            assert!((side - sides[0]).abs() < 0.01, "{sides:?}");
+        }
+        // The tip is the corner farthest right (folded) or lowest (open).
+        if open {
+            assert!(c.y > a.y && c.y > b.y);
+        } else {
+            assert!(b.x > a.x && b.x > c.x);
+        }
+    }
+}

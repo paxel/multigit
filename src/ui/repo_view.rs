@@ -185,6 +185,43 @@ pub(super) fn change_color(ui: &Ui, kind: ChangeKind) -> Color32 {
 /// How far a row of the tree is moved in for each level.
 const INDENT: f32 = 14.0;
 
+/// How long a side of the fold triangle is.
+const FOLD_SIDE: f32 = 8.0;
+
+/// The three corners of the fold triangle in a square box around `center`:
+/// all sides of the same length, pointing right when folded (`▸`) and down
+/// when open (`▾`).
+pub(super) fn fold_triangle(center: egui::Pos2, open: bool) -> [egui::Pos2; 3] {
+    // Height of a triangle whose sides are all FOLD_SIDE long.
+    let height = FOLD_SIDE * 3f32.sqrt() / 2.0;
+    let (half, third) = (FOLD_SIDE / 2.0, height / 3.0);
+    if open {
+        [
+            center + egui::vec2(-half, -third),
+            center + egui::vec2(half, -third),
+            center + egui::vec2(0.0, 2.0 * third),
+        ]
+    } else {
+        [
+            center + egui::vec2(-third, -half),
+            center + egui::vec2(2.0 * third, 0.0),
+            center + egui::vec2(-third, half),
+        ]
+    }
+}
+
+/// The fold triangle of a folder or a file row, in the color its widget
+/// state gives it.
+fn fold_icon(ui: &Ui, open: bool, response: &egui::Response) {
+    let color = ui.style().interact(response).fg_stroke.color;
+    let points = fold_triangle(response.rect.center(), open).to_vec();
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        color,
+        egui::Stroke::NONE,
+    ));
+}
+
 /// The Files tab: the changed files as a tree. A folder folds on a click;
 /// a file is picked for the right pane.
 fn file_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<Act>) {
@@ -199,8 +236,7 @@ fn file_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<A
                 let Some(file) = entry.file else {
                     let size = egui::vec2(INDENT, ui.spacing().interact_size.y);
                     let (_, icon) = ui.allocate_exact_size(size, egui::Sense::click());
-                    let openness = if entry.open { 1.0 } else { 0.0 };
-                    egui::collapsing_header::paint_default_icon(ui, openness, &icon);
+                    fold_icon(ui, entry.open, &icon);
                     let name = egui::Button::new(format!("{}/", entry.name)).frame(false);
                     let hover = if entry.open { "Fold" } else { "Unfold" };
                     if ui.add(name).on_hover_text(hover).clicked() || icon.clicked() {
@@ -619,8 +655,7 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
                         CommitRow::File(file, open, lines) => {
                             let size = egui::vec2(INDENT, row_height);
                             let (_, icon) = ui.allocate_exact_size(size, egui::Sense::click());
-                            let openness = if *open { 1.0 } else { 0.0 };
-                            egui::collapsing_header::paint_default_icon(ui, openness, &icon);
+                            fold_icon(ui, *open, &icon);
                             let text = format!("{} {}", file.kind.letter(), file.path);
                             let text = RichText::new(text).color(change_color(ui, file.kind));
                             let name = egui::Button::new(text).frame(false);

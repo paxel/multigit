@@ -1148,12 +1148,29 @@ impl<G: Default> App<G> {
     /// A run started from the repository view ended, with git's error
     /// when it failed.
     fn after_view_run(&mut self, after: AfterRun, repo: &Path, error: Option<String>) {
+        // git says why in the user's language: a failure while there are
+        // local changes gets the offer too.
+        let dirty = self
+            .repo_view
+            .as_ref()
+            .and_then(|v| v.details.as_ref())
+            .and_then(|d| d.as_ref().ok())
+            .is_some_and(|d| !d.files.is_empty());
+        let refused = error.as_deref().is_some_and(refused_for_changes);
         if let AfterRun::Checkout(way) = &after
-            && error.as_deref().is_some_and(refused_for_changes)
+            && error.is_some()
+            && (refused || dirty)
         {
+            let why = if refused {
+                format!("Local changes stop the checkout of {}.", way.what)
+            } else {
+                format!(
+                    "The checkout of {} failed while there are local changes.",
+                    way.what
+                )
+            };
             let question = format!(
-                "Local changes stop the checkout of {}. Stash them, untracked files too, and check out? The stash stays in the Stash tab.",
-                way.what
+                "{why} Stash them, untracked files too, and check out? The stash stays in the Stash tab."
             );
             let steps = vec![stash_before(&way.what), way.args.clone()];
             self.confirm = Some(PendingRun {

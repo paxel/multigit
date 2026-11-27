@@ -318,6 +318,8 @@ mod tests {
         assert!(details(&runner, dir.path(), 0).is_err(), "not a repository");
     }
 
+    // A `*` cannot stand in a file name on Windows.
+    #[cfg(unix)]
     #[test]
     fn files_and_folders_are_staged_unstaged_and_discarded() {
         use crate::domain::staging::{FileAct, file_steps, files_of};

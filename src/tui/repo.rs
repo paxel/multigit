@@ -468,6 +468,8 @@ fn list_key(app: &mut App, key: KeyEvent) {
         {
             if let Some(commit) = super::commits::picked(app) {
                 app.start_apply(&commit.hash);
+                app.gui.view_cursor.clear();
+                app.gui.pane_focus = false;
             }
         }
         KeyCode::Char('p') => {

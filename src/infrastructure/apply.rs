@@ -63,9 +63,13 @@ pub fn apply_commit(
     let _ = std::fs::remove_file(&file);
     let mut applied = applied?;
     if !applied.success() {
-        // Only this am runs here: nothing else was in progress before it.
-        let aborted = runner.run(dir, &["am", "--abort"])?;
-        let note = if aborted.success() {
+        // Nothing was in progress before, so a session now is this am's.
+        // Without one (a dirty index stops `am` before it starts) there is
+        // nothing to abort, and nothing was touched.
+        let started = git_path(runner, dir, "rebase-apply")?.is_some_and(|p| p.exists());
+        let note = if !started {
+            "does not apply: the repository is as it was"
+        } else if runner.run(dir, &["am", "--abort"])?.success() {
             "does not apply: aborted, the repository is as it was"
         } else {
             "does not apply, and `git am --abort` failed too"
@@ -110,6 +114,24 @@ mod tests {
         assert_eq!(other.git(&["rev-parse", "HEAD"]), before);
         assert!(!other.path().join(".git/rebase-apply").exists());
         assert_eq!(other.git(&["status", "--porcelain"]), "");
+
+        // Local changes to the patched file, staged, unstaged and new,
+        // are all still there after it did not apply.
+        let dirty = TestRepo::new();
+        dirty.commit("a.txt", "one\ntwo\nthree\n");
+        dirty.write("a.txt", "one\nstaged\nthree\n");
+        dirty.git(&["add", "a.txt"]);
+        dirty.write("a.txt", "one\nstaged\nthree\nunstaged\n");
+        dirty.write("new.txt", "untracked\n");
+        let status = dirty.git(&["status", "--porcelain"]);
+        let out = apply_commit(&runner, dirty.path(), source.path(), &hash).unwrap();
+        assert!(!out.success());
+        assert_eq!(dirty.git(&["status", "--porcelain"]), status);
+        assert!(!dirty.git(&["diff", "--cached", "--stat"]).is_empty());
+        let worktree = std::fs::read_to_string(dirty.path().join("a.txt")).unwrap();
+        assert_eq!(worktree, "one\nstaged\nthree\nunstaged\n");
+        assert!(dirty.path().join("new.txt").exists());
+        assert!(!dirty.path().join(".git/rebase-apply").exists());
 
         // One in the middle of an am is not touched.
         std::fs::create_dir(other.path().join(".git/rebase-apply")).unwrap();

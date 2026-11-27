@@ -3257,6 +3257,7 @@ pub(crate) mod tests {
                 current: true,
             }],
             stashes: Vec::new(),
+            reflog: Vec::new(),
         });
         let mut app = app_with(backend, None);
         app.open_repo_view(Path::new("/x/a"));
@@ -3280,6 +3281,7 @@ pub(crate) mod tests {
         let lists = |files: &[&str]| Details {
             states: Default::default(),
             stashes: Vec::new(),
+            reflog: Vec::new(),
             files: files.iter().map(|f| file(f)).collect(),
             commits: parse_log("aaaa\taa\tAda\t1\tthen\t\tone\n"),
             branches: vec![],

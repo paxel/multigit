@@ -1175,6 +1175,7 @@ fn repo_view_app() -> Harness<'static, App> {
     *backend.details.lock().unwrap() = Some(Details {
         states: Default::default(),
         stashes: Vec::new(),
+        reflog: Vec::new(),
         files: vec![
             FileChange {
                 path: "src/main.rs".into(),

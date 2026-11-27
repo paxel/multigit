@@ -30,7 +30,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("g / G, Home / End", "first / last row"),
     ("space, click", "mark or unmark the row"),
     ("Enter, double click", "open the repository view"),
-    ("  1 2 3 4", "tabs Files, Commits, Graph, Stash"),
+    ("  1 .. 5", "tabs Files, Commits, Graph, Stash, Reflog"),
     ("  j / k, Enter", "move / pick or fold (a click too)"),
     ("  J / K, PgDn / PgUp", "scroll the right pane"),
     ("  [ / ]", "back / forward"),

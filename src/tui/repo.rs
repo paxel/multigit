@@ -205,6 +205,23 @@ pub fn rows(app: &App) -> Vec<ViewRow> {
         }
         RepoTab::Commits => super::commits::rows(details, view),
         RepoTab::Graph => super::graph::rows(details, view),
+        RepoTab::Reflog => {
+            if details.reflog.is_empty() {
+                return vec![ViewRow::note("no steps yet")];
+            }
+            details
+                .reflog
+                .iter()
+                .map(|step| ViewRow {
+                    line: Line::from(vec![
+                        Span::styled(format!("{} ", step.short), dim()),
+                        Span::styled(format!("{} ", step.action), Style::new().fg(Color::Yellow)),
+                        Span::raw(step.message.clone()),
+                    ]),
+                    pick: Pick::Select(DiffTarget::Commit(step.hash.clone())),
+                })
+                .collect()
+        }
         RepoTab::Stash => {
             if details.stashes.is_empty() {
                 return vec![ViewRow::note("no stashes")];
@@ -281,6 +298,7 @@ fn pane_lines(view: &RepoView) -> Vec<PaneRow> {
                 RepoTab::Files => "Pick a file to see its changes.",
                 RepoTab::Commits | RepoTab::Graph => "Pick a commit to see it.",
                 RepoTab::Stash => "Pick a stash to see it.",
+                RepoTab::Reflog => "Pick a step to see its commit.",
             };
             return text(Line::styled(hint, dim()));
         }
@@ -383,6 +401,7 @@ fn list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('2') => app.switch_repo_tab(RepoTab::Commits),
         KeyCode::Char('3') => app.switch_repo_tab(RepoTab::Graph),
         KeyCode::Char('4') => app.switch_repo_tab(RepoTab::Stash),
+        KeyCode::Char('5') => app.switch_repo_tab(RepoTab::Reflog),
         KeyCode::Char('[') | KeyCode::Backspace => app.repo_view_back(),
         KeyCode::Char(']') => app.repo_view_forward(),
         KeyCode::Char('r') => app.refresh_repo_view(),

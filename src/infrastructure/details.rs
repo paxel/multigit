@@ -5,7 +5,8 @@
 
 use crate::domain::details::{
     COMMIT_FORMAT, ChangeKind, Details, DiffTarget, LOG_DATE, LOG_FORMAT, LOG_NAMES, LOG_PAGE,
-    LogEntry, STASH_FORMAT, cut_diff, parse_branches, parse_changes, parse_log, parse_stashes,
+    LogEntry, REFLOG_FORMAT, REFLOG_LIMIT, STASH_FORMAT, cut_diff, parse_branches, parse_changes,
+    parse_log, parse_reflog, parse_stashes,
 };
 use crate::domain::graph::{
     GRAPH_FORMAT, GRAPH_LIMIT, GraphData, REF_FORMAT, RefKind, drawn_refs, parse_graph_log,
@@ -154,7 +155,24 @@ pub fn details(runner: &GitRunner, dir: &Path, commits: usize) -> Result<Details
     let stashes = stdout(runner, dir, &["stash", "list", STASH_FORMAT])
         .map(|out| parse_stashes(&out))
         .unwrap_or_default();
+    let limit = format!("-{REFLOG_LIMIT}");
+    // Fails before the first commit: no steps then.
+    let reflog = stdout(
+        runner,
+        dir,
+        &[
+            "log",
+            "-g",
+            &limit,
+            "--no-show-signature",
+            REFLOG_FORMAT,
+            "HEAD",
+        ],
+    )
+    .map(|out| parse_reflog(&out))
+    .unwrap_or_default();
     Ok(Details {
+        reflog,
         stashes,
         files: parse_changes(&status),
         states: parse_states(&status),
@@ -376,6 +394,22 @@ mod tests {
         assert!(repo.path().join("dir/new.txt").exists());
         run(StashAct::Drop.args("stash@{0}"));
         assert!(details(&runner, repo.path(), 0).unwrap().stashes.is_empty());
+    }
+
+    #[test]
+    fn the_reflog_lists_where_head_has_been() {
+        let repo = TestRepo::new();
+        let runner = isolated_runner();
+        assert!(details(&runner, repo.path(), 0).unwrap().reflog.is_empty());
+        repo.commit("a.txt", "one\n");
+        repo.git(&["checkout", "-q", "-b", "side"]);
+        repo.commit("b.txt", "two\n");
+        let steps = details(&runner, repo.path(), 0).unwrap().reflog;
+        let actions: Vec<&str> = steps.iter().map(|s| s.action.as_str()).collect();
+        assert_eq!(actions, ["commit", "checkout", "commit (initial)"]);
+        assert_eq!(steps[0].message, "b.txt");
+        assert_eq!(steps[1].name, "HEAD@{1}");
+        assert_eq!(steps[0].hash, repo.git(&["rev-parse", "HEAD"]).trim());
     }
 
     #[test]

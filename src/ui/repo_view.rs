@@ -93,7 +93,9 @@ impl App {
                     // Each tab has a width of its own, kept while the app
                     // runs; the graph needs room for lanes, names and titles.
                     let width = match view.tab {
-                        RepoTab::Files | RepoTab::Commits | RepoTab::Stash => LIST_WIDTH,
+                        RepoTab::Files | RepoTab::Commits | RepoTab::Stash | RepoTab::Reflog => {
+                            LIST_WIDTH
+                        }
                         RepoTab::Graph => (ui.available_width() * GRAPH_SHARE).max(LIST_WIDTH),
                     };
                     egui::Panel::left(egui::Id::new(("repo-view-lists", view.tab)))
@@ -109,6 +111,7 @@ impl App {
                                 RepoTab::Commits => commit_list(ui, details, view, &mut act),
                                 RepoTab::Graph => graph_list(ui, details, view, &mut act),
                                 RepoTab::Stash => stash_list(ui, details, view, &mut act),
+                                RepoTab::Reflog => reflog_list(ui, details, view, &mut act),
                             }
                         });
                     egui::CentralPanel::default().show(ui, |ui| diff_pane(ui, view, &mut act));
@@ -409,6 +412,40 @@ fn edit_entry(ui: &mut Ui, repo: &std::path::Path, path: &str, act: &mut Option<
     }
 }
 
+/// The Reflog tab: where HEAD has been, newest first. A click picks the
+/// commit of a step for the right pane.
+fn reflog_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<Act>) {
+    list(ui, "Where HEAD has been", RepoTab::Reflog, |ui| {
+        if details.reflog.is_empty() {
+            ui.weak("no steps yet");
+        }
+        let mono = egui::TextStyle::Monospace.resolve(ui.style());
+        let body = egui::TextStyle::Body.resolve(ui.style());
+        for step in &details.reflog {
+            let mut text = egui::text::LayoutJob::default();
+            let weak = ui.visuals().weak_text_color();
+            text.append(
+                &format!("{} ", step.short),
+                0.0,
+                egui::TextFormat::simple(mono.clone(), weak),
+            );
+            text.append(
+                &format!("{} ", step.action),
+                0.0,
+                egui::TextFormat::simple(body.clone(), ui.visuals().warn_fg_color),
+            );
+            text.append(
+                &step.message,
+                0.0,
+                egui::TextFormat::simple(body.clone(), ui.visuals().text_color()),
+            );
+            let hover = format!("{}: {}: {}", step.name, step.action, step.message);
+            let target = DiffTarget::Commit(step.hash.clone());
+            row(ui, view, target, text, &hover, act);
+        }
+    });
+}
+
 /// The Stash tab: the stashes, newest first. A click picks one for the
 /// right pane; its right-click menu applies, pops or drops it.
 fn stash_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<Act>) {
@@ -687,6 +724,7 @@ fn diff_pane(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
                 RepoTab::Files => "Pick a file to see its changes.",
                 RepoTab::Commits | RepoTab::Graph => "Pick a commit to see it.",
                 RepoTab::Stash => "Pick a stash to see it.",
+                RepoTab::Reflog => "Pick a step to see its commit.",
             });
             return;
         }

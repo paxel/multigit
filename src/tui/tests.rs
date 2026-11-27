@@ -737,6 +737,7 @@ fn repo_app() -> (App, Arc<FakeBackend>) {
     *backend.details.lock().unwrap() = Some(Details {
         states: Default::default(),
         stashes: Vec::new(),
+        reflog: Vec::new(),
         files: vec![
             FileChange {
                 path: "src/main.rs".into(),
@@ -1854,4 +1855,23 @@ fn the_stash_tab_lists_the_stashes_and_space_applies_one() {
     );
     press(&mut app, KeyCode::Char('d'));
     assert!(app.confirm.is_some(), "a drop asks");
+}
+
+#[test]
+fn five_shows_where_head_has_been() {
+    use crate::domain::details::parse_reflog;
+    let (mut app, backend) = repo_app();
+    if let Some(details) = backend.details.lock().unwrap().as_mut() {
+        details.reflog =
+            parse_reflog("aaaabbbb\taaaabbb\tHEAD@{0}\tcheckout: moving from main to side\n");
+    }
+    open_view(&mut app);
+    press(&mut app, KeyCode::Char('5'));
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, " 5 Reflog "));
+    assert!(shown(&lines, "aaaabbb checkout moving from main to side"));
+    press(&mut app, KeyCode::Enter);
+    settle_diff(&mut app);
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, "aaaabbbb [main] [v9]"), "the step's commit");
 }

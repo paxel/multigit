@@ -336,10 +336,18 @@ pub enum RepoTab {
     Graph,
     /// The stashes.
     Stash,
+    /// Where HEAD has been.
+    Reflog,
 }
 
 impl RepoTab {
-    pub const ALL: [Self; 4] = [Self::Files, Self::Commits, Self::Graph, Self::Stash];
+    pub const ALL: [Self; 5] = [
+        Self::Files,
+        Self::Commits,
+        Self::Graph,
+        Self::Stash,
+        Self::Reflog,
+    ];
 
     /// As its tab names it.
     pub fn label(self) -> &'static str {
@@ -348,6 +356,7 @@ impl RepoTab {
             Self::Commits => "Commits",
             Self::Graph => "Graph",
             Self::Stash => "Stash",
+            Self::Reflog => "Reflog",
         }
     }
 
@@ -426,6 +435,52 @@ pub struct Details {
     pub branches: Vec<BranchEntry>,
     /// The stashes, newest first.
     pub stashes: Vec<StashEntry>,
+    /// Where HEAD has been, newest first.
+    pub reflog: Vec<ReflogEntry>,
+}
+
+/// A step of HEAD in the Reflog tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReflogEntry {
+    /// The commit HEAD was at, by its full hash.
+    pub hash: String,
+    pub short: String,
+    /// How git names the step: `HEAD@{0}` is the newest.
+    pub name: String,
+    /// What moved HEAD there: `checkout`, `commit`, `reset: moving to …`.
+    pub action: String,
+    /// The rest of what git says about it.
+    pub message: String,
+}
+
+/// How many steps of HEAD the Reflog tab reads.
+pub const REFLOG_LIMIT: usize = 200;
+
+/// The `--format` of `git log -g`: hash, short hash, name and what git
+/// says about the step, tab separated.
+pub const REFLOG_FORMAT: &str = "--format=%H%x09%h%x09%gd%x09%gs";
+
+/// The steps in the output of `git log -g` with [`REFLOG_FORMAT`]. What git
+/// says is split at its first `: ` into the action and the message.
+pub fn parse_reflog(output: &str) -> Vec<ReflogEntry> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(4, '\t');
+            let hash = fields.next().filter(|h| !h.is_empty())?.to_owned();
+            let short = fields.next()?.to_owned();
+            let name = fields.next()?.to_owned();
+            let says = fields.next().unwrap_or_default();
+            let (action, message) = says.split_once(": ").unwrap_or((says, ""));
+            Some(ReflogEntry {
+                hash,
+                short,
+                name,
+                action: action.to_owned(),
+                message: message.to_owned(),
+            })
+        })
+        .collect()
 }
 
 /// A stash in the Stash tab.
@@ -480,6 +535,7 @@ impl Details {
             DiffTarget::Commit(hash) => {
                 self.commits.iter().any(|c| &c.hash == hash)
                     || self.stashes.iter().any(|s| &s.hash == hash)
+                    || self.reflog.iter().any(|r| &r.hash == hash)
             }
             // Never picked by itself: it is shown inside its commit.
             DiffTarget::CommitFile { .. } => false,
@@ -892,10 +948,28 @@ mod tests {
     }
 
     #[test]
+    fn the_reflog_is_read_as_steps_with_their_action_and_held_as_commits() {
+        let steps = parse_reflog(
+            "aaaa\taa\tHEAD@{0}\tcheckout: moving from main to side\n\
+             bbbb\tbb\tHEAD@{1}\tcommit (initial): First\nnone\n",
+        );
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].action, "checkout");
+        assert_eq!(steps[0].message, "moving from main to side");
+        assert_eq!(steps[1].name, "HEAD@{1}");
+        assert_eq!(steps[1].action, "commit (initial)");
+        let details = Details {
+            reflog: steps,
+            ..Details::default()
+        };
+        assert!(details.holds(&DiffTarget::Commit("bbbb".into())));
+    }
+
+    #[test]
     fn tabs_are_named_and_a_repository_opens_on_its_changes_or_its_history() {
         assert_eq!(
             RepoTab::ALL.map(RepoTab::label),
-            ["Files", "Commits", "Graph", "Stash"]
+            ["Files", "Commits", "Graph", "Stash", "Reflog"]
         );
         assert_eq!(RepoTab::opening(true), RepoTab::Files);
         assert_eq!(RepoTab::opening(false), RepoTab::Commits);
@@ -1013,6 +1087,7 @@ mod tests {
         let details = Details {
             states: Default::default(),
             stashes: Vec::new(),
+            reflog: Vec::new(),
             files: vec![file("a.rs", ChangeKind::Modified)],
             commits: parse_log("aaaa\taa\tAda\t1\tthen\t\tone\n"),
             branches: vec![],

@@ -152,9 +152,13 @@ pub fn details(runner: &GitRunner, dir: &Path, commits: usize) -> Result<Details
         ],
     )?;
     // Fails before the first commit: no stashes then.
-    let stashes = stdout(runner, dir, &["stash", "list", STASH_FORMAT])
-        .map(|out| parse_stashes(&out))
-        .unwrap_or_default();
+    let stashes = stdout(
+        runner,
+        dir,
+        &["stash", "list", "--no-show-signature", STASH_FORMAT],
+    )
+    .map(|out| parse_stashes(&out))
+    .unwrap_or_default();
     let limit = format!("-{REFLOG_LIMIT}");
     // Fails before the first commit: no steps then.
     let reflog = stdout(

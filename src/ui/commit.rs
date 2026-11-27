@@ -59,6 +59,14 @@ impl App {
                 .show(ui);
             if dialog.running.is_none() && !output.response.has_focus() && !send {
                 output.response.request_focus();
+                // The cursor after what was written in, the ticket key.
+                let id = egui::Id::new("commit-text");
+                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                    let end = egui::text::CCursor::new(dialog.text.chars().count());
+                    let range = egui::text::CCursorRange::one(end);
+                    state.cursor.set_char_range(Some(range));
+                    state.store(ui.ctx(), id);
+                }
             }
             let hint_at = output.response.rect.right_bottom() - egui::vec2(6.0, 4.0);
             ui.painter().text(

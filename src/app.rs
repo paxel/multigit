@@ -8,7 +8,7 @@ use crate::application::schedule::{Due, Schedule};
 use crate::domain::audio::{self, SAMPLE_RATE, Sound};
 use crate::domain::board::{SortKey, Sorted, compare, is_ahead, matches_filter};
 use crate::domain::command::{Job, display, shell_line};
-use crate::domain::commit_message::finish;
+use crate::domain::commit_message::{finish, prefill};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::{Config, Theme};
 use crate::domain::critters::{News, Troupe};
@@ -1476,8 +1476,24 @@ impl<G: Default> App<G> {
         });
     }
 
+    /// The commit dialog, with the ticket key of the branch or the last
+    /// commit written in.
     fn open_commit_dialog(&mut self) {
-        self.commit_dialog = Some(CommitDialog::default());
+        let details = self
+            .repo_view
+            .as_ref()
+            .and_then(|v| v.details.as_ref())
+            .and_then(|d| d.as_ref().ok());
+        let branch = details
+            .and_then(|d| d.branches.iter().find(|b| b.current))
+            .map(|b| b.name.as_str());
+        let last = details
+            .and_then(|d| d.commits.first())
+            .map(|c| c.subject.as_str());
+        self.commit_dialog = Some(CommitDialog {
+            text: prefill(branch, last),
+            ..CommitDialog::default()
+        });
     }
 
     /// Send the message of the commit dialog: `git commit` with it, in the
@@ -3054,6 +3070,40 @@ pub(crate) mod tests {
         app.start_commit();
         app.cancel_commit();
         assert!(app.commit_dialog.is_none(), "Esc closes it");
+    }
+
+    #[test]
+    fn the_commit_dialog_starts_with_the_ticket_key_of_the_branch() {
+        use crate::domain::details::{BranchEntry, ChangeKind, parse_log};
+        use crate::domain::staging::FileState;
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details {
+            files: vec![FileChange {
+                path: "a.rs".into(),
+                kind: ChangeKind::Modified,
+            }],
+            states: [(
+                "a.rs".to_string(),
+                FileState {
+                    index: 'M',
+                    worktree: '.',
+                },
+            )]
+            .into_iter()
+            .collect(),
+            commits: parse_log("aa\taa\tA\t1\td\t\t[ABC-9] Fix logout\n"),
+            branches: vec![BranchEntry {
+                name: "feature/ABC-12-login".into(),
+                current: true,
+            }],
+        });
+        let mut app = app_with(backend, None);
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| {
+            a.repo_view.as_ref().unwrap().details.is_some()
+        });
+        app.start_commit();
+        assert_eq!(app.commit_dialog.as_ref().unwrap().text, "[ABC-12] ");
     }
 
     #[test]

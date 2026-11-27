@@ -867,6 +867,8 @@ fn a_double_click_on_a_row_opens_it_and_keeps_its_mark() {
 #[test]
 fn the_commits_tab_lists_the_history_and_shows_a_picked_commit() {
     let (mut app, _) = repo_app();
+    // The files of a commit by their whole paths.
+    app.config.file_tree = false;
     open_view(&mut app);
     let lines = screen(&mut app, 120, 34);
     assert!(shown(&lines, "AL aaaabbb Fix the thing"));
@@ -883,6 +885,8 @@ fn the_commits_tab_lists_the_history_and_shows_a_picked_commit() {
 #[test]
 fn tab_goes_to_the_commit_pane_where_enter_unfolds_a_file() {
     let (mut app, _) = repo_app();
+    // The files of a commit by their whole paths.
+    app.config.file_tree = false;
     open_view(&mut app);
     press(&mut app, KeyCode::Enter);
     settle_diff(&mut app);

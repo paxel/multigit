@@ -124,15 +124,14 @@ pub fn tree_rows(files: &[FileChange], closed: &HashSet<String>) -> Vec<TreeRow>
 }
 
 /// The changed files as rows: with `tree` the tree of [`tree_rows`],
-/// without it every file once, by its whole path, in path order.
+/// without it every file by its whole path, in the order git gave them.
 pub fn file_rows(files: &[FileChange], closed: &HashSet<String>, tree: bool) -> Vec<TreeRow> {
     if tree {
         return tree_rows(files, closed);
     }
-    let mut files = files.to_vec();
-    files.sort_by(|a, b| a.path.cmp(&b.path));
     files
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|file| TreeRow {
             depth: 0,
             name: file.path.clone(),
@@ -710,9 +709,9 @@ mod tests {
         assert_eq!(
             flat,
             [
-                (0, "alpha.txt".to_string()),
-                (0, "src/ui/view.rs".to_string()),
                 (0, "zeta.txt".to_string()),
+                (0, "src/ui/view.rs".to_string()),
+                (0, "alpha.txt".to_string()),
             ]
         );
         assert_eq!(file_rows(&files, &closed, true), tree_rows(&files, &closed));

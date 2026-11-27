@@ -3021,7 +3021,7 @@ pub(crate) mod tests {
 
         app.toggle_file_tree();
         assert!(!app.config.file_tree, "the choice is a setting");
-        assert_eq!(shape(&app), ["README.md", "src/ui/view.rs"]);
+        assert_eq!(shape(&app), ["src/ui/view.rs", "README.md"]);
         // A view opened later takes the setting.
         app.close_repo_view();
         app.open_repo_view(Path::new("/x/a"));

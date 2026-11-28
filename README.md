@@ -67,17 +67,19 @@ greyed out, and comes back by itself when the folder returns.
 ## Looking into a repository
 
 A double click on a card, or **Open** in its right-click menu, opens a
-read-only view of that repository over the board. It has three tabs, and
+view of that repository over the board. It has three tabs, and
 **Back** and **Forward** step through what was looked at:
 
 - **Files**, where the view opens when the repository has changes: the
   changed files as a tree with folders that fold, or as a flat list in
   git's order when **Tree** over the list is switched off. Each file is
-  listed once,
-  with a letter and a color for what happened to it since the last commit
-  (A added, M modified, D deleted, ! conflict), staged or not. A picked file
-  shows its content when it is new, what is gone when it was deleted, and its
-  diff otherwise.
+  listed once, with git's two letters for it, colored as lazygit colors
+  them: the first for what is staged (green), the second for what is not
+  (red), `??` for a new file. A picked file shows its content when it is
+  new, what is gone when it was deleted, and its diff otherwise. The box
+  before a file or folder stages it, or unstages it when all of it is
+  staged; a right click on it offers **Stage**, **Unstage**, **Discard all
+  changes** and **Discard unstaged changes**, and a discard asks first.
 - **Commits**, where it opens when the repository is clean: the history of
   the current branch, a row for each commit with the author's initials, the
   short hash, the tags on it, the title and the age. It reads on when scrolled to its end. A
@@ -330,7 +332,9 @@ parents to go to, and Tab gives the keys to the right side, where Enter
 unfolds what the commit did to a file (Tab or Esc gives them back). The
 Graph tab draws the lanes with line characters; Enter on a folded run
 unfolds it, and on the line of hidden old remote branches shows them.
-`` ` `` switches the file lists between tree and flat. To copy a part, mark it with the terminal's own selection (Shift and drag
+`` ` `` switches the file lists between tree and flat. In the Files tab
+Space stages or unstages the file or folder, `d` offers the two discards,
+and a right click opens the same menu as in the window. To copy a part, mark it with the terminal's own selection (Shift and drag
 where the terminal leaves the mouse to multigit).
 
 `+` asks for the folder instead of a folder dialog: `~` is the home folder,

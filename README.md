@@ -67,7 +67,7 @@ greyed out, and comes back by itself when the folder returns.
 ## Looking into a repository
 
 A double click on a card, or **Open** in its right-click menu, opens a
-view of that repository over the board. It has four tabs, and
+view of that repository over the board. It has five tabs, and
 **Back** and **Forward** step through what was looked at:
 
 - **Files**, where the view opens when the repository has changes: the
@@ -100,6 +100,8 @@ view of that repository over the board. It has four tabs, and
   behind a line that shows them. A click on a commit shows it as in Commits.
 - **Stash**: the stashes, newest first; a click shows one as a commit, and
   a right click applies, pops or drops it (a drop asks first).
+- **Reflog**: the last 200 places `HEAD` was, newest first, with what
+  moved it; a click shows the commit of a step.
 
 **Commit** over the Files tab commits what is staged. The message is one
 box whose first line is the subject, drawn stronger, with what goes past 72
@@ -338,8 +340,8 @@ over SSH. Terminals that do not support it copy nothing; in tmux it takes
 `set-clipboard on`.
 
 The repository view fills the terminal: the list on the left, what is
-picked in it on the right. `1` to `4` pick the tabs Files, Commits,
-Graph and Stash, `[` and `]` are Back and Forward, `j`/`k` and Enter (or a click) move
+picked in it on the right. `1` to `5` pick the tabs Files, Commits,
+Graph, Stash and Reflog, `[` and `]` are Back and Forward, `j`/`k` and Enter (or a click) move
 and pick, `J`/`K` and PgDn/PgUp scroll the right side, `r` reads the
 repository again, `y` copies all of the right side, and Esc or `q` closes
 it. In the Commits tab the history reads on at its end; for a picked commit

@@ -192,15 +192,20 @@ fn space_and_clicks_mark_rows_and_the_mark_keys_act_like_the_buttons() {
     press(&mut app, KeyCode::Char('d'));
     assert_eq!(app.marked_repos(), vec![PathBuf::from("/repos/beta")]);
     press(&mut app, KeyCode::Char('d'));
-    assert_eq!(
-        app.marked_repos().len(),
-        2,
-        "a second press marks the others"
-    );
+    assert_eq!(app.marked_repos().len(), 1, "a second press does the same");
+    alt(&mut app, 'd');
+    assert_eq!(app.marked_repos().len(), 2, "Alt marks the others");
     press(&mut app, KeyCode::Char('a'));
     assert_eq!(app.marked_repos().len(), 3);
-    press(&mut app, KeyCode::Char('a'));
-    assert!(app.marked_repos().is_empty(), "a second all marks nothing");
+    alt(&mut app, 'a');
+    assert!(app.marked_repos().is_empty(), "Alt+a marks none");
+}
+
+fn alt(app: &mut App, c: char) {
+    on_event(
+        app,
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)),
+    );
 }
 
 #[test]
@@ -214,10 +219,21 @@ fn the_status_filter_shows_only_the_fitting_rows() {
         Upstream::None,
         &["main"],
     )));
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(
+        &lines,
+        "filter [A] all (3) [D] dirty (1) [B] behind (0)"
+    ));
     press(&mut app, KeyCode::Char('D'));
     let lines = screen(&mut app, 100, 24);
-    assert!(shown(&lines, "showing dirty (1)"));
+    assert!(!shown(&lines, "showing"));
     assert!(!shown(&lines, "alpha"));
+    press(&mut app, KeyCode::Char('D'));
+    assert_eq!(
+        app.status_filter,
+        Some(crate::app::MarkBy::Dirty),
+        "it stays"
+    );
     press(&mut app, KeyCode::Char('A'));
     let lines = screen(&mut app, 100, 24);
     assert!(shown(&lines, "alpha"));
@@ -1277,13 +1293,7 @@ fn board_keys_move_mark_and_filter() {
     press(&mut app, KeyCode::Char('p'));
     assert_eq!(app.marked_repos(), vec![PathBuf::from("/repos/beta")]);
     let lines = screen(&mut app, 100, 24);
-    assert!(shown(&lines, "[p] ahead"));
-    press(&mut app, KeyCode::Char('p'));
-    let lines = screen(&mut app, 100, 24);
-    assert!(
-        shown(&lines, "[p] ahead"),
-        "struck through, the others marked"
-    );
+    assert!(shown(&lines, "mark a d b p"));
     press(&mut app, KeyCode::Char('B'));
     assert_eq!(app.status_filter, Some(crate::app::MarkBy::Behind));
     press(&mut app, KeyCode::Char('P'));

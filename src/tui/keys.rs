@@ -138,11 +138,16 @@ fn board_key(app: &mut App, key: KeyEvent) {
                 app.open_repo_view(&path);
             }
         }
-        KeyCode::Char('a') => app.press_mark(MarkBy::All),
-        KeyCode::Char('d') => app.press_mark(MarkBy::Dirty),
-        KeyCode::Char('b') => app.press_mark(MarkBy::Behind),
-        KeyCode::Char('p') => app.press_mark(MarkBy::Ahead),
-        KeyCode::Char('A') => app.status_filter = None,
+        KeyCode::Char(c @ ('a' | 'd' | 'b' | 'p')) => {
+            let by = match c {
+                'a' => MarkBy::All,
+                'd' => MarkBy::Dirty,
+                'b' => MarkBy::Behind,
+                _ => MarkBy::Ahead,
+            };
+            app.press_mark(by, key.modifiers.contains(KeyModifiers::ALT));
+        }
+        KeyCode::Char('A') => app.filter_by(MarkBy::All),
         KeyCode::Char('D') => app.filter_by(MarkBy::Dirty),
         KeyCode::Char('B') => app.filter_by(MarkBy::Behind),
         KeyCode::Char('P') => app.filter_by(MarkBy::Ahead),

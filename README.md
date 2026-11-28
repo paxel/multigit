@@ -196,21 +196,18 @@ emoji. A repository can be in several.
 - **Card buttons** run in that one repository. The defaults are
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
 - **Marking**: a click on a card marks it, a second click unmarks it; marked
-  cards get a coloured border. The toolbar marks all, dirty (changes or
-  an operation in progress), behind (unpulled commits) or ahead (unpushed
-  commits). These buttons work like the station buttons of a radio: the
-  clicked one stays pressed until another is clicked. A click on the pressed
-  button marks the other cards instead (its text is struck through then), the
-  next click the first ones again; a second click on **all** leaves nothing
-  marked. Marking a card by hand does not release the button. A right click
-  on **dirty**, **behind** or **ahead** filters the board instead: only the
-  cards that fit are shown, cards come and go as their status changes, and
-  the marks stay as they are. The button gets a coloured border and the
-  toolbar says `showing dirty (7)`; a click on that text, a second right
-  click, or a right click on **all** shows all again. This filter works
-  together with the favorite and the filter field, and a card it hides keeps
-  its mark and is left alone like one the filter field hides. The toolbar repeats the card buttons
-  for all marked repositories.
+  cards get a coloured border. The **Mark** buttons of the toolbar mark
+  all, dirty (changes or an operation in progress), behind (unpulled
+  commits) or ahead (unpushed commits) of the shown cards and unmark the
+  other shown ones; a right click marks the other cards instead, so a right
+  click on **all** leaves nothing marked. They do not stay pressed. The
+  toolbar repeats the card buttons for all marked repositories.
+- **Filtering**: the **Filter** buttons all, dirty, behind and ahead work
+  like the station buttons of a radio: the clicked one stays pressed, and
+  the board shows only the cards that fit it, as their status changes.
+  Each button says how many cards it would show. The filter works together
+  with the favorite and the filter field, and a card it hides keeps its mark
+  and is left alone like one the filter field hides.
 - **Copying**: a click on a card's folder name, branch name (or the sha of a
   detached HEAD) or tag copies it to the clipboard instead of marking the
   card; a click on the path line copies the repository's full path, and a
@@ -320,9 +317,9 @@ Plain keys act on the board; `?` shows them all:
 | g / G, Home / End | First / last row                                       |
 | space             | Mark or unmark the row                                 |
 | Enter             | Open the repository view (a double click too)          |
-| a, d, b, p        | Mark button all, dirty, behind, ahead (p for push)     |
-| D, B, P           | Show only the dirty, behind, ahead rows                |
-| A                 | Show all rows again                                    |
+| a, d, b, p        | Mark all, dirty, behind, ahead rows (p for push)       |
+| Alt+a, d, b, p    | Mark the other rows (Alt+a: none)                      |
+| A, D, B, P        | Filter: all, dirty, behind, ahead rows                 |
 | /                 | Type into the filter field; Enter or Esc leaves it     |
 | s                 | Sort                                                   |
 | :                 | Go to the command line; Esc goes back to the board     |

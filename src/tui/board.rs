@@ -52,8 +52,11 @@ pub const HELP: &[(&str, &str)] = &[
     ("  a", "apply the picked commit to other repositories"),
     ("  right click", "Files: stage, unstage, discard"),
     ("a d b p", "mark all / dirty / behind / ahead"),
-    ("D B P", "show only dirty / behind / ahead"),
-    ("A", "show all again"),
+    (
+        "Alt+a d b p",
+        "mark the opposite: none / not dirty / not behind / not ahead",
+    ),
+    ("A D B P", "show all / only dirty / behind / ahead"),
     ("/", "filter by name (Enter, Esc: done)"),
     ("s", "sort"),
     ("x, right click", "the row's menu: copy, and more"),
@@ -211,43 +214,28 @@ fn toolbar_lines(app: &App) -> Vec<Line<'static>> {
     } else {
         first.push(Span::styled("   ? keys  q quit", dim()));
     }
-    let mut second = vec![Span::styled("mark ", dim())];
+    let mut second = vec![Span::styled("mark a d b p  filter ", dim())];
     for (key, by) in [
-        ('a', MarkBy::All),
-        ('d', MarkBy::Dirty),
-        ('b', MarkBy::Behind),
-        ('p', MarkBy::Ahead),
+        ('A', MarkBy::All),
+        ('D', MarkBy::Dirty),
+        ('B', MarkBy::Behind),
+        ('P', MarkBy::Ahead),
     ] {
-        second.push(mark_button(app, key, by));
+        second.push(filter_button(app, key, by));
         second.push(Span::raw(" "));
-    }
-    if let Some(by) = app.status_filter {
-        second.push(Span::styled(
-            format!(" showing {} ({shown})", by.label()),
-            Style::new().fg(Color::Magenta),
-        ));
-        second.push(Span::styled("  A: all", dim()));
     }
     vec![Line::from(first), Line::from(second)]
 }
 
-/// A mark button: its key and name, reversed while pressed and struck
-/// through when it marks the other cards.
-fn mark_button(app: &App, key: char, by: MarkBy) -> Span<'static> {
+/// A filter button: its key, name and the number of cards it shows,
+/// reversed while it filters.
+fn filter_button(app: &App, key: char, by: MarkBy) -> Span<'static> {
     let mut style = Style::new();
-    match app.pressed_mark {
-        Some((pressed, inverted)) if pressed == by => {
-            style = style.add_modifier(Modifier::REVERSED);
-            if inverted {
-                style = style.add_modifier(Modifier::CROSSED_OUT);
-            }
-        }
-        _ => {}
+    if app.filtered_by() == by {
+        style = style.add_modifier(Modifier::REVERSED);
     }
-    if app.status_filter == Some(by) {
-        style = style.fg(Color::Magenta);
-    }
-    Span::styled(format!("[{key}] {}", by.label()), style)
+    let count = app.filter_count(by);
+    Span::styled(format!("[{key}] {} ({count})", by.label()), style)
 }
 
 /// "1 repository", "3 repositories".

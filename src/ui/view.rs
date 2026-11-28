@@ -72,35 +72,33 @@ fn swatch(ui: &mut Ui, text: &str, rgb: [u8; 3], picked: bool, small: bool) -> e
     ui.add(button)
 }
 
-/// A mark button of the toolbar: filled while it is pressed, its text
-/// struck through while it marks the cards that do not fit it, and with a
-/// coloured border while the board shows only the cards that fit it.
-fn mark_button(
-    ui: &mut Ui,
-    by: MarkBy,
-    (pressed, inverted): (bool, bool),
-    filtering: bool,
-) -> egui::Response {
-    let mut text = RichText::new(by.label());
-    if inverted {
-        text = text.strikethrough();
-    }
+/// A mark button of the toolbar. It never stays pressed: a click marks
+/// the shown cards that fit it, a right click the ones that do not.
+fn mark_button(ui: &mut Ui, by: MarkBy) -> egui::Response {
     let hint = if by == MarkBy::All {
-        "Click: mark all repositories. Again: mark none.\nRight click: show all again.".to_owned()
+        "Click: mark all shown repositories.\nRight click: mark none.".to_owned()
     } else {
         format!(
-            "Click: mark {what}. Again: mark all others instead.\n\
-             Right click: show only {what}. Again: show all.",
+            "Click: mark {what}.\nRight click: mark all others instead.",
             what = by.what()
         )
     };
+    ui.button(by.label()).on_hover_text(hint)
+}
+
+/// A filter button of the toolbar with the number of cards it shows;
+/// the one that filters stays pressed, like a radio button.
+fn filter_button(ui: &mut Ui, by: MarkBy, pressed: bool, count: usize) -> egui::Response {
+    let hint = if by == MarkBy::All {
+        "Show all repositories".to_owned()
+    } else {
+        format!("Show only {}", by.what())
+    };
     // Not `Button::selectable`: that one has no frame until it is pressed,
-    // so the row would read as words and the filter's border would not show.
-    let mut button = egui::Button::new(text).selected(pressed);
-    if filtering {
-        button = button.stroke(egui::Stroke::new(2.0, ui.visuals().warn_fg_color));
-    }
-    ui.add(button).on_hover_text(hint)
+    // so the row would read as words.
+    let text = format!("{} ({count})", by.label());
+    ui.add(egui::Button::new(text).selected(pressed))
+        .on_hover_text(hint)
 }
 
 fn favorite_button(ui: &mut Ui, favorite: &Favorite, active: bool) -> egui::Response {
@@ -453,29 +451,21 @@ impl App {
         ui.separator();
         ui.label("Mark:");
         for by in MarkBy::EACH {
-            let (pressed, inverted) = match self.pressed_mark {
-                Some((button, inverted)) if button == by => (true, inverted),
-                _ => (false, false),
-            };
-            let filtering = self.status_filter == Some(by);
-            let button = mark_button(ui, by, (pressed, inverted), filtering);
+            let button = mark_button(ui, by);
             if button.clicked() {
-                self.press_mark(by);
+                self.press_mark(by, false);
             }
             if button.secondary_clicked() {
-                self.filter_by(by);
+                self.press_mark(by, true);
             }
         }
-        if let Some(by) = self.status_filter {
-            // Cards are missing from the board: say why, in plain words.
-            let showing = format!("showing {} ({})", by.label(), self.shown_cards().len());
-            let text = RichText::new(showing).color(ui.visuals().warn_fg_color);
-            if ui
-                .add(egui::Button::new(text).frame(false))
-                .on_hover_text("Only these repositories are shown. Click to show all again.")
-                .clicked()
-            {
-                self.status_filter = None;
+        ui.separator();
+        ui.label("Filter:");
+        for by in MarkBy::EACH {
+            let pressed = self.filtered_by() == by;
+            let count = self.filter_count(by);
+            if filter_button(ui, by, pressed, count).clicked() {
+                self.filter_by(by);
             }
         }
         ui.separator();

@@ -520,87 +520,71 @@ fn fetch_error_is_one_line_and_a_click_copies_all_of_it_and_removes_it() {
 }
 
 #[test]
-fn mark_buttons_stay_pressed_and_a_second_click_marks_the_others() {
-    use crate::ui::app::MarkBy;
+fn a_mark_button_marks_on_a_click_and_the_others_on_a_right_click() {
     let mut app = app_with(Arc::default(), None);
     app.cards = vec![card("/r/a"), card("/r/b")];
     let mut h = harness(app);
     h.run();
-    // The row is all, dirty, behind, ahead: "none" is the second click on "all".
+    // Mark: all, dirty, behind, ahead; there is no "none" button.
     assert!(h.query_by_label("none").is_none());
-    for label in ["dirty", "behind", "ahead"] {
+    for label in ["all", "dirty", "behind", "ahead"] {
         h.get_by_label(label);
     }
     h.get_by_label("all").click();
     h.run();
-    assert_eq!(h.state().pressed_mark, Some((MarkBy::All, false)));
     assert_eq!(h.state().marked.len(), 2);
     h.get_by_label("all").click();
     h.run();
-    assert_eq!(h.state().pressed_mark, Some((MarkBy::All, true)));
-    assert!(h.state().marked.is_empty());
-    // Another button takes over; nothing here is behind, so its second
-    // click marks every card.
-    h.get_by_label("behind").click();
+    assert_eq!(h.state().marked.len(), 2, "a second click does the same");
+    h.get_by_label("all").click_secondary();
     h.run();
-    assert_eq!(h.state().pressed_mark, Some((MarkBy::Behind, false)));
-    assert!(h.state().marked.is_empty());
-    h.get_by_label("behind").click();
+    assert!(h.state().marked.is_empty(), "the opposite of all is none");
+    // Nothing here is behind: its right click marks every card.
+    h.get_by_label("behind").click_secondary();
     h.run();
-    assert_eq!(h.state().pressed_mark, Some((MarkBy::Behind, true)));
     assert_eq!(h.state().marked.len(), 2);
+    h.get_by_label("behind").click();
+    h.run();
+    assert!(h.state().marked.is_empty());
+    assert_eq!(h.state().status_filter, None, "marking never filters");
 }
 
 #[test]
-fn a_right_click_on_a_mark_button_shows_only_its_cards_and_says_so() {
+fn a_filter_button_shows_only_its_cards_and_stays_pressed() {
     use crate::ui::app::MarkBy;
     let mut app = app_with(Arc::default(), None);
     app.cards = vec![card("/r/alpha"), card("/r/beta")];
     let mut h = harness(app);
     h.run();
+    // Each filter button counts what it would show.
+    for label in ["all (2)", "dirty (0)", "behind (0)", "ahead (0)"] {
+        h.get_by_label(label);
+    }
     assert!(h.query_by_label_contains("showing").is_none());
-    // Nothing here is behind: the board is empty, and the toolbar says why.
-    h.get_by_label("behind").click_secondary();
+    h.get_by_label("behind (0)").click();
     h.run();
     assert_eq!(h.state().status_filter, Some(MarkBy::Behind));
-    assert_eq!(
-        h.state().pressed_mark,
-        None,
-        "a right click presses nothing"
-    );
-    assert!(h.state().marked.is_empty(), "and marks nothing");
+    assert!(h.state().marked.is_empty(), "filtering marks nothing here");
     assert!(h.query_by_label("alpha").is_none());
-    h.get_by_label("showing behind (0)");
-    // A left click leaves the filter alone.
+    // Again: it stays.
+    h.get_by_label("behind (0)").click();
+    h.run();
+    assert_eq!(h.state().status_filter, Some(MarkBy::Behind));
+    // A mark button leaves the filter alone.
     h.get_by_label("all").click();
     h.run();
     assert_eq!(h.state().status_filter, Some(MarkBy::Behind));
-    // A click on the text shows all again.
-    h.get_by_label("showing behind (0)").click();
+    h.get_by_label("all (2)").click();
     h.run();
     assert_eq!(h.state().status_filter, None);
     h.get_by_label("alpha");
-    assert!(h.query_by_label_contains("showing").is_none());
-    // So does a second right click, and a right click on "all".
-    h.get_by_label("ahead").click_secondary();
-    h.run();
-    h.get_by_label("ahead").click_secondary();
-    h.run();
-    assert_eq!(h.state().status_filter, None);
-    h.get_by_label("dirty").click_secondary();
-    h.run();
-    assert_eq!(h.state().status_filter, Some(MarkBy::Dirty));
-    h.get_by_label("all").click_secondary();
-    h.run();
-    assert_eq!(h.state().status_filter, None);
-    assert_eq!(h.state().pressed_mark, Some((MarkBy::All, false)));
 }
 
 #[test]
 fn filter_field_hides_cards_and_counts_the_shown_ones() {
     let mut app = app_with(Arc::default(), None);
     app.cards = vec![card("/r/etl-load"), card("/r/web"), card("/r/Etl-store")];
-    app.press_mark(crate::ui::app::MarkBy::All);
+    app.press_mark(crate::ui::app::MarkBy::All, false);
     let mut h = harness(app);
     h.run();
     assert!(

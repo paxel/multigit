@@ -376,11 +376,15 @@ fn right_click_removes_or_hides_the_marked_cards_and_settings_unhides() {
     h.run();
     h.get_by_label("Hidden repositories");
     h.get_by_label("/r/etl-store");
-    h.get_all_by_label("Unhide").next().unwrap().click();
+    // Below the bottom of a 800 px screen: clicked through accessibility.
+    h.get_all_by_label("Unhide")
+        .next()
+        .unwrap()
+        .click_accesskit();
     h.run();
     assert_eq!(h.state().config.hidden, hidden[1..].to_vec());
     assert_eq!(h.state().cards.len(), 1);
-    h.get_by_label("Unhide all").click();
+    h.get_by_label("Unhide all").click_accesskit();
     h.run();
     assert!(h.state().config.hidden.is_empty());
     assert_eq!(h.state().cards.len(), 2);
@@ -2404,35 +2408,32 @@ fn a_discard_from_the_files_menu_asks_over_the_repository_view() {
 
 #[test]
 fn a_card_shows_its_pr_and_ci_chips_and_a_click_opens_the_page() {
-    use crate::domain::services::{Light, ServiceChip};
+    let backend = Arc::new(FakeBackend::default());
+    let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);
+    snap.remotes = vec![crate::domain::remote::Remote {
+        name: "origin".into(),
+        url: "git@github.com:o/r.git".into(),
+    }];
+    *backend.snapshot.lock().unwrap() = Some(snap);
     let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
-    let mut app = crate::ui::app::tests::app_on(Arc::default(), desktop.clone(), None);
-    let mut repo = card("/r/alpha");
-    repo.chips = vec![
-        ServiceChip {
-            text: "PR #12".into(),
-            light: Light::Orange,
-            url: Some("https://github.com/o/r/pull/12".into()),
-            hint: "Pull request #12: a review is required. Click to open it.".into(),
-        },
-        ServiceChip {
-            text: "gh missing".into(),
-            light: Light::Grey,
-            url: None,
-            hint: String::new(),
-        },
-    ];
-    app.cards = vec![repo];
+    let mut app = crate::ui::app::tests::app_on(backend.clone(), desktop.clone(), None);
+    app.cards = vec![card("/r/alpha")];
     let mut h = harness(app);
+    // The probe of the card reads its chips; the fake has a PR for the branch.
+    for _ in 0..200 {
+        h.run();
+        if !h.state().cards[0].chips.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     h.run();
-    h.get_by_label("gh missing").click();
-    h.run();
-    assert!(desktop.urls.lock().unwrap().is_empty(), "no page to open");
-    h.get_by_label("PR #12").click();
+    assert_eq!(backend.chip_reads.lock().unwrap()[0].branch, "main");
+    h.get_by_label("PR main").click();
     h.run();
     assert_eq!(
         desktop.urls.lock().unwrap().clone(),
-        ["https://github.com/o/r/pull/12"]
+        ["https://example.org/pr"]
     );
     assert!(h.state().marked.is_empty(), "a chip click does not mark");
 }

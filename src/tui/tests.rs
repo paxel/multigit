@@ -1951,3 +1951,166 @@ fn the_detail_strip_shows_the_chips_and_the_menu_copies_their_links() {
         vec!["https://github.com/o/r/pull/12".to_owned()]
     );
 }
+
+/// The index of the first row of the shown tab whose line holds `text`.
+fn row_of(app: &App, text: &str) -> usize {
+    super::repo::rows(app)
+        .iter()
+        .position(|r| r.line.to_string().contains(text))
+        .unwrap_or_else(|| panic!("no row with {text}"))
+}
+
+fn put_cursor(app: &mut App, text: &str) {
+    let at = row_of(app, text);
+    let tab = app.repo_view.as_ref().unwrap().tab;
+    app.gui.view_cursor.insert(tab, at);
+}
+
+fn settle_runs(app: &mut App, backend: &FakeBackend, count: usize) {
+    crate::app::tests::settle(app, |_| backend.runs.lock().unwrap().len() >= count);
+}
+
+fn dirty_view() -> (App, Arc<FakeBackend>) {
+    let (mut app, backend) = repo_app();
+    app.cards[0].probe = Some(Ok(snapshot(
+        Counts {
+            modified: 1,
+            ..Counts::default()
+        },
+        Upstream::None,
+        &["main"],
+    )));
+    open_view(&mut app);
+    (app, backend)
+}
+
+#[test]
+fn the_files_tab_keys_stage_edit_and_discard_a_file() {
+    let (mut app, backend) = dirty_view();
+    put_cursor(&mut app, "main.rs");
+    press(&mut app, KeyCode::Char(' '));
+    settle_runs(&mut app, &backend, 1);
+    let first = backend.runs.lock().unwrap()[0].1.clone();
+    assert!(first.iter().any(|a| a == "add"), "{first:?}");
+    assert!(first.iter().any(|a| a == "src/main.rs"), "{first:?}");
+    press(&mut app, KeyCode::Char('e'));
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.text == "src/main.rs is not in the working tree")
+    );
+    press(&mut app, KeyCode::Char('d'));
+    let super::state::Mode::Menu(menu) = &app.gui.mode else {
+        panic!("d opens the discard menu");
+    };
+    assert_eq!(menu.title, "src/main.rs");
+    let labels: Vec<String> = menu.shown().iter().map(|i| i.label.clone()).collect();
+    assert_eq!(labels.len(), 2, "the discards alone: {labels:?}");
+}
+
+#[test]
+fn a_right_click_on_a_file_offers_edit_stage_and_stash() {
+    let (mut app, backend) = dirty_view();
+    screen(&mut app, 120, 30);
+    let list = app.gui.list_area;
+    let at = row_of(&app, "main.rs");
+    let row = list.y + u16::try_from(at).unwrap();
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::Down(MouseButton::Right), list.x + 1, row),
+    );
+    let super::state::Mode::Menu(menu) = &app.gui.mode else {
+        panic!("the right click opens the file menu");
+    };
+    let labels: Vec<String> = menu.shown().iter().map(|i| i.label.clone()).collect();
+    assert_eq!(labels[0], "Edit (not in the working tree)", "{labels:?}");
+    assert!(labels.iter().any(|l| l == "Stash\u{2026}"), "{labels:?}");
+    pick(&mut app, "Stash\u{2026}");
+    assert!(matches!(&app.gui.mode, super::state::Mode::Prompt(_)));
+    press(&mut app, KeyCode::Enter);
+    settle_runs(&mut app, &backend, 1);
+    let run = backend.runs.lock().unwrap()[0].1.clone();
+    assert!(run.iter().any(|a| a == "stash"), "{run:?}");
+    // A folder has no Edit.
+    let at = row_of(&app, "src/");
+    let row = list.y + u16::try_from(at).unwrap();
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::Down(MouseButton::Right), list.x + 1, row),
+    );
+    let super::state::Mode::Menu(menu) = &app.gui.mode else {
+        panic!("the right click opens the folder menu");
+    };
+    assert!(menu.shown().iter().all(|i| !i.label.starts_with("Edit")));
+}
+
+#[test]
+fn the_stash_tab_applies_pops_and_drops_a_stash() {
+    let (mut app, backend) = repo_app();
+    if let Some(details) = backend.details.lock().unwrap().as_mut() {
+        details.stashes = vec![crate::domain::details::StashEntry {
+            hash: "5ta5h".into(),
+            name: "stash@{0}".into(),
+            subject: "WIP on main: try".into(),
+        }];
+    }
+    open_view(&mut app);
+    press(&mut app, KeyCode::Char('4'));
+    put_cursor(&mut app, "WIP on main: try");
+    press(&mut app, KeyCode::Char(' '));
+    settle_runs(&mut app, &backend, 1);
+    press(&mut app, KeyCode::Char('P'));
+    settle_runs(&mut app, &backend, 2);
+    let runs: Vec<Vec<String>> = backend
+        .runs
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.1.clone())
+        .collect();
+    assert_eq!(runs[0], ["stash", "apply", "stash@{0}"]);
+    assert_eq!(runs[1], ["stash", "pop", "stash@{0}"]);
+    press(&mut app, KeyCode::Char('d'));
+    assert!(app.confirm.is_some(), "a drop asks first");
+    app.confirm = None;
+    screen(&mut app, 120, 30);
+    let list = app.gui.list_area;
+    let at = row_of(&app, "WIP on main: try");
+    let row = list.y + u16::try_from(at).unwrap();
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::Down(MouseButton::Right), list.x + 1, row),
+    );
+    assert!(
+        matches!(&app.gui.mode, super::state::Mode::Menu(m) if m.title == "stash@{0}"),
+        "the right click opens the stash menu"
+    );
+}
+
+#[test]
+fn o_checks_out_the_one_branch_of_a_graph_row_and_a_right_click_lists_the_ways() {
+    let (mut app, backend) = graph_app();
+    open_view(&mut app);
+    press(&mut app, KeyCode::Char('3'));
+    crate::app::tests::settle(&mut app, |app| {
+        app.repo_view.as_ref().is_some_and(|v| v.graph.is_some())
+    });
+    put_cursor(&mut app, "Work on the side");
+    press(&mut app, KeyCode::Char('o'));
+    settle_runs(&mut app, &backend, 1);
+    let run = backend.runs.lock().unwrap()[0].1.clone();
+    assert!(run.iter().any(|a| a == "side-branch"), "{run:?}");
+    screen(&mut app, 140, 34);
+    let list = app.gui.list_area;
+    let at = row_of(&app, "Tip of main");
+    let row = list.y + u16::try_from(at).unwrap() - u16::try_from(app.gui.list_top).unwrap();
+    keys::on_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::Down(MouseButton::Right), list.x + 1, row),
+    );
+    let super::state::Mode::Menu(menu) = &app.gui.mode else {
+        panic!("the right click opens the checkout menu");
+    };
+    assert_eq!(menu.title, "check out");
+    assert!(menu.shown().len() > 1, "main and the commit");
+}

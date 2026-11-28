@@ -118,6 +118,15 @@ ticket key of the branch, or of the last commit when the branch has none
 the last commit wrote its key: `[ABC-9] Fix` gives `[ABC-12] `, `ABC-9: Fix`
 gives `ABC-12: `.
 
+**Apply to repositories…** in the right-click menu of a commit (Commits,
+Graph and Reflog) takes that commit to other repositories: the view closes,
+a bar over the board names the commit, you mark and filter the cards it
+should go to, and **Apply** puts it on the branch each of them has checked
+out, with its message and author (`git am --3way`). Where it does not
+apply, the `am` is aborted and the repository stays as it was; a merge
+commit is not applied, and a repository in the middle of an `am` or a
+rebase is left alone. The output panel shows each result.
+
 A diff of more than 5000 lines is cut. The view reads the repository
 again when its card notices a change and on **Refresh**; **Close** or Esc
 returns to the board. The double click also marks and unmarks the card, so its
@@ -355,7 +364,9 @@ parents to go to, and Tab gives the keys to the right side, where Enter
 unfolds what the commit did to a file (Tab or Esc gives them back). The
 Graph tab draws the lanes with line characters; Enter on a folded run
 unfolds it, and on the line of hidden old remote branches shows them; `o`
-or a right click on a commit offers its checkouts.
+or a right click on a commit offers its checkouts. `a` on a commit starts
+applying it to other repositories; on the board Ctrl+S applies it to the
+marked ones and Esc cancels.
 `` ` `` switches the file lists between tree and flat. In the Files tab
 Space stages or unstages the file or folder, `d` offers the two discards,
 and a right click opens the same menu as in the window; `c` opens the

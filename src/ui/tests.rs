@@ -2437,3 +2437,86 @@ fn a_card_shows_its_pr_and_ci_chips_and_a_click_opens_the_page() {
     );
     assert!(h.state().marked.is_empty(), "a chip click does not mark");
 }
+
+fn view_open(h: &mut Harness<'static, App>) {
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.run();
+}
+
+fn button<'a>(h: &'a Harness<'static, App>, label: &'a str) -> egui_kittest::Node<'a> {
+    h.get_by_role_and_label(egui::accesskit::Role::Button, label)
+}
+
+#[test]
+fn the_commit_dialog_commits_with_ctrl_enter_and_says_when_the_message_is_empty() {
+    let mut h = repo_view_app();
+    view_open(&mut h);
+    h.state_mut().commit_dialog = Some(crate::app::CommitDialog {
+        text: "[mgit-1] ".into(),
+        ..Default::default()
+    });
+    h.run();
+    type_text(
+        &mut h,
+        "Add a subject that runs on well past the length a subject line should have",
+    );
+    assert!(
+        h.state()
+            .commit_dialog
+            .as_ref()
+            .unwrap()
+            .text
+            .ends_with("should have")
+    );
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    h.run();
+    settle(&mut h, |a| a.commit_dialog.is_none());
+
+    // Empty, the Commit button says what is missing; Cancel closes.
+    h.state_mut().commit_dialog = Some(crate::app::CommitDialog::default());
+    h.run();
+    button(&h, "Commit").click();
+    h.run();
+    h.get_by_label("Write a message first.");
+    button(&h, "Cancel").click();
+    h.run();
+    assert!(h.state().commit_dialog.is_none());
+
+    // Esc closes it too.
+    h.state_mut().commit_dialog = Some(crate::app::CommitDialog::default());
+    h.run();
+    h.key_press(Key::Escape);
+    h.run();
+    assert!(h.state().commit_dialog.is_none());
+}
+
+#[test]
+fn the_stash_prompt_stashes_with_its_message_or_closes() {
+    let mut h = repo_view_app();
+    view_open(&mut h);
+    h.state_mut().start_stash("src/main.rs");
+    h.run();
+    h.get_by_label_contains("Stash the changes of src/main.rs");
+    type_text(&mut h, " wip");
+    assert_eq!(
+        h.state().stash_prompt.as_ref().unwrap().message,
+        "src/main.rs wip"
+    );
+    // Enter in the field stashes; the view has a Stash tab of that name.
+    h.key_press(Key::Enter);
+    h.run();
+    assert!(h.state().stash_prompt.is_none());
+
+    h.state_mut().start_stash("src/main.rs");
+    h.run();
+    button(&h, "Cancel").click();
+    h.run();
+    assert!(h.state().stash_prompt.is_none());
+
+    h.state_mut().start_stash("src/main.rs");
+    h.run();
+    h.key_press(Key::Escape);
+    h.run();
+    assert!(h.state().stash_prompt.is_none());
+}

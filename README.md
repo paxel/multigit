@@ -99,7 +99,11 @@ view of that repository over the board. It has three tabs, and
 box whose first line is the subject, drawn stronger, with what goes past 72
 characters marked; a body written straight under it gets the empty line in
 between when it is committed. Ctrl+Enter, **Commit** or Enter three times
-at the end of the text commits, Esc cancels.
+at the end of the text commits, Esc cancels. The box starts with the
+ticket key of the branch, or of the last commit when the branch has none
+(letters and digits, a dash and a number, like `ABC-12`), written the way
+the last commit wrote its key: `[ABC-9] Fix` gives `[ABC-12] `, `ABC-9: Fix`
+gives `ABC-12: `.
 
 A diff of more than 5000 lines is cut. The view reads the repository
 again when its card notices a change and on **Refresh**; **Close** or Esc

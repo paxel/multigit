@@ -67,7 +67,7 @@ greyed out, and comes back by itself when the folder returns.
 ## Looking into a repository
 
 A double click on a card, or **Open** in its right-click menu, opens a
-view of that repository over the board. It has three tabs, and
+view of that repository over the board. It has four tabs, and
 **Back** and **Forward** step through what was looked at:
 
 - **Files**, where the view opens when the repository has changes: the
@@ -80,6 +80,8 @@ view of that repository over the board. It has three tabs, and
   before a file or folder stages it, or unstages it when all of it is
   staged; a right click on it offers **Stage**, **Unstage**, **Discard all
   changes** and **Discard unstaged changes**, and a discard asks first.
+  **Stash…** there stashes the file or folder, new files too, under a
+  message that may stay empty.
 - **Commits**, where it opens when the repository is clean: the history of
   the current branch, a row for each commit with the author's initials, the
   short hash, the tags on it, the title and the age. It reads on when scrolled to its end. A
@@ -94,6 +96,8 @@ view of that repository over the board. It has three tabs, and
   commits between them are one row that unfolds on a click. Remote branches
   that nobody has locally and that had no commit for 90 days are left out
   behind a line that shows them. A click on a commit shows it as in Commits.
+- **Stash**: the stashes, newest first; a click shows one as a commit, and
+  a right click applies, pops or drops it (a drop asks first).
 
 **Commit** over the Files tab commits what is staged. The message is one
 box whose first line is the subject, drawn stronger, with what goes past 72
@@ -332,8 +336,8 @@ over SSH. Terminals that do not support it copy nothing; in tmux it takes
 `set-clipboard on`.
 
 The repository view fills the terminal: the list on the left, what is
-picked in it on the right. `1`, `2` and `3` pick the tabs Files, Commits and
-Graph, `[` and `]` are Back and Forward, `j`/`k` and Enter (or a click) move
+picked in it on the right. `1` to `4` pick the tabs Files, Commits,
+Graph and Stash, `[` and `]` are Back and Forward, `j`/`k` and Enter (or a click) move
 and pick, `J`/`K` and PgDn/PgUp scroll the right side, `r` reads the
 repository again, `y` copies all of the right side, and Esc or `q` closes
 it. In the Commits tab the history reads on at its end; for a picked commit
@@ -345,7 +349,8 @@ unfolds it, and on the line of hidden old remote branches shows them.
 `` ` `` switches the file lists between tree and flat. In the Files tab
 Space stages or unstages the file or folder, `d` offers the two discards,
 and a right click opens the same menu as in the window; `c` opens the
-commit box, where Ctrl+S (or Enter three times at the end) commits. To copy a part, mark it with the terminal's own selection (Shift and drag
+commit box, where Ctrl+S (or Enter three times at the end) commits. In the
+Stash tab Space applies the picked stash, `P` pops it and `d` drops it. To copy a part, mark it with the terminal's own selection (Shift and drag
 where the terminal leaves the mouse to multigit).
 
 `+` asks for the folder instead of a folder dialog: `~` is the home folder,

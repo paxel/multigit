@@ -148,10 +148,11 @@ impl<T: Tools> ChipReader<T> {
             &repo,
             "--branch",
             &query.branch,
+            // Enough for every workflow of the newest commit.
             "--limit",
-            "1",
+            "20",
             "--json",
-            "status,conclusion,url,workflowName",
+            "status,conclusion,url,workflowName,headSha",
         ]);
         [
             self.chip("PR", "gh", &pr, "no pull requests found", github_pr),

@@ -2200,8 +2200,10 @@ impl<G: Default> App<G> {
                 self.vocab.options.insert(command, options);
             }
             Event::Details { repo, result } => self.repo_view_loaded(&repo, result),
-            Event::Chips { repo, chips } => {
-                if let Some(card) = self.card_mut(&repo) {
+            Event::Chips { repo, query, chips } => {
+                if let Some(card) = self.card_mut(&repo)
+                    && card.chips_for.as_ref() == Some(&query)
+                {
                     card.chips = chips;
                 }
             }

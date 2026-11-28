@@ -211,8 +211,9 @@ emoji. A repository can be in several.
   as they are. The filter works together with the favorite and the filter
   field.
 - **PR and CI chips**: a card whose branch tracks a repository on GitHub or
-  GitLab shows the pull request (merge request) of that branch and the
-  branch's last CI run: green when it is fine, orange while checks run or a
+  GitLab shows the pull request (merge request) of that branch and its CI
+  (on GitHub all workflows of the newest commit, the worst counts): green
+  when it is fine, orange while checks run or a
   review is open, red when something failed. A click opens the page. They
   are read through `gh` or `glab`, as you have them installed and logged in
   (multigit keeps no token): every 5 minutes, after a push, after a fetch

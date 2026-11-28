@@ -127,6 +127,9 @@ pub enum Event {
     /// The chips of a card were read.
     Chips {
         repo: PathBuf,
+        /// What they were read for: an answer for a branch the card is no
+        /// longer on is dropped.
+        query: ChipQuery,
         chips: Vec<ServiceChip>,
     },
     /// A diff for the repository view was read.
@@ -210,6 +213,8 @@ pub struct Engine {
     commands: Arc<Semaphore>,
     background: Arc<Semaphore>,
     slots: HashMap<PathBuf, Arc<Slot>>,
+    /// The queue of the one thread that reads chips, made on first use.
+    chips: Mutex<Option<Sender<(PathBuf, ChipQuery)>>>,
 }
 
 impl Engine {
@@ -228,6 +233,7 @@ impl Engine {
             commands: Arc::new(Semaphore::new(concurrency)),
             background: Arc::new(Semaphore::new(concurrency)),
             slots: HashMap::new(),
+            chips: Mutex::new(None),
         };
         (engine, rx)
     }
@@ -389,19 +395,31 @@ impl Engine {
         });
     }
 
-    /// Read the chips of these cards one after the other, so the code
-    /// hosts get one question at a time (sends [`Event::Chips`] for each).
+    /// Read the chips of these cards. One thread reads all chips, one card
+    /// after the other, so the code hosts get one question at a time
+    /// (sends [`Event::Chips`] for each).
     pub fn load_chips(&self, cards: Vec<(PathBuf, ChipQuery)>) {
-        if cards.is_empty() {
-            return;
+        let mut queue = self.chips.lock().unwrap_or_else(|p| p.into_inner());
+        for card in cards {
+            let card = match queue.as_ref() {
+                Some(tx) => match tx.send(card) {
+                    Ok(()) => continue,
+                    Err(e) => e.0,
+                },
+                None => card,
+            };
+            let (tx, rx) = channel::<(PathBuf, ChipQuery)>();
+            let shared = self.shared.clone();
+            thread::spawn(move || {
+                for (repo, query) in rx {
+                    let chips = shared.backend.chips(&query);
+                    shared.send(Event::Chips { repo, query, chips });
+                }
+            });
+            // A fresh queue takes a send; it fails only when the thread is gone.
+            let _ = tx.send(card);
+            *queue = Some(tx);
         }
-        let shared = self.shared.clone();
-        thread::spawn(move || {
-            for (repo, query) in cards {
-                let chips = shared.backend.chips(&query);
-                shared.send(Event::Chips { repo, chips });
-            }
-        });
     }
 
     /// Read a diff for the repository view (sends [`Event::Diff`]).

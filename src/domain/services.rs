@@ -212,30 +212,47 @@ fn hint(what: &str, light: Light, why: &[&str]) -> String {
     format!("{what}: {}. Click to open it.", why.join(", "))
 }
 
-/// The chip of the output of `gh run list --limit 1 --json
-/// status,conclusion,url,workflowName`; `None` when the branch has no run.
+/// The light of one GitHub Actions run and how it ended.
+fn github_run_light(run: &Value) -> (Light, String) {
+    if text(run, "status") != "completed" {
+        return (Light::Orange, "running".to_owned());
+    }
+    let conclusion = text(run, "conclusion");
+    let light = match conclusion {
+        "success" | "neutral" | "skipped" => Light::Green,
+        "cancelled" | "" => Light::Orange,
+        _ => Light::Red,
+    };
+    (light, conclusion.replace('_', " "))
+}
+
+/// The chip of the output of `gh run list --json
+/// status,conclusion,url,workflowName,headSha`, newest first: all runs of
+/// the newest commit together (one per workflow), the worst of them
+/// decides and is what a click opens. `None` when the branch has no run.
 pub fn github_run(json: &str) -> Result<Option<ServiceChip>, String> {
     let runs: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    let Some(run) = runs.as_array().and_then(|r| r.first()) else {
+    let runs = runs.as_array().map_or(&[][..], Vec::as_slice);
+    let Some(newest) = runs.first() else {
         return Ok(None);
     };
-    let (light, state) = if text(run, "status") != "completed" {
-        (Light::Orange, "running".to_owned())
-    } else {
-        let conclusion = text(run, "conclusion");
-        let light = match conclusion {
-            "success" | "neutral" | "skipped" => Light::Green,
-            "cancelled" | "" => Light::Orange,
-            _ => Light::Red,
-        };
-        (light, conclusion.replace('_', " "))
-    };
-    let workflow = text(run, "workflowName");
+    let sha = text(newest, "headSha");
+    let mut light = Light::Grey;
+    let mut url = None;
+    let mut states = Vec::new();
+    for run in runs.iter().filter(|r| text(r, "headSha") == sha) {
+        let (this, state) = github_run_light(run);
+        if url.is_none() || worse(light, this) != light {
+            url = Some(text(run, "url").to_owned()).filter(|u| !u.is_empty());
+        }
+        light = worse(light, this);
+        states.push(format!("{} {state}", text(run, "workflowName")));
+    }
     Ok(Some(ServiceChip {
         text: "CI".to_owned(),
         light,
-        url: Some(text(run, "url").to_owned()).filter(|u| !u.is_empty()),
-        hint: format!("Last run of {workflow}: {state}. Click to open it."),
+        url,
+        hint: format!("Last runs: {}. Click to open the worst.", states.join(", ")),
     }))
 }
 
@@ -362,18 +379,31 @@ mod tests {
     fn a_github_run_tells_its_conclusion() {
         let run = |status: &str, conclusion: &str| {
             format!(
-                r#"[{{"status":"{status}","conclusion":"{conclusion}","url":"https://github.com/o/r/actions/runs/1","workflowName":"CI"}}]"#
+                r#"[{{"status":"{status}","conclusion":"{conclusion}","url":"https://github.com/o/r/actions/runs/1","workflowName":"CI","headSha":"a"}}]"#
             )
         };
         let chip = github_run(&run("completed", "success")).unwrap().unwrap();
         assert_eq!((chip.text.as_str(), chip.light), ("CI", Light::Green));
-        assert_eq!(chip.hint, "Last run of CI: success. Click to open it.");
+        assert_eq!(chip.hint, "Last runs: CI success. Click to open the worst.");
         let light = |s, c| github_run(&run(s, c)).unwrap().unwrap().light;
         assert_eq!(light("in_progress", ""), Light::Orange);
         assert_eq!(light("completed", "failure"), Light::Red);
         assert_eq!(light("completed", "timed_out"), Light::Red);
         assert_eq!(light("completed", "cancelled"), Light::Orange);
         assert_eq!(github_run("[]"), Ok(None));
+        // Every workflow of the newest commit counts; older commits do not.
+        let several = r#"[
+            {"status":"completed","conclusion":"success","url":"q","workflowName":"CodeQL","headSha":"b"},
+            {"status":"completed","conclusion":"failure","url":"c","workflowName":"CI","headSha":"b"},
+            {"status":"completed","conclusion":"failure","url":"old","workflowName":"CI","headSha":"a"}
+        ]"#;
+        let chip = github_run(several).unwrap().unwrap();
+        assert_eq!(chip.light, Light::Red);
+        assert_eq!(chip.url.as_deref(), Some("c"));
+        assert_eq!(
+            chip.hint,
+            "Last runs: CodeQL success, CI failure. Click to open the worst."
+        );
     }
 
     #[test]

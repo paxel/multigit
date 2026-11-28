@@ -98,6 +98,11 @@ view of that repository over the board. It has five tabs, and
   commits between them are one row that unfolds on a click. Remote branches
   that nobody has locally and that had no commit for 90 days are left out
   behind a line that shows them. A click on a commit shows it as in Commits.
+  A right click checks out a branch on it (a remote one as the local branch
+  of its name, made to track it when there is none) or the commit itself,
+  on no branch; the heading then says `detached at` and the commit. When
+  local changes stop a checkout, multigit offers to stash them, new files
+  too, and check out.
 - **Stash**: the stashes, newest first; a click shows one as a commit, and
   a right click applies, pops or drops it (a drop asks first).
 - **Reflog**: the last 200 places `HEAD` was, newest first, with what
@@ -349,7 +354,8 @@ it. In the Commits tab the history reads on at its end; for a picked commit
 parents to go to, and Tab gives the keys to the right side, where Enter
 unfolds what the commit did to a file (Tab or Esc gives them back). The
 Graph tab draws the lanes with line characters; Enter on a folded run
-unfolds it, and on the line of hidden old remote branches shows them.
+unfolds it, and on the line of hidden old remote branches shows them; `o`
+or a right click on a commit offers its checkouts.
 `` ` `` switches the file lists between tree and flat. In the Files tab
 Space stages or unstages the file or folder, `d` offers the two discards,
 and a right click opens the same menu as in the window; `c` opens the

@@ -1490,9 +1490,42 @@ impl<G: Default> App<G> {
 
     /// A filter button: show only the cards that fit it, as they fit it
     /// now and later; `All` shows all. Like radio buttons, the same one
-    /// again changes nothing.
+    /// again changes nothing. Dirty, behind and ahead mark the cards they
+    /// show and unmark the ones they hide; all leaves the marks alone.
     pub fn filter_by(&mut self, by: MarkBy) {
+        if self.filtered_by() == by {
+            return;
+        }
         self.status_filter = (by != MarkBy::All).then_some(by);
+        if by != MarkBy::All {
+            let hidden: BTreeSet<PathBuf> = self
+                .cards
+                .iter()
+                .filter(|c| !by.fits(c))
+                .map(|c| c.path.clone())
+                .collect();
+            self.marked.retain(|p| !hidden.contains(p));
+            self.mark_where(|_| true);
+        }
+    }
+
+    /// A card's status changed under a dirty, behind or ahead filter: one
+    /// that came onto the board is marked, one that left it is unmarked.
+    fn follow_filter(&mut self, repo: &Path, fitted: bool) {
+        let Some(by) = self.status_filter else {
+            return;
+        };
+        let Some(card) = self.cards.iter().find(|c| c.path == repo) else {
+            return;
+        };
+        let fits = by.fits(card);
+        let shown = self.shows(card);
+        let source = self.apply.as_ref().is_some_and(|a| a.source == repo);
+        if fits && !fitted && shown && !source {
+            self.marked.insert(repo.to_path_buf());
+        } else if fitted && !fits {
+            self.marked.remove(repo);
+        }
     }
 
     /// The filter button that is pressed: `All` when nothing filters.
@@ -1993,6 +2026,12 @@ impl<G: Default> App<G> {
             } => {
                 let mut changed = false;
                 let mut sounds = Vec::new();
+                let filter = self.status_filter;
+                let fitted = self
+                    .cards
+                    .iter()
+                    .find(|c| c.path == repo)
+                    .is_some_and(|c| filter.is_some_and(|by| by.fits(c)));
                 if let Some(card) = self.card_mut(&repo) {
                     let new = Some(*result);
                     // The first probe of a card is no change.
@@ -2005,6 +2044,7 @@ impl<G: Default> App<G> {
                     }
                     card.probe = new;
                 }
+                self.follow_filter(&repo, fitted);
                 self.sound_news(&sounds, Instant::now());
                 if changed {
                     self.wake_kawaii();
@@ -2729,6 +2769,57 @@ pub(crate) mod tests {
         app.filter_by(MarkBy::All);
         assert_eq!(app.status_filter, None);
         assert_eq!(shown(&app).len(), 3);
+    }
+
+    #[test]
+    fn a_status_filter_marks_what_it_shows_now_and_later() {
+        let mut app = app_with(Arc::default(), None);
+        let dirty = Counts {
+            modified: 1,
+            ..Counts::default()
+        };
+        for (name, counts) in [
+            ("a", dirty),
+            ("b", Counts::default()),
+            ("c", Counts::default()),
+        ] {
+            let mut card = Card::new(PathBuf::from(format!("/{name}")));
+            card.probe = Some(Ok(snapshot(counts, Upstream::None, &[])));
+            app.cards.push(card);
+        }
+        let probed = |repo: &str, counts| Event::Probed {
+            repo: repo.into(),
+            result: Box::new(Ok(snapshot(counts, Upstream::None, &[]))),
+            cause: ProbeCause::Poll,
+        };
+        let marked = |app: &App| -> Vec<String> {
+            app.marked.iter().map(|p| p.display().to_string()).collect()
+        };
+        // A hidden card loses its mark, the shown ones get one.
+        app.marked.insert("/c".into());
+        app.filter_by(MarkBy::Dirty);
+        assert_eq!(marked(&app), ["/a"]);
+        // Unmarked by hand, it stays unmarked while it stays dirty.
+        app.toggle_mark("/a".into());
+        app.handle_event(probed("/a", dirty));
+        assert!(marked(&app).is_empty());
+        // A card that turns dirty comes and is marked; one that is clean
+        // again leaves and loses its mark.
+        app.handle_event(probed("/b", dirty));
+        assert_eq!(marked(&app), ["/b"]);
+        app.handle_event(probed("/b", Counts::default()));
+        assert!(marked(&app).is_empty());
+        // One the name filter hides is not marked when it fits.
+        app.filter = "zzz".into();
+        app.handle_event(probed("/c", dirty));
+        assert!(marked(&app).is_empty());
+        app.filter.clear();
+        // All marks nothing and leaves the marks as they are.
+        app.marked.insert("/a".into());
+        app.filter_by(MarkBy::All);
+        assert_eq!(marked(&app), ["/a"]);
+        app.handle_event(probed("/b", dirty));
+        assert_eq!(marked(&app), ["/a"]);
     }
 
     #[test]

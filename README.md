@@ -205,9 +205,11 @@ emoji. A repository can be in several.
 - **Filtering**: the **Filter** buttons all, dirty, behind and ahead work
   like the station buttons of a radio: the clicked one stays pressed, and
   the board shows only the cards that fit it, as their status changes.
-  Each button says how many cards it would show. The filter works together
-  with the favorite and the filter field, and a card it hides keeps its mark
-  and is left alone like one the filter field hides.
+  Each button says how many cards it would show. Dirty, behind and ahead
+  mark the cards they show and unmark the ones they hide; a card that comes
+  later is marked, one that leaves loses its mark. **all** leaves the marks
+  as they are. The filter works together with the favorite and the filter
+  field.
 - **Copying**: a click on a card's folder name, branch name (or the sha of a
   detached HEAD) or tag copies it to the clipboard instead of marking the
   card; a click on the path line copies the repository's full path, and a

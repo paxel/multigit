@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The fold triangles of the repository view in the window have three equal sides instead of a stretched shape ([mgit-1025](https://github.com/paxel/multigit/issues/100)).
 - The toolbar has a Mark group and a Filter group: a mark button marks the shown cards that fit and no longer stays pressed or turns round on a second click, a right click (Alt with the key in the terminal) marks the others; the filter buttons all, dirty, behind and ahead work like radio buttons and each shows how many cards it would show ([mgit-1035](https://github.com/paxel/multigit/issues/110)).
+- The dirty, behind and ahead filters mark the cards they show and unmark the ones they hide; a card that comes onto the board later is marked, one that leaves loses its mark ([mgit-1036](https://github.com/paxel/multigit/issues/111)).
 
 ---
 

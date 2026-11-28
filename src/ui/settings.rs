@@ -164,6 +164,20 @@ fn settings_page(app: &mut App, ui: &mut Ui) {
             )
             .on_hover_text("Edits a file of the repository view; {file} stands for it, else it goes at the end");
             ui.end_row();
+            ui.label("PR and CI chips every");
+            ui.add(
+                DragValue::new(&mut config.chips_interval_secs)
+                    .range(60..=86_400)
+                    .suffix(" s"),
+            )
+            .on_hover_text("Also after a push, a fetch with news, and Refresh in the repository view");
+            ui.end_row();
+            ui.label("Chips for");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut config.chips_github, "GitHub (gh)");
+                ui.checkbox(&mut config.chips_gitlab, "GitLab (glab)");
+            });
+            ui.end_row();
             ui.label("Theme");
             ui.horizontal(|ui| {
                 for theme in Theme::ALL {

@@ -14,6 +14,7 @@ use crate::domain::details::{Details, DiffTarget, LOG_PAGE, LogEntry};
 use crate::domain::graph::GraphData;
 use crate::domain::output::{ProcessOutput, SectionState};
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
+use crate::domain::services::{ChipQuery, ServiceChip};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -58,6 +59,12 @@ pub trait Backend: Send + Sync + 'static {
     fn apply_commit(&self, dir: &Path, source: &Path, hash: &str) -> io::Result<ProcessOutput> {
         let _ = (dir, source, hash);
         Err(io::Error::other("applying commits is not supported here"))
+    }
+    /// The chips of a card: its PR and last CI run, through `gh` or
+    /// `glab`. Slow; never on the UI thread.
+    fn chips(&self, query: &ChipQuery) -> Vec<ServiceChip> {
+        let _ = query;
+        Vec::new()
     }
 }
 
@@ -116,6 +123,11 @@ pub enum Event {
     Graph {
         repo: PathBuf,
         result: Result<GraphData, String>,
+    },
+    /// The chips of a card were read.
+    Chips {
+        repo: PathBuf,
+        chips: Vec<ServiceChip>,
     },
     /// A diff for the repository view was read.
     Diff {
@@ -374,6 +386,21 @@ impl Engine {
         thread::spawn(move || {
             let result = shared.backend.graph(&repo, with_old);
             shared.send(Event::Graph { repo, result });
+        });
+    }
+
+    /// Read the chips of these cards one after the other, so the code
+    /// hosts get one question at a time (sends [`Event::Chips`] for each).
+    pub fn load_chips(&self, cards: Vec<(PathBuf, ChipQuery)>) {
+        if cards.is_empty() {
+            return;
+        }
+        let shared = self.shared.clone();
+        thread::spawn(move || {
+            for (repo, query) in cards {
+                let chips = shared.backend.chips(&query);
+                shared.send(Event::Chips { repo, chips });
+            }
         });
     }
 

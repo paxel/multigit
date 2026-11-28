@@ -488,11 +488,26 @@ pub fn detail_lines(app: &App, card: &Card) -> Vec<Line<'static>> {
     if let Some(push) = snap.push_remote() {
         remote.push(Span::styled(format!("  push: {}", push.name), warn()));
     }
+    for chip in &card.chips {
+        remote.push(Span::raw("  "));
+        remote.push(Span::styled(chip.text.clone(), light_style(chip.light)));
+    }
     lines.push(Line::from(remote));
     if let Some(error) = &card.fetch_error {
         lines.push(Line::styled(error.card_text(), bad()));
     }
     lines
+}
+
+/// The color of a PR or CI chip's light.
+fn light_style(light: crate::domain::services::Light) -> Style {
+    use crate::domain::services::Light;
+    match light {
+        Light::Green => Style::new().fg(Color::Green),
+        Light::Orange => warn(),
+        Light::Red => bad(),
+        Light::Grey => dim(),
+    }
 }
 
 fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {

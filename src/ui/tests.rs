@@ -39,6 +39,8 @@ fn marked_app(backend: Arc<FakeBackend>, history: &[&str]) -> App {
         probe: None,
         fetch_error: None,
         last_command: None,
+        chips: Vec::new(),
+        chips_for: None,
     };
     card.probe = Some(Ok(snapshot(
         Counts::default(),
@@ -201,6 +203,8 @@ fn bulk_destructive_shows_confirm_dialog() {
         probe: None,
         fetch_error: None,
         last_command: None,
+        chips: Vec::new(),
+        chips_for: None,
     });
     app.marked.insert(PathBuf::from("/other"));
     let mut h = harness(app);
@@ -1916,6 +1920,8 @@ fn card(path: &str) -> Card {
         probe: Some(Ok(snapshot(Counts::default(), Upstream::None, &["main"]))),
         fetch_error: None,
         last_command: None,
+        chips: Vec::new(),
+        chips_for: None,
     }
 }
 
@@ -2394,4 +2400,39 @@ fn a_discard_from_the_files_menu_asks_over_the_repository_view() {
     h.run();
     assert!(h.state().confirm.is_none());
     assert!(h.state().repo_view.is_some());
+}
+
+#[test]
+fn a_card_shows_its_pr_and_ci_chips_and_a_click_opens_the_page() {
+    use crate::domain::services::{Light, ServiceChip};
+    let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
+    let mut app = crate::ui::app::tests::app_on(Arc::default(), desktop.clone(), None);
+    let mut repo = card("/r/alpha");
+    repo.chips = vec![
+        ServiceChip {
+            text: "PR #12".into(),
+            light: Light::Orange,
+            url: Some("https://github.com/o/r/pull/12".into()),
+            hint: "Pull request #12: a review is required. Click to open it.".into(),
+        },
+        ServiceChip {
+            text: "gh missing".into(),
+            light: Light::Grey,
+            url: None,
+            hint: String::new(),
+        },
+    ];
+    app.cards = vec![repo];
+    let mut h = harness(app);
+    h.run();
+    h.get_by_label("gh missing").click();
+    h.run();
+    assert!(desktop.urls.lock().unwrap().is_empty(), "no page to open");
+    h.get_by_label("PR #12").click();
+    h.run();
+    assert_eq!(
+        desktop.urls.lock().unwrap().clone(),
+        ["https://github.com/o/r/pull/12"]
+    );
+    assert!(h.state().marked.is_empty(), "a chip click does not mark");
 }

@@ -5,9 +5,11 @@ use crate::domain::details::{Details, DiffTarget, LOG_PAGE, LogEntry};
 use crate::domain::graph::GraphData;
 use crate::domain::output::ProcessOutput;
 use crate::domain::repo::{ProbeError, Snapshot};
+use crate::domain::services::{ChipQuery, ServiceChip};
 use crate::infrastructure::details;
 use crate::infrastructure::git::GitRunner;
 use crate::infrastructure::probe::{self, Probed};
+use crate::infrastructure::services::{ChipReader, SystemTools};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -30,6 +32,7 @@ struct Remembered {
 pub struct GitBackend {
     runner: GitRunner,
     remembered: Mutex<HashMap<PathBuf, Remembered>>,
+    chips: ChipReader<SystemTools>,
 }
 
 impl GitBackend {
@@ -37,6 +40,7 @@ impl GitBackend {
         Self {
             runner,
             remembered: Mutex::default(),
+            chips: ChipReader::default(),
         }
     }
 
@@ -142,6 +146,10 @@ impl Backend for GitBackend {
 
     fn apply_commit(&self, dir: &Path, source: &Path, hash: &str) -> io::Result<ProcessOutput> {
         crate::infrastructure::apply::apply_commit(&self.runner, dir, source, hash)
+    }
+
+    fn chips(&self, query: &ChipQuery) -> Vec<ServiceChip> {
+        self.chips.read(query)
     }
 }
 

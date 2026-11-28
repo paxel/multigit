@@ -28,6 +28,9 @@ pub enum Row {
     Theme,
     SingleMatch,
     Editor,
+    ChipsInterval,
+    ChipsGitHub,
+    ChipsGitLab,
     Button(usize),
     AddButton,
     AddPreset,
@@ -57,6 +60,9 @@ pub fn rows(app: &App) -> Vec<Row> {
                 Row::Theme,
                 Row::SingleMatch,
                 Row::Editor,
+                Row::ChipsInterval,
+                Row::ChipsGitHub,
+                Row::ChipsGitLab,
                 Row::Heading("Card buttons".to_owned()),
             ];
             rows.extend((0..app.config.buttons.len()).map(Row::Button));
@@ -129,6 +135,18 @@ pub fn line(app: &App, row: &Row) -> Line<'static> {
             format!("{} s", config.fetch_interval_secs),
         ),
         Row::Concurrency => value("Parallel git processes", config.concurrency.to_string()),
+        Row::ChipsInterval => value(
+            "PR and CI chips every",
+            format!("{} s", config.chips_interval_secs),
+        ),
+        Row::ChipsGitHub => {
+            let mark = if config.chips_github { "[x]" } else { "[ ]" };
+            Line::raw(format!("{mark} Chips for GitHub (gh)"))
+        }
+        Row::ChipsGitLab => {
+            let mark = if config.chips_gitlab { "[x]" } else { "[ ]" };
+            Line::raw(format!("{mark} Chips for GitLab (glab)"))
+        }
         Row::ScanDepth => value("Folder scan depth", config.scan_depth.to_string()),
         Row::Theme => value("Theme", config.theme.label().to_owned()),
         Row::SingleMatch => {
@@ -192,6 +210,16 @@ fn step(app: &mut App, row: &Row, up: bool) {
             };
         }
         Row::Concurrency => config.concurrency = by(config.concurrency, 1, 32),
+        Row::ChipsInterval => {
+            let value = config.chips_interval_secs;
+            config.chips_interval_secs = if up {
+                value.saturating_add(60).min(86_400)
+            } else {
+                value.saturating_sub(60).max(60)
+            };
+        }
+        Row::ChipsGitHub => config.chips_github = !config.chips_github,
+        Row::ChipsGitLab => config.chips_gitlab = !config.chips_gitlab,
         Row::ScanDepth => config.scan_depth = by(config.scan_depth, 1, 10),
         Row::Theme => {
             let at = Theme::ALL
@@ -230,7 +258,7 @@ fn step(app: &mut App, row: &Row, up: bool) {
 /// Enter on a row.
 fn enter(app: &mut App, row: &Row) {
     match row {
-        Row::SingleMatch | Row::Theme => step(app, row, true),
+        Row::SingleMatch | Row::Theme | Row::ChipsGitHub | Row::ChipsGitLab => step(app, row, true),
         Row::Editor => {
             app.gui.mode = Mode::Prompt(Prompt {
                 title: "editor command ({file} stands for the file; empty: $EDITOR)".to_owned(),

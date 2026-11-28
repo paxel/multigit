@@ -84,6 +84,27 @@ pub fn short_url(url: &str) -> String {
     }
 }
 
+/// The host and the path of a remote's URL, as a code host names a
+/// repository: `git@github.com:paxel/multigit.git` gives `github.com` and
+/// `paxel/multigit`. The port of an `ssh://` address is left out; `None`
+/// for a folder.
+pub fn host_and_path(url: &str) -> Option<(String, String)> {
+    let (host, path) = match parts(url) {
+        Some(("file", ..)) => return None,
+        Some((scheme, _, host, path)) => {
+            let host = if scheme == "ssh" {
+                host.split_once(':').map_or(host, |(name, _)| name)
+            } else {
+                host
+            };
+            (host, path)
+        }
+        None => scp_like(url)?,
+    };
+    let path = trimmed(path.trim_start_matches('/'));
+    (!host.is_empty() && !path.is_empty()).then(|| (host.to_owned(), path.to_owned()))
+}
+
 /// The URL without a password or token in it, for showing it whole.
 pub fn safe_url(url: &str) -> String {
     match parts(url) {
@@ -97,6 +118,23 @@ pub fn safe_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_code_host_and_its_repository_come_out_of_any_url() {
+        let both = |url: &str| host_and_path(url);
+        let github = Some(("github.com".to_owned(), "paxel/multigit".to_owned()));
+        assert_eq!(both("git@github.com:paxel/multigit.git"), github);
+        assert_eq!(both("https://github.com/paxel/multigit.git"), github);
+        assert_eq!(both("https://me:token@github.com/paxel/multigit/"), github);
+        assert_eq!(both("ssh://git@github.com:22/paxel/multigit"), github);
+        assert_eq!(
+            both("https://git.example.org/group/sub/project.git"),
+            Some(("git.example.org".to_owned(), "group/sub/project".to_owned()))
+        );
+        assert_eq!(both("/srv/git/project.git"), None);
+        assert_eq!(both("file:///srv/git/project.git"), None);
+        assert_eq!(both("C:\\repos\\x"), None);
+    }
 
     fn remote(name: &str, url: &str) -> Remote {
         Remote {

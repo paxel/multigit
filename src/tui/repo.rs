@@ -444,7 +444,7 @@ fn list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('5') => app.switch_repo_tab(RepoTab::Reflog),
         KeyCode::Char('[') | KeyCode::Backspace => app.repo_view_back(),
         KeyCode::Char(']') => app.repo_view_forward(),
-        KeyCode::Char('r') => app.refresh_repo_view(),
+        KeyCode::Char('r') => app.refresh_repo_view_and_chips(),
         KeyCode::Char('`') => app.toggle_file_tree(),
         KeyCode::Char('?') => app.gui.help = true,
         KeyCode::Tab => {

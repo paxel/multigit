@@ -9,6 +9,7 @@ pub mod git;
 pub mod launcher;
 pub mod probe;
 pub mod scan;
+pub mod services;
 pub mod store;
 #[cfg(test)]
 pub mod testutil;

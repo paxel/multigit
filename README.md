@@ -210,6 +210,16 @@ emoji. A repository can be in several.
   later is marked, one that leaves loses its mark. **all** leaves the marks
   as they are. The filter works together with the favorite and the filter
   field.
+- **PR and CI chips**: a card whose branch tracks a repository on GitHub or
+  GitLab shows the pull request (merge request) of that branch and the
+  branch's last CI run: green when it is fine, orange while checks run or a
+  review is open, red when something failed. A click opens the page. They
+  are read through `gh` or `glab`, as you have them installed and logged in
+  (multigit keeps no token): every 5 minutes, after a push, after a fetch
+  that brings news, and on **Refresh** in the repository view. A company
+  server counts when the tool is logged into it. On github.com or gitlab.com
+  a grey chip says when the tool is missing or not logged in; Settings
+  switches the chips off per service.
 - **Copying**: a click on a card's folder name, branch name (or the sha of a
   detached HEAD) or tag copies it to the clipboard instead of marking the
   card; a click on the path line copies the repository's full path, and a
@@ -307,7 +317,8 @@ console.
 The board is a table with one row per repository: its name, branch, tag,
 working tree, unpushed (`↑`) and unpulled (`↓`) commits and the last
 command's result. A `!` before the name is a failed fetch. Under the table
-the selected row shows everything its card shows in the window. Statuses
+the selected row shows everything its card shows in the window, the PR and
+CI chips after the remote; the row's menu (`x`) copies their links. Statuses
 refresh and fetches run as in the window. No sounds and no music play in
 the terminal.
 
@@ -422,7 +433,8 @@ In the terminal multigit writes no menu entry and no icon. With `RUST_LOG` set, 
 
 **Settings** in the toolbar changes the fetch interval, the number of parallel
 git processes, the folder scan depth, the terminal command, the editor
-command, the theme (System,
+command, how often the PR and CI chips are read and for which services,
+the theme (System,
 Light, Dark or Kawaii), Tab's
 single-match behaviour, and the card buttons (add, remove, reorder, or pick a
 preset).

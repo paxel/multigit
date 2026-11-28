@@ -136,7 +136,7 @@ impl App {
         });
         match act {
             Some(Act::Close) => self.close_repo_view(),
-            Some(Act::Refresh) => self.refresh_repo_view(),
+            Some(Act::Refresh) => self.refresh_repo_view_and_chips(),
             Some(Act::Back) => self.repo_view_back(),
             Some(Act::Forward) => self.repo_view_forward(),
             Some(Act::Tab(tab)) => self.switch_repo_tab(tab),

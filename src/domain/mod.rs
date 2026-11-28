@@ -21,6 +21,7 @@ pub mod naming;
 pub mod output;
 pub mod remote;
 pub mod repo;
+pub mod services;
 pub mod songs;
 pub mod staging;
 pub mod status;

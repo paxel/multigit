@@ -26,6 +26,8 @@ pub fn card(name: &str, counts: Counts, upstream: Upstream) -> Card {
         probe: Some(Ok(snapshot(counts, upstream, &["main"]))),
         fetch_error: None,
         last_command: None,
+        chips: Vec::new(),
+        chips_for: None,
     }
 }
 
@@ -1911,4 +1913,41 @@ fn a_on_a_commit_goes_to_the_board_where_ctrl_s_applies_it() {
     let (dir, args) = backend.runs.lock().unwrap()[0].clone();
     assert_eq!(dir, PathBuf::from("/repos/beta"));
     assert_eq!(args[0], "apply");
+}
+
+#[test]
+fn the_detail_strip_shows_the_chips_and_the_menu_copies_their_links() {
+    use crate::domain::services::{Light, ServiceChip};
+    let mut app = board_app();
+    let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);
+    snap.remotes = vec![crate::domain::remote::Remote {
+        name: "origin".into(),
+        url: "git@github.com:o/r.git".into(),
+    }];
+    app.cards[0].probe = Some(Ok(snap));
+    app.cards[0].chips = vec![
+        ServiceChip {
+            text: "PR #12".into(),
+            light: Light::Green,
+            url: Some("https://github.com/o/r/pull/12".into()),
+            hint: String::new(),
+        },
+        ServiceChip {
+            text: "CI".into(),
+            light: Light::Red,
+            url: Some("https://github.com/o/r/actions/runs/1".into()),
+            hint: String::new(),
+        },
+    ];
+    let lines = screen(&mut app, 100, 30);
+    assert!(
+        shown(&lines, "ssh github.com/o/r  PR #12  CI"),
+        "{lines:#?}"
+    );
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Copy the link of PR #12");
+    assert_eq!(
+        app.gui.copies,
+        vec!["https://github.com/o/r/pull/12".to_owned()]
+    );
 }

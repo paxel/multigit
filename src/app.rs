@@ -24,12 +24,14 @@ use crate::domain::history::History;
 use crate::domain::kawaii;
 use crate::domain::naming::{board_order, title};
 use crate::domain::output::{OutputLog, ProcessOutput, SectionState};
+use crate::domain::remote::host_and_path;
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
+use crate::domain::services::{ChipQuery, ServiceChip};
 use crate::domain::songs::{STYLES, styles_on};
 use crate::domain::staging::{
     FileAct, Staged, StashAct, file_steps, files_of, staged, stash_push, states_of,
 };
-use crate::domain::status::{RepoState, Upstream};
+use crate::domain::status::{Head, RepoState, Upstream};
 use crate::infrastructure::audio::decode;
 use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
 use crate::infrastructure::scan::{is_repo, scan};
@@ -54,6 +56,11 @@ pub struct Card {
     pub fetch_error: Option<FetchError>,
     /// Outcome of the last command run on this card.
     pub last_command: Option<bool>,
+    /// The PR and CI chips, as last read.
+    pub chips: Vec<ServiceChip>,
+    /// What the chips were last read for; a new branch or remote reads
+    /// them again.
+    pub chips_for: Option<ChipQuery>,
 }
 
 impl Card {
@@ -63,6 +70,8 @@ impl Card {
             probe: None,
             fetch_error: None,
             last_command: None,
+            chips: Vec::new(),
+            chips_for: None,
         }
     }
 
@@ -440,6 +449,11 @@ pub struct App<G = ()> {
     /// The filter button the board is filtered by: only the cards that fit
     /// it are shown. Never `All`, which is `None`; not saved.
     pub status_filter: Option<MarkBy>,
+    /// When the chips of all cards are read next.
+    chips_due: Option<Instant>,
+    /// Runs that push: the chips of their repositories are read when they
+    /// end.
+    push_runs: BTreeSet<u64>,
     /// Text of the filter field; not saved.
     pub filter: String,
     /// What the board is sorted by; not saved.
@@ -544,6 +558,8 @@ impl<G: Default> App<G> {
             cards,
             marked: BTreeSet::new(),
             status_filter: None,
+            chips_due: None,
+            push_runs: BTreeSet::new(),
             filter: String::new(),
             sort: SortKey::default(),
             active_favorite: None,
@@ -926,6 +942,81 @@ impl<G: Default> App<G> {
             if view.graph.is_some() || view.tab == RepoTab::Graph {
                 self.engine.load_graph(view.repo.clone(), view.with_old);
             }
+        }
+    }
+
+    /// **Refresh** in the repository view: its lists, and the chips of its
+    /// card.
+    pub fn refresh_repo_view_and_chips(&mut self) {
+        self.refresh_repo_view();
+        if let Some(repo) = self.repo_view.as_ref().map(|v| v.repo.clone()) {
+            self.read_chips(&[repo]);
+        }
+    }
+
+    /// What the chips of a card are read for: the host and repository of
+    /// the remote the branch tracks (or `origin`) and the branch there.
+    /// `None` without a branch, a remote on a code host, or a service
+    /// switched on.
+    fn chip_query(&self, card: &Card) -> Option<ChipQuery> {
+        let (github, gitlab) = (self.config.chips_github, self.config.chips_gitlab);
+        if !github && !gitlab {
+            return None;
+        }
+        let snap = card.snapshot()?;
+        let remote = snap.remote()?;
+        let (host, path) = host_and_path(&remote.url)?;
+        let tracked = snap
+            .status
+            .tracking
+            .as_deref()
+            .and_then(|t| t.strip_prefix(remote.name.as_str()))
+            .and_then(|t| t.strip_prefix('/'));
+        let branch = match (&snap.status.head, tracked) {
+            (_, Some(tracked)) => tracked.to_owned(),
+            (Head::Branch(b), None) => b.clone(),
+            _ => return None,
+        };
+        Some(ChipQuery {
+            host,
+            path,
+            branch,
+            github,
+            gitlab,
+        })
+    }
+
+    /// Read the chips of these cards again; a card with nothing to read
+    /// them for loses its chips.
+    fn read_chips(&mut self, repos: &[PathBuf]) {
+        let mut load = Vec::new();
+        for repo in repos {
+            let query = self
+                .cards
+                .iter()
+                .find(|c| &c.path == repo)
+                .and_then(|c| self.chip_query(c));
+            let Some(card) = self.card_mut(repo) else {
+                continue;
+            };
+            card.chips_for = query.clone();
+            match query {
+                Some(query) => load.push((repo.clone(), query)),
+                None => card.chips.clear(),
+            }
+        }
+        self.engine.load_chips(load);
+    }
+
+    /// A card was probed: its chips are read when they were never read for
+    /// what it is on now (its first probe, another branch), or when a
+    /// fetch brought news.
+    fn chips_after_probe(&mut self, repo: &Path, fetched_news: bool) {
+        let Some(card) = self.cards.iter().find(|c| c.path == repo) else {
+            return;
+        };
+        if fetched_news || self.chip_query(card) != card.chips_for {
+            self.read_chips(&[repo.to_path_buf()]);
         }
     }
 
@@ -1606,6 +1697,9 @@ impl<G: Default> App<G> {
 
     fn execute(&mut self, run: PendingRun) {
         let id = self.log.start(&run.command, &run.repos);
+        if matches!(&run.job, Job::Git(args) if args.first().is_some_and(|a| a == "push")) {
+            self.push_runs.insert(id);
+        }
         for repo in &run.repos {
             self.engine.run_command(id, repo, run.job.clone());
         }
@@ -2045,6 +2139,7 @@ impl<G: Default> App<G> {
                     card.probe = new;
                 }
                 self.follow_filter(&repo, fitted);
+                self.chips_after_probe(&repo, changed && cause == ProbeCause::Fetch);
                 self.sound_news(&sounds, Instant::now());
                 if changed {
                     self.wake_kawaii();
@@ -2089,6 +2184,9 @@ impl<G: Default> App<G> {
                     _ => None,
                 };
                 let ended = state.outcome().is_some();
+                if ended && self.push_runs.contains(&run) {
+                    self.read_chips(std::slice::from_ref(&repo));
+                }
                 self.log.update(run, &repo, state);
                 if let Some(after) = ended.then(|| self.view_runs.remove(&run)).flatten() {
                     self.after_view_run(after, &repo, error);
@@ -2102,6 +2200,11 @@ impl<G: Default> App<G> {
                 self.vocab.options.insert(command, options);
             }
             Event::Details { repo, result } => self.repo_view_loaded(&repo, result),
+            Event::Chips { repo, chips } => {
+                if let Some(card) = self.card_mut(&repo) {
+                    card.chips = chips;
+                }
+            }
             Event::Log {
                 repo,
                 skip,
@@ -2189,6 +2292,17 @@ impl<G: Default> App<G> {
                 };
             }
         }
+        let chips_every = Duration::from_secs(self.config.effective_chips_interval_secs());
+        match self.chips_due {
+            // The first read of each card follows its first probe.
+            None => self.chips_due = Some(now + chips_every),
+            Some(due) if now >= due => {
+                self.chips_due = Some(now + chips_every);
+                let repos: Vec<PathBuf> = self.cards.iter().map(|c| c.path.clone()).collect();
+                self.read_chips(&repos);
+            }
+            Some(_) => {}
+        }
         let concurrency = self.config.effective_concurrency();
         if concurrency != self.applied_concurrency {
             self.applied_concurrency = concurrency;
@@ -2197,7 +2311,11 @@ impl<G: Default> App<G> {
         self.persist();
         self.sync_music();
         self.toasts.retain(|t| t.until > now);
-        self.schedule.until_next(now, fetch_interval)
+        let next = self.schedule.until_next(now, fetch_interval);
+        let chips = self
+            .chips_due
+            .map_or(next, |due| due.saturating_duration_since(now));
+        next.min(chips)
     }
 
     /// Write the config file when it changed (never after a load error).
@@ -2257,6 +2375,8 @@ pub(crate) mod tests {
         /// `details` as they are, `usize::MAX` makes reading a page fail.
         pub log_length: Mutex<usize>,
         pub snapshot: Mutex<Option<Snapshot>>,
+        /// What the chips were read for.
+        pub chip_reads: Mutex<Vec<ChipQuery>>,
     }
 
     pub fn snapshot(counts: Counts, upstream: Upstream, branches: &[&str]) -> Snapshot {
@@ -2307,6 +2427,16 @@ pub(crate) mod tests {
                 .clone()
                 .ok_or(ProbeError::NotARepo)
         }
+        fn chips(&self, query: &ChipQuery) -> Vec<ServiceChip> {
+            self.chip_reads.lock().unwrap().push(query.clone());
+            vec![ServiceChip {
+                text: format!("PR {}", query.branch),
+                light: crate::domain::services::Light::Green,
+                url: Some("https://example.org/pr".into()),
+                hint: String::new(),
+            }]
+        }
+
         fn apply_commit(&self, dir: &Path, source: &Path, hash: &str) -> io::Result<ProcessOutput> {
             let args = vec![
                 "apply".to_owned(),
@@ -2769,6 +2899,81 @@ pub(crate) mod tests {
         app.filter_by(MarkBy::All);
         assert_eq!(app.status_filter, None);
         assert_eq!(shown(&app).len(), 3);
+    }
+
+    #[test]
+    fn the_chips_are_read_for_the_tracked_branch_and_read_again_when_it_changes() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut app = app_with(backend.clone(), None);
+        app.cards.push(Card::new("/r".into()));
+        let tracked = |branch: &str, tracking: Option<&str>| {
+            let mut snap = snapshot(Counts::default(), Upstream::None, &[]);
+            snap.status.head = Head::Branch(branch.into());
+            snap.status.tracking = tracking.map(str::to_owned);
+            snap.remotes = vec![
+                crate::domain::remote::Remote {
+                    name: "origin".into(),
+                    url: "git@github.com:o/r.git".into(),
+                },
+                crate::domain::remote::Remote {
+                    name: "fork".into(),
+                    url: "https://github.com/me/r".into(),
+                },
+            ];
+            Event::Probed {
+                repo: "/r".into(),
+                result: Box::new(Ok(snap)),
+                cause: ProbeCause::Poll,
+            }
+        };
+        let reads = |b: &FakeBackend| -> Vec<String> {
+            b.chip_reads
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|q| format!("{} {} {}", q.host, q.path, q.branch))
+                .collect()
+        };
+        // The first probe reads them, for the branch the upstream names.
+        app.handle_event(tracked("local", Some("fork/feature/x")));
+        settle(&mut app, |a| !a.cards[0].chips.is_empty());
+        assert_eq!(reads(&backend), ["github.com me/r feature/x"]);
+        assert_eq!(app.cards[0].chips[0].text, "PR feature/x");
+        // The same again reads nothing; another branch reads them again,
+        // without an upstream on origin and the local name.
+        app.handle_event(tracked("local", Some("fork/feature/x")));
+        app.handle_event(tracked("main", None));
+        settle(&mut app, |_| reads(&backend).len() == 2);
+        assert_eq!(reads(&backend)[1], "github.com o/r main");
+        // A push reads them when it ends.
+        let id = app.log.start("push", &[PathBuf::from("/r")]);
+        app.push_runs.insert(id);
+        app.handle_event(Event::Section {
+            run: id,
+            repo: "/r".into(),
+            state: SectionState::Done(ProcessOutput {
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            }),
+        });
+        settle(&mut app, |_| reads(&backend).len() == 3);
+        // Both services off: nothing is read, and the chips go.
+        app.config.chips_github = false;
+        app.config.chips_gitlab = false;
+        app.read_chips(&[PathBuf::from("/r")]);
+        assert!(app.cards[0].chips.is_empty());
+        assert_eq!(reads(&backend).len(), 3);
+    }
+
+    #[test]
+    fn a_push_run_is_known_by_its_git_arguments() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut app = app_with(backend, None);
+        app.cards.push(Card::new("/r".into()));
+        app.start_run("push", vec![PathBuf::from("/r")]);
+        app.start_run("fetch", vec![PathBuf::from("/r")]);
+        assert_eq!(app.push_runs.len(), 1);
     }
 
     #[test]

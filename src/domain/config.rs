@@ -82,6 +82,9 @@ fn default_concurrency() -> usize {
 fn default_scan_depth() -> usize {
     2
 }
+fn default_chips_interval() -> u64 {
+    300
+}
 fn default_music_volume() -> u8 {
     40
 }
@@ -157,6 +160,15 @@ pub struct Config {
     /// list of whole paths without it.
     #[serde(default = "default_true")]
     pub file_tree: bool,
+    /// Seconds between reads of the PR and CI chips of the cards.
+    #[serde(default = "default_chips_interval")]
+    pub chips_interval_secs: u64,
+    /// The chips of repositories on GitHub (through `gh`).
+    #[serde(default = "default_true")]
+    pub chips_github: bool,
+    /// The chips of repositories on GitLab (through `glab`).
+    #[serde(default = "default_true")]
+    pub chips_gitlab: bool,
 }
 
 impl Default for Config {
@@ -182,6 +194,9 @@ impl Default for Config {
             buttons: default_buttons(),
             favorites: Vec::new(),
             file_tree: true,
+            chips_interval_secs: default_chips_interval(),
+            chips_github: true,
+            chips_gitlab: true,
         }
     }
 }
@@ -221,6 +236,11 @@ impl Config {
     /// Fetch interval clamped to at least ten seconds.
     pub fn effective_fetch_interval_secs(&self) -> u64 {
         self.fetch_interval_secs.max(10)
+    }
+
+    /// The chips are read at most once a minute.
+    pub fn effective_chips_interval_secs(&self) -> u64 {
+        self.chips_interval_secs.max(60)
     }
 }
 

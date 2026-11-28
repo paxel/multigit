@@ -10,6 +10,7 @@ use crate::domain::output::{Run, SectionState};
 use crate::domain::remote::remote_of;
 use crate::domain::remote::{safe_url, short_url};
 use crate::domain::repo::Snapshot;
+use crate::domain::services::{Light, ServiceChip};
 use crate::domain::status::{Head, RepoState, Upstream};
 use crate::domain::switch::{
     Choice, branch_choices, matching, new_branch_command, remote_choices, tag_choices,
@@ -142,6 +143,8 @@ enum BoardAction {
     Copy(String, egui::Pos2),
     /// The fetch error of this card was clicked at this pointer position.
     CopyFetchError(PathBuf, egui::Pos2),
+    /// A PR or CI chip was clicked: open its page.
+    OpenUrl(String),
 }
 
 /// How long the "Copied" animation lasts, and how far it floats up.
@@ -613,6 +616,7 @@ impl App {
                         self.copy(ui, output, at);
                     }
                 }
+                BoardAction::OpenUrl(url) => self.open_url(&url),
             }
         }
     }
@@ -1251,6 +1255,7 @@ fn card_frame(
                 ui.multiply_opacity(0.55);
             }
             status_lines(ui, card, actions);
+            service_chips(ui, &card.chips, actions);
             if let Some(error) = &card.fetch_error {
                 // One line however long git's message is; a click copies
                 // all of the output and takes the error off the card.
@@ -1293,6 +1298,40 @@ fn card_frame(
                 }
             });
         });
+    });
+}
+
+/// The color of a chip's light.
+fn light_color(ui: &Ui, light: Light) -> Color32 {
+    match light {
+        Light::Green => ok_color(ui),
+        Light::Orange => ui.visuals().warn_fg_color,
+        Light::Red => ui.visuals().error_fg_color,
+        Light::Grey => ui.visuals().weak_text_color(),
+    }
+}
+
+/// The PR and CI chips of a card: small buttons in the color of their
+/// light; a click opens the page, a chip without one only tells.
+fn service_chips(ui: &mut Ui, chips: &[ServiceChip], actions: &mut Vec<BoardAction>) {
+    if chips.is_empty() {
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+        for chip in chips {
+            let color = light_color(ui, chip.light);
+            let text = RichText::new(&chip.text).small().color(color);
+            let button = egui::Button::new(text)
+                .small()
+                .stroke(egui::Stroke::new(1.0, color));
+            let response = ui.add(button).on_hover_text(&chip.hint);
+            if response.clicked()
+                && let Some(url) = &chip.url
+            {
+                actions.push(BoardAction::OpenUrl(url.clone()));
+            }
+        }
     });
 }
 

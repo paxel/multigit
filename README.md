@@ -71,7 +71,9 @@ read-only view of that repository over the board. It has three tabs, and
 **Back** and **Forward** step through what was looked at:
 
 - **Files**, where the view opens when the repository has changes: the
-  changed files as a tree with folders that fold. Each file is listed once,
+  changed files as a tree with folders that fold, or as a flat list in
+  git's order when **Tree** over the list is switched off. Each file is
+  listed once,
   with a letter and a color for what happened to it since the last commit
   (A added, M modified, D deleted, ! conflict), staged or not. A picked file
   shows its content when it is new, what is gone when it was deleted, and its
@@ -327,7 +329,8 @@ it. In the Commits tab the history reads on at its end; for a picked commit
 parents to go to, and Tab gives the keys to the right side, where Enter
 unfolds what the commit did to a file (Tab or Esc gives them back). The
 Graph tab draws the lanes with line characters; Enter on a folded run
-unfolds it, and on the line of hidden old remote branches shows them. To copy a part, mark it with the terminal's own selection (Shift and drag
+unfolds it, and on the line of hidden old remote branches shows them.
+`` ` `` switches the file lists between tree and flat. To copy a part, mark it with the terminal's own selection (Shift and drag
 where the terminal leaves the mouse to multigit).
 
 `+` asks for the folder instead of a folder dialog: `~` is the home folder,

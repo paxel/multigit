@@ -95,6 +95,12 @@ view of that repository over the board. It has three tabs, and
   that nobody has locally and that had no commit for 90 days are left out
   behind a line that shows them. A click on a commit shows it as in Commits.
 
+**Commit** over the Files tab commits what is staged. The message is one
+box whose first line is the subject, drawn stronger, with what goes past 72
+characters marked; a body written straight under it gets the empty line in
+between when it is committed. Ctrl+Enter, **Commit** or Enter three times
+at the end of the text commits, Esc cancels.
+
 A diff of more than 5000 lines is cut. The view reads the repository
 again when its card notices a change and on **Refresh**; **Close** or Esc
 returns to the board. The double click also marks and unmarks the card, so its
@@ -334,7 +340,8 @@ Graph tab draws the lanes with line characters; Enter on a folded run
 unfolds it, and on the line of hidden old remote branches shows them.
 `` ` `` switches the file lists between tree and flat. In the Files tab
 Space stages or unstages the file or folder, `d` offers the two discards,
-and a right click opens the same menu as in the window. To copy a part, mark it with the terminal's own selection (Shift and drag
+and a right click opens the same menu as in the window; `c` opens the
+commit box, where Ctrl+S (or Enter three times at the end) commits. To copy a part, mark it with the terminal's own selection (Shift and drag
 where the terminal leaves the mouse to multigit).
 
 `+` asks for the folder instead of a folder dialog: `~` is the home folder,

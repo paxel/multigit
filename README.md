@@ -81,7 +81,9 @@ view of that repository over the board. It has four tabs, and
   staged; a right click on it offers **Stage**, **Unstage**, **Discard all
   changes** and **Discard unstaged changes**, and a discard asks first.
   **Stash…** there stashes the file or folder, new files too, under a
-  message that may stay empty.
+  message that may stay empty, and **Edit** opens a file in the editor of
+  the Settings (`{file}` in it stands for the file, else the file comes
+  last), or without one in the system's program for it.
 - **Commits**, where it opens when the repository is clean: the history of
   the current branch, a row for each commit with the author's initials, the
   short hash, the tags on it, the title and the age. It reads on when scrolled to its end. A
@@ -90,7 +92,7 @@ view of that repository over the board. It has four tabs, and
   it names the committer when that is not the author, and its parents, where
   a click goes to that commit. Below that, the files it changed with the
   lines added and removed, and a click on a file shows what the commit did
-  to it.
+  to it; **edit** next to a file opens today's copy in the working tree.
 - **Graph**: all local and remote branches as a graph of the commits that
   matter (branch tips, tags, merges, and where branches part). Runs of
   commits between them are one row that unfolds on a click. Remote branches
@@ -350,7 +352,9 @@ unfolds it, and on the line of hidden old remote branches shows them.
 Space stages or unstages the file or folder, `d` offers the two discards,
 and a right click opens the same menu as in the window; `c` opens the
 commit box, where Ctrl+S (or Enter three times at the end) commits. In the
-Stash tab Space applies the picked stash, `P` pops it and `d` drops it. To copy a part, mark it with the terminal's own selection (Shift and drag
+Stash tab Space applies the picked stash, `P` pops it and `d` drops it.
+`e` edits the picked file in the terminal: in the editor of the Settings,
+else `$VISUAL` or `$EDITOR`, else `vi`; multigit comes back when it ends. To copy a part, mark it with the terminal's own selection (Shift and drag
 where the terminal leaves the mouse to multigit).
 
 `+` asks for the folder instead of a folder dialog: `~` is the home folder,
@@ -399,7 +403,8 @@ In the terminal multigit writes no menu entry and no icon. With `RUST_LOG` set, 
 ## Settings and files
 
 **Settings** in the toolbar changes the fetch interval, the number of parallel
-git processes, the folder scan depth, the terminal command, the theme (System,
+git processes, the folder scan depth, the terminal command, the editor
+command, the theme (System,
 Light, Dark or Kawaii), Tab's
 single-match behaviour, and the card buttons (add, remove, reorder, or pick a
 preset).

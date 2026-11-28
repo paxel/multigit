@@ -5,13 +5,15 @@
 
 use crate::domain::details::{
     COMMIT_FORMAT, ChangeKind, Details, DiffTarget, LOG_DATE, LOG_FORMAT, LOG_NAMES, LOG_PAGE,
-    LogEntry, cut_diff, parse_branches, parse_changes, parse_log,
+    LogEntry, REFLOG_FORMAT, REFLOG_LIMIT, STASH_FORMAT, cut_diff, parse_branches, parse_changes,
+    parse_log, parse_reflog, parse_stashes,
 };
 use crate::domain::graph::{
     GRAPH_FORMAT, GRAPH_LIMIT, GraphData, REF_FORMAT, RefKind, drawn_refs, parse_graph_log,
     parse_refs,
 };
 use crate::domain::output::ProcessOutput;
+use crate::domain::staging::parse_states;
 use crate::domain::status::{Head, parse_porcelain_v2};
 use crate::infrastructure::git::GitRunner;
 use std::path::Path;
@@ -149,8 +151,35 @@ pub fn details(runner: &GitRunner, dir: &Path, commits: usize) -> Result<Details
             "refs/heads",
         ],
     )?;
+    // Fails before the first commit: no stashes then.
+    let stashes = stdout(
+        runner,
+        dir,
+        &["stash", "list", "--no-show-signature", STASH_FORMAT],
+    )
+    .map(|out| parse_stashes(&out))
+    .unwrap_or_default();
+    let limit = format!("-{REFLOG_LIMIT}");
+    // Fails before the first commit: no steps then.
+    let reflog = stdout(
+        runner,
+        dir,
+        &[
+            "log",
+            "-g",
+            &limit,
+            "--no-show-signature",
+            REFLOG_FORMAT,
+            "HEAD",
+        ],
+    )
+    .map(|out| parse_reflog(&out))
+    .unwrap_or_default();
     Ok(Details {
+        reflog,
+        stashes,
         files: parse_changes(&status),
+        states: parse_states(&status),
         commits,
         branches: parse_branches(&branches, current.as_deref()),
     })
@@ -287,6 +316,147 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         assert!(details(&runner, dir.path(), 0).is_err(), "not a repository");
+    }
+
+    // A `*` cannot stand in a file name on Windows.
+    #[cfg(unix)]
+    #[test]
+    fn files_and_folders_are_staged_unstaged_and_discarded() {
+        use crate::domain::staging::{FileAct, file_steps, files_of};
+        let repo = TestRepo::new();
+        let runner = isolated_runner();
+        repo.commit("kept.txt", "one\n");
+        std::fs::create_dir(repo.path().join("dir")).unwrap();
+        repo.commit("dir/a*.txt", "a\n");
+        repo.write("kept.txt", "one\ntwo\n");
+        repo.write("dir/a*.txt", "changed\n");
+        repo.write("dir/new.txt", "new\n");
+        // `a*.txt` must not stand for every file that starts with `a`.
+        repo.write("dir/ab.txt", "other\n");
+        let act = |act: FileAct, row: &str| {
+            let d = details(&runner, repo.path(), 0).unwrap();
+            let paths: Vec<&str> = files_of(&d.files, row)
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect();
+            for step in file_steps(act, &d.states, &paths) {
+                let out = runner.run(repo.path(), &step).unwrap();
+                assert!(out.success(), "{step:?}: {}", out.stderr);
+            }
+        };
+        let status = || repo.git(&["status", "--porcelain"]);
+        act(FileAct::Stage, "dir/a*.txt");
+        assert!(status().contains("M  dir/a*.txt"), "{}", status());
+        assert!(status().contains("?? dir/ab.txt"), "{}", status());
+        act(FileAct::Stage, "dir/");
+        assert!(status().contains("A  dir/new.txt"), "{}", status());
+        act(FileAct::Unstage, "dir/");
+        assert!(status().contains("?? dir/new.txt"), "{}", status());
+        assert!(status().contains(" M dir/a*.txt"), "{}", status());
+        act(FileAct::DiscardUnstaged, "dir/");
+        assert!(!repo.path().join("dir/new.txt").exists(), "untracked goes");
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("dir/a*.txt")).unwrap(),
+            "a\n"
+        );
+        repo.write("dir/added.txt", "x\n");
+        repo.git(&["add", "dir/added.txt"]);
+        act(FileAct::Stage, "kept.txt");
+        act(FileAct::DiscardAll, "kept.txt");
+        act(FileAct::DiscardAll, "dir/");
+        assert_eq!(status(), "", "back to the last commit");
+    }
+
+    #[test]
+    fn a_folder_is_stashed_with_its_new_files_and_the_stash_is_listed() {
+        use crate::domain::staging::{StashAct, stash_push};
+        let repo = TestRepo::new();
+        let runner = isolated_runner();
+        repo.commit("kept.txt", "one\n");
+        std::fs::create_dir(repo.path().join("dir")).unwrap();
+        repo.commit("dir/a.txt", "a\n");
+        repo.write("dir/a.txt", "changed\n");
+        repo.write("dir/new.txt", "new\n");
+        repo.write("kept.txt", "two\n");
+        let run = |args: Vec<String>| {
+            let out = runner.run(repo.path(), &args).unwrap();
+            assert!(out.success(), "{args:?}: {}", out.stderr);
+        };
+        run(stash_push(&["dir/a.txt", "dir/new.txt"], "dir/"));
+        assert!(!repo.path().join("dir/new.txt").exists());
+        let d = details(&runner, repo.path(), 0).unwrap();
+        assert_eq!(d.files.len(), 1, "kept.txt stays changed");
+        assert_eq!(d.stashes.len(), 1);
+        assert_eq!(d.stashes[0].name, "stash@{0}");
+        assert!(d.stashes[0].subject.ends_with("dir/"), "{:?}", d.stashes);
+        // The pane shows it like a commit.
+        let shown = diff(
+            &runner,
+            repo.path(),
+            &DiffTarget::Commit(d.stashes[0].hash.clone()),
+        );
+        assert!(shown.unwrap().contains("dir/a.txt"));
+        run(StashAct::Apply.args("stash@{0}"));
+        assert!(repo.path().join("dir/new.txt").exists());
+        run(StashAct::Drop.args("stash@{0}"));
+        assert!(details(&runner, repo.path(), 0).unwrap().stashes.is_empty());
+    }
+
+    #[test]
+    fn the_reflog_lists_where_head_has_been() {
+        let repo = TestRepo::new();
+        let runner = isolated_runner();
+        assert!(details(&runner, repo.path(), 0).unwrap().reflog.is_empty());
+        repo.commit("a.txt", "one\n");
+        repo.git(&["checkout", "-q", "-b", "side"]);
+        repo.commit("b.txt", "two\n");
+        let steps = details(&runner, repo.path(), 0).unwrap().reflog;
+        let actions: Vec<&str> = steps.iter().map(|s| s.action.as_str()).collect();
+        assert_eq!(actions, ["commit", "checkout", "commit (initial)"]);
+        assert_eq!(steps[0].message, "b.txt");
+        assert_eq!(steps[1].name, "HEAD@{1}");
+        assert_eq!(steps[0].hash, repo.git(&["rev-parse", "HEAD"]).trim());
+    }
+
+    #[test]
+    fn a_branch_or_commit_of_the_graph_is_checked_out_and_changes_can_stop_it() {
+        use crate::domain::checkout::{checkouts, refused_for_changes, stash_before};
+        use crate::domain::graph::RefKind;
+        let remote = TestRepo::bare();
+        let pusher = TestRepo::clone_of(&remote);
+        pusher.commit("a.txt", "one\n");
+        pusher.git(&["push", "-q", "origin", "HEAD:main"]);
+        pusher.git(&["checkout", "-q", "-b", "feature/x"]);
+        pusher.commit("a.txt", "two\n");
+        pusher.git(&["push", "-q", "origin", "feature/x"]);
+        let repo = TestRepo::clone_of(&remote);
+        let runner = isolated_runner();
+        let run = |args: &[String]| runner.run(repo.path(), args).unwrap();
+        let graph = graph(&runner, repo.path(), 0, true).unwrap();
+        let tip = graph
+            .refs
+            .iter()
+            .find(|r| r.name == "origin/feature/x" && r.kind == RefKind::Remote)
+            .unwrap()
+            .hash
+            .clone();
+        let ways = checkouts(&graph.refs, &tip, Some("main"));
+        assert_eq!(ways[0].label, "Check out origin/feature/x");
+        // Local changes to a file the branch changes stop it.
+        repo.write("a.txt", "mine\n");
+        let out = run(&ways[0].args);
+        assert!(!out.success());
+        assert!(refused_for_changes(&out.stderr), "{}", out.stderr);
+        assert!(run(&stash_before(&ways[0].what)).success());
+        assert!(run(&ways[0].args).success());
+        assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "feature/x");
+        let upstream = repo.git(&["rev-parse", "--abbrev-ref", "@{upstream}"]);
+        assert_eq!(upstream.trim(), "origin/feature/x");
+        assert_eq!(details(&runner, repo.path(), 0).unwrap().stashes.len(), 1);
+        // The commit itself: on no branch.
+        let commit = ways.last().unwrap();
+        assert!(run(&commit.args).success());
+        assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "");
     }
 
     #[test]

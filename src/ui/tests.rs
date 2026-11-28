@@ -39,6 +39,8 @@ fn marked_app(backend: Arc<FakeBackend>, history: &[&str]) -> App {
         probe: None,
         fetch_error: None,
         last_command: None,
+        chips: Vec::new(),
+        chips_for: None,
     };
     card.probe = Some(Ok(snapshot(
         Counts::default(),
@@ -201,6 +203,8 @@ fn bulk_destructive_shows_confirm_dialog() {
         probe: None,
         fetch_error: None,
         last_command: None,
+        chips: Vec::new(),
+        chips_for: None,
     });
     app.marked.insert(PathBuf::from("/other"));
     let mut h = harness(app);
@@ -372,11 +376,15 @@ fn right_click_removes_or_hides_the_marked_cards_and_settings_unhides() {
     h.run();
     h.get_by_label("Hidden repositories");
     h.get_by_label("/r/etl-store");
-    h.get_all_by_label("Unhide").next().unwrap().click();
+    // Below the bottom of a 800 px screen: clicked through accessibility.
+    h.get_all_by_label("Unhide")
+        .next()
+        .unwrap()
+        .click_accesskit();
     h.run();
     assert_eq!(h.state().config.hidden, hidden[1..].to_vec());
     assert_eq!(h.state().cards.len(), 1);
-    h.get_by_label("Unhide all").click();
+    h.get_by_label("Unhide all").click_accesskit();
     h.run();
     assert!(h.state().config.hidden.is_empty());
     assert_eq!(h.state().cards.len(), 2);
@@ -520,87 +528,71 @@ fn fetch_error_is_one_line_and_a_click_copies_all_of_it_and_removes_it() {
 }
 
 #[test]
-fn mark_buttons_stay_pressed_and_a_second_click_marks_the_others() {
-    use crate::ui::app::MarkBy;
+fn a_mark_button_marks_on_a_click_and_the_others_on_a_right_click() {
     let mut app = app_with(Arc::default(), None);
     app.cards = vec![card("/r/a"), card("/r/b")];
     let mut h = harness(app);
     h.run();
-    // The row is all, dirty, behind, ahead: "none" is the second click on "all".
+    // Mark: all, dirty, behind, ahead; there is no "none" button.
     assert!(h.query_by_label("none").is_none());
-    for label in ["dirty", "behind", "ahead"] {
+    for label in ["all", "dirty", "behind", "ahead"] {
         h.get_by_label(label);
     }
     h.get_by_label("all").click();
     h.run();
-    assert_eq!(h.state().pressed_mark, Some((MarkBy::All, false)));
     assert_eq!(h.state().marked.len(), 2);
     h.get_by_label("all").click();
     h.run();
-    assert_eq!(h.state().pressed_mark, Some((MarkBy::All, true)));
-    assert!(h.state().marked.is_empty());
-    // Another button takes over; nothing here is behind, so its second
-    // click marks every card.
-    h.get_by_label("behind").click();
+    assert_eq!(h.state().marked.len(), 2, "a second click does the same");
+    h.get_by_label("all").click_secondary();
     h.run();
-    assert_eq!(h.state().pressed_mark, Some((MarkBy::Behind, false)));
-    assert!(h.state().marked.is_empty());
-    h.get_by_label("behind").click();
+    assert!(h.state().marked.is_empty(), "the opposite of all is none");
+    // Nothing here is behind: its right click marks every card.
+    h.get_by_label("behind").click_secondary();
     h.run();
-    assert_eq!(h.state().pressed_mark, Some((MarkBy::Behind, true)));
     assert_eq!(h.state().marked.len(), 2);
+    h.get_by_label("behind").click();
+    h.run();
+    assert!(h.state().marked.is_empty());
+    assert_eq!(h.state().status_filter, None, "marking never filters");
 }
 
 #[test]
-fn a_right_click_on_a_mark_button_shows_only_its_cards_and_says_so() {
+fn a_filter_button_shows_only_its_cards_and_stays_pressed() {
     use crate::ui::app::MarkBy;
     let mut app = app_with(Arc::default(), None);
     app.cards = vec![card("/r/alpha"), card("/r/beta")];
     let mut h = harness(app);
     h.run();
+    // Each filter button counts what it would show.
+    for label in ["all (2)", "dirty (0)", "behind (0)", "ahead (0)"] {
+        h.get_by_label(label);
+    }
     assert!(h.query_by_label_contains("showing").is_none());
-    // Nothing here is behind: the board is empty, and the toolbar says why.
-    h.get_by_label("behind").click_secondary();
+    h.get_by_label("behind (0)").click();
     h.run();
     assert_eq!(h.state().status_filter, Some(MarkBy::Behind));
-    assert_eq!(
-        h.state().pressed_mark,
-        None,
-        "a right click presses nothing"
-    );
-    assert!(h.state().marked.is_empty(), "and marks nothing");
+    assert!(h.state().marked.is_empty(), "filtering marks nothing here");
     assert!(h.query_by_label("alpha").is_none());
-    h.get_by_label("showing behind (0)");
-    // A left click leaves the filter alone.
+    // Again: it stays.
+    h.get_by_label("behind (0)").click();
+    h.run();
+    assert_eq!(h.state().status_filter, Some(MarkBy::Behind));
+    // A mark button leaves the filter alone.
     h.get_by_label("all").click();
     h.run();
     assert_eq!(h.state().status_filter, Some(MarkBy::Behind));
-    // A click on the text shows all again.
-    h.get_by_label("showing behind (0)").click();
+    h.get_by_label("all (2)").click();
     h.run();
     assert_eq!(h.state().status_filter, None);
     h.get_by_label("alpha");
-    assert!(h.query_by_label_contains("showing").is_none());
-    // So does a second right click, and a right click on "all".
-    h.get_by_label("ahead").click_secondary();
-    h.run();
-    h.get_by_label("ahead").click_secondary();
-    h.run();
-    assert_eq!(h.state().status_filter, None);
-    h.get_by_label("dirty").click_secondary();
-    h.run();
-    assert_eq!(h.state().status_filter, Some(MarkBy::Dirty));
-    h.get_by_label("all").click_secondary();
-    h.run();
-    assert_eq!(h.state().status_filter, None);
-    assert_eq!(h.state().pressed_mark, Some((MarkBy::All, false)));
 }
 
 #[test]
 fn filter_field_hides_cards_and_counts_the_shown_ones() {
     let mut app = app_with(Arc::default(), None);
     app.cards = vec![card("/r/etl-load"), card("/r/web"), card("/r/Etl-store")];
-    app.press_mark(crate::ui::app::MarkBy::All);
+    app.press_mark(crate::ui::app::MarkBy::All, false);
     let mut h = harness(app);
     h.run();
     assert!(
@@ -1173,6 +1165,9 @@ fn repo_view_app() -> Harness<'static, App> {
     use crate::domain::details::{BranchEntry, ChangeKind, Details, FileChange, parse_log};
     let backend = Arc::new(FakeBackend::default());
     *backend.details.lock().unwrap() = Some(Details {
+        states: Default::default(),
+        stashes: Vec::new(),
+        reflog: Vec::new(),
         files: vec![
             FileChange {
                 path: "src/main.rs".into(),
@@ -1245,6 +1240,8 @@ fn repo_view_app() -> Harness<'static, App> {
 #[test]
 fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     let mut h = repo_view_app();
+    // The files of a commit by their whole paths.
+    h.state_mut().config.file_tree = false;
     let space = card_space(&h);
     h.event(egui::Event::PointerMoved(space));
     // Two clicks, one frame apart: within the time of a double click.
@@ -1369,23 +1366,26 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     h.get_by_label("Changed files (4)");
     h.get_by_label("Pick a file to see its changes.");
     assert!(h.query_by_label("AL aaaabbb Fix the thing").is_none());
+    // The Files tab as a tree again.
+    h.state_mut().toggle_file_tree();
+    h.run();
     // A tree: folders first, a chain of single folders as one row, every
     // file with the letter of its change.
     h.get_by_label("src/");
     h.get_by_label("ui/deep/");
-    h.get_by_label("A new.rs");
-    h.get_by_label("D old.rs");
-    h.get_by_label("A notes.txt");
+    h.get_by_label(" A new.rs");
+    h.get_by_label(" D old.rs");
+    h.get_by_label(" A notes.txt");
     // A folder folds away what is in it, and unfolds again.
     h.get_by_label("ui/deep/").click();
     h.run();
-    assert!(h.query_by_label("A new.rs").is_none());
-    h.get_by_label("M main.rs");
+    assert!(h.query_by_label(" A new.rs").is_none());
+    h.get_by_label(" M main.rs");
     h.get_by_label("src/").click();
     h.run();
-    assert!(h.query_by_label("M main.rs").is_none());
+    assert!(h.query_by_label(" M main.rs").is_none());
     assert!(h.query_by_label("ui/deep/").is_none());
-    h.get_by_label("A notes.txt");
+    h.get_by_label(" A notes.txt");
     h.get_by_label("src/").click();
     h.run();
     h.get_by_label("ui/deep/").click();
@@ -1398,15 +1398,15 @@ fn double_click_opens_the_repository_view_and_leaves_the_mark() {
     };
     // An added file shows its content, a deleted one what is gone, a
     // modified one its diff.
-    pick(&mut h, "A new.rs");
+    pick(&mut h, " A new.rs");
     h.get_by_label("added");
     h.get_by_label("src/ui/deep/new.rs");
     h.get_by_label("fresh line");
     assert!(h.query_by_label("+fresh line").is_none());
-    pick(&mut h, "D old.rs");
+    pick(&mut h, " D old.rs");
     h.get_by_label("deleted");
     h.get_by_label("gone line");
-    pick(&mut h, "M main.rs");
+    pick(&mut h, " M main.rs");
     h.get_by_label("modified");
     h.get_by_label("+++ b/src/main.rs");
     h.get_by_label("+new");
@@ -1498,6 +1498,8 @@ fn right_click_on_text_of_the_repository_view_copies_the_marked_text_or_all_of_i
     use crate::ui::text_menu::TextOf;
     use egui::PointerButton::{Primary, Secondary};
     let mut h = repo_view_app();
+    // The files of a commit by their whole paths.
+    h.state_mut().config.file_tree = false;
     h.run();
     h.state_mut().open_repo_view(std::path::Path::new("/repo"));
     settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
@@ -1641,7 +1643,7 @@ fn open_in_the_card_menu_and_the_buttons_of_the_view() {
     h.run();
     h.get_by_label("Files").click();
     h.run();
-    h.get_by_label("A notes.txt");
+    h.get_by_label(" A notes.txt");
     h.get_by_label("Refresh").click();
     h.run();
     assert!(h.state().repo_view.is_some());
@@ -1922,6 +1924,8 @@ fn card(path: &str) -> Card {
         probe: Some(Ok(snapshot(Counts::default(), Upstream::None, &["main"]))),
         fetch_error: None,
         last_command: None,
+        chips: Vec::new(),
+        chips_for: None,
     }
 }
 
@@ -2359,4 +2363,77 @@ fn buttons_have_room_around_their_text() {
         "button {rect:?} too tight"
     );
     assert!(rect.height() >= 28.0);
+}
+
+#[test]
+fn the_fold_triangle_has_three_equal_sides_and_points_right_or_down() {
+    use crate::ui::repo_view::fold_triangle;
+    let center = egui::pos2(10.0, 10.0);
+    for open in [false, true] {
+        let [a, b, c] = fold_triangle(center, open);
+        let sides = [a.distance(b), b.distance(c), c.distance(a)];
+        for side in sides {
+            assert!((side - sides[0]).abs() < 0.01, "{sides:?}");
+        }
+        // The tip is the corner farthest right (folded) or lowest (open).
+        if open {
+            assert!(c.y > a.y && c.y > b.y);
+        } else {
+            assert!(b.x > a.x && b.x > c.x);
+        }
+    }
+}
+
+#[test]
+fn a_discard_from_the_files_menu_asks_over_the_repository_view() {
+    let mut h = repo_view_app();
+    h.run();
+    h.state_mut().open_repo_view(std::path::Path::new("/repo"));
+    settle(&mut h, |a| a.repo_view.as_ref().unwrap().details.is_some());
+    h.state_mut()
+        .switch_repo_tab(crate::domain::details::RepoTab::Files);
+    h.run();
+    h.get_by_label(" M main.rs").click_secondary();
+    h.run();
+    h.get_by_label("Discard unstaged changes").click();
+    h.run();
+    assert!(h.state().confirm.is_some(), "{:?}", h.state().toasts);
+    h.get_by_label_contains("Discard the unstaged changes of src/main.rs (1 file)");
+    // Esc answers the question and leaves the view open.
+    h.key_press(Key::Escape);
+    h.run();
+    assert!(h.state().confirm.is_none());
+    assert!(h.state().repo_view.is_some());
+}
+
+#[test]
+fn a_card_shows_its_pr_and_ci_chips_and_a_click_opens_the_page() {
+    let backend = Arc::new(FakeBackend::default());
+    let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);
+    snap.remotes = vec![crate::domain::remote::Remote {
+        name: "origin".into(),
+        url: "git@github.com:o/r.git".into(),
+    }];
+    *backend.snapshot.lock().unwrap() = Some(snap);
+    let desktop = Arc::new(crate::ui::app::tests::FakeDesktop::default());
+    let mut app = crate::ui::app::tests::app_on(backend.clone(), desktop.clone(), None);
+    app.cards = vec![card("/r/alpha")];
+    let mut h = harness(app);
+    // The probe of the card reads its chips; the fake has a PR for the branch.
+    for _ in 0..200 {
+        h.run();
+        if !h.state().cards[0].chips.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    h.run();
+    assert_eq!(backend.chip_reads.lock().unwrap()[0].branch, "main");
+    h.get_by_label("PR main").click();
+    h.run();
+    assert_eq!(
+        desktop.urls.lock().unwrap().clone(),
+        ["https://example.org/pr"]
+    );
+    assert!(h.state().marked.is_empty(), "a chip click does not mark");
 }

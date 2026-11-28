@@ -82,6 +82,9 @@ fn default_concurrency() -> usize {
 fn default_scan_depth() -> usize {
     2
 }
+fn default_chips_interval() -> u64 {
+    300
+}
 fn default_music_volume() -> u8 {
     40
 }
@@ -113,6 +116,11 @@ pub struct Config {
     /// folder. Empty: the app finds a terminal.
     #[serde(default)]
     pub terminal: String,
+    /// Command that edits a file; `{file}` stands for it, else the file
+    /// goes at the end. Empty: the system's default program, and in a
+    /// terminal `$VISUAL` or `$EDITOR`.
+    #[serde(default)]
+    pub editor: String,
     /// Lofi music in the Kawaii theme.
     #[serde(default)]
     pub music: bool,
@@ -148,6 +156,19 @@ pub struct Config {
     /// In the order they were made, which is the order of their buttons.
     #[serde(default)]
     pub favorites: Vec<Favorite>,
+    /// The file lists of the repository view are a tree of folders; a flat
+    /// list of whole paths without it.
+    #[serde(default = "default_true")]
+    pub file_tree: bool,
+    /// Seconds between reads of the PR and CI chips of the cards.
+    #[serde(default = "default_chips_interval")]
+    pub chips_interval_secs: u64,
+    /// The chips of repositories on GitHub (through `gh`).
+    #[serde(default = "default_true")]
+    pub chips_github: bool,
+    /// The chips of repositories on GitLab (through `glab`).
+    #[serde(default = "default_true")]
+    pub chips_gitlab: bool,
 }
 
 impl Default for Config {
@@ -159,6 +180,7 @@ impl Default for Config {
             auto_insert_single_match: true,
             theme: Theme::default(),
             terminal: String::new(),
+            editor: String::new(),
             music: false,
             music_volume: default_music_volume(),
             music_off: Vec::new(),
@@ -171,6 +193,10 @@ impl Default for Config {
             hidden: Vec::new(),
             buttons: default_buttons(),
             favorites: Vec::new(),
+            file_tree: true,
+            chips_interval_secs: default_chips_interval(),
+            chips_github: true,
+            chips_gitlab: true,
         }
     }
 }
@@ -211,6 +237,11 @@ impl Config {
     pub fn effective_fetch_interval_secs(&self) -> u64 {
         self.fetch_interval_secs.max(10)
     }
+
+    /// The chips are read at most once a minute.
+    pub fn effective_chips_interval_secs(&self) -> u64 {
+        self.chips_interval_secs.max(60)
+    }
 }
 
 #[cfg(test)]
@@ -239,6 +270,17 @@ mod tests {
         let by_hand = Config::from_toml("[[favorites]]\nname = \"a\"\ncolor = \"blue\"").unwrap();
         assert_eq!(by_hand.favorites[0].repos, Vec::<PathBuf>::new());
         assert_eq!(by_hand.favorites[0].emoji, None);
+    }
+
+    #[test]
+    fn the_file_lists_are_a_tree_unless_the_file_says_flat() {
+        assert!(Config::from_toml("").unwrap().file_tree);
+        let config = Config {
+            file_tree: false,
+            ..Config::default()
+        };
+        let text = config.to_toml().unwrap();
+        assert!(!Config::from_toml(&text).unwrap().file_tree);
     }
 
     #[test]

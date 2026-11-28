@@ -2,12 +2,15 @@
 //! on the left, what is picked in it on the right, Back and Forward.
 
 use super::App;
+use super::actions::Action;
 use super::actions::copy;
 use super::commits::PaneRow;
 use super::state::Mode;
+use super::widgets::{Item, Menu};
 use crate::app::{RepoView, TextOf};
-use crate::domain::details::{ChangeKind, DiffTarget, LineKind, RepoTab, file_lines, tree_rows};
+use crate::domain::details::{ChangeKind, DiffTarget, LineKind, RepoTab, file_lines, file_rows};
 use crate::domain::naming::title;
+use crate::domain::staging::{FileAct, FileState, StashAct};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
@@ -69,6 +72,129 @@ pub fn line_style(kind: LineKind) -> Style {
     }
 }
 
+/// A changed file's row: its two status letters and its name, colored as
+/// lazygit colors them: the staged letter green, the unstaged one red, and
+/// the name green when all of it is staged, red when anything is not.
+fn state_line(indent: &str, state: FileState, name: &str) -> Line<'static> {
+    let letters: Vec<char> = state.letters().chars().collect();
+    let index = letters.first().copied().unwrap_or(' ');
+    let worktree = letters.get(1).copied().unwrap_or(' ');
+    let red = Style::new().fg(Color::Red);
+    let green = Style::new().fg(Color::Green);
+    Line::from(vec![
+        Span::raw(format!("{indent}  ")),
+        Span::styled(
+            index.to_string(),
+            if state.untracked() { red } else { green },
+        ),
+        Span::styled(worktree.to_string(), red),
+        Span::styled(
+            format!(" {name}"),
+            if state.unstaged() { red } else { green },
+        ),
+    ])
+}
+
+/// The path of a Files tab row: a file's, or a folder's with its `/`.
+fn row_path(row: &ViewRow) -> Option<String> {
+    match &row.pick {
+        Pick::Fold(path) => Some(path.clone()),
+        Pick::Select(DiffTarget::File(file)) => Some(file.path.clone()),
+        _ => None,
+    }
+}
+
+/// The menu of a Files tab row: stage, unstage and the two discards, or
+/// the discards alone.
+fn file_menu(path: &str, discard_only: bool, editable: bool) -> Menu {
+    let acts: &[FileAct] = if discard_only {
+        &[FileAct::DiscardAll, FileAct::DiscardUnstaged]
+    } else {
+        &[
+            FileAct::Stage,
+            FileAct::Unstage,
+            FileAct::DiscardAll,
+            FileAct::DiscardUnstaged,
+        ]
+    };
+    let mut items: Vec<Item> = acts
+        .iter()
+        .map(|act| Item::new(act.label(), Action::File(*act, path.to_owned())))
+        .collect();
+    if !discard_only {
+        items.push(Item::new(
+            "Stash\u{2026}",
+            Action::StartStash(path.to_owned()),
+        ));
+        if !path.ends_with('/') {
+            let edit = if editable {
+                Item::new("Edit", Action::Edit(path.to_owned()))
+            } else {
+                Item::disabled("Edit (not in the working tree)")
+            };
+            items.insert(0, edit);
+        }
+    }
+    Menu::new(path.to_owned(), items)
+}
+
+/// The name git gives the stash of a Stash tab row (`stash@{0}`).
+fn stash_name(app: &App, row: &ViewRow) -> Option<String> {
+    let Pick::Select(DiffTarget::Commit(hash)) = &row.pick else {
+        return None;
+    };
+    let view = app.repo_view.as_ref().filter(|v| v.tab == RepoTab::Stash)?;
+    let Some(Ok(details)) = &view.details else {
+        return None;
+    };
+    let stash = details.stashes.iter().find(|s| &s.hash == hash)?;
+    Some(stash.name.clone())
+}
+
+/// The commit of a Graph tab row.
+fn graph_commit(app: &App, row: &ViewRow) -> Option<String> {
+    let Pick::Select(DiffTarget::Commit(hash)) = &row.pick else {
+        return None;
+    };
+    app.repo_view
+        .as_ref()
+        .filter(|v| v.tab == RepoTab::Graph)
+        .map(|_| hash.clone())
+}
+
+/// The menu of a graph row: its branches and the commit to check out.
+fn checkout_menu(app: &App, hash: &str) -> Menu {
+    let items = app
+        .checkouts_of(hash)
+        .into_iter()
+        .map(|way| Item::new(way.label.clone(), Action::Checkout(way)))
+        .collect();
+    Menu::new("check out", items)
+}
+
+/// `o` on a graph row: its one branch straight away; with several or
+/// none the menu.
+fn check_out_row(app: &mut App, hash: &str) {
+    let ways = app.checkouts_of(hash);
+    let mut branches = ways.iter().filter(|w| w.branch);
+    match (branches.next(), branches.next()) {
+        (Some(only), None) => {
+            let only = only.clone();
+            app.check_out(only);
+        }
+        _ => app.gui.mode = Mode::Menu(checkout_menu(app, hash)),
+    }
+}
+
+/// The menu of a stash: apply, pop, drop.
+fn stash_menu(name: &str) -> Menu {
+    let items = [StashAct::Apply, StashAct::Pop, StashAct::Drop]
+        .into_iter()
+        .map(|act| Item::new(act.label(), Action::Stash(act, name.to_owned())))
+        .collect();
+    Menu::new(name.to_owned(), items)
+}
+
 /// The rows of the shown tab's list.
 pub fn rows(app: &App) -> Vec<ViewRow> {
     let Some(view) = &app.repo_view else {
@@ -89,7 +215,7 @@ pub fn rows(app: &App) -> Vec<ViewRow> {
             if details.files.is_empty() {
                 return vec![ViewRow::note("none: the working tree is clean")];
             }
-            tree_rows(&details.files, &view.closed)
+            file_rows(&details.files, &view.closed, view.tree)
                 .into_iter()
                 .map(|entry| {
                     let indent = "  ".repeat(entry.depth);
@@ -102,9 +228,14 @@ pub fn rows(app: &App) -> Vec<ViewRow> {
                             }
                         }
                         Some(file) => ViewRow {
-                            line: Line::styled(
-                                format!("{indent}  {} {}", file.kind.letter(), entry.name),
-                                Style::new().fg(change_color(file.kind)),
+                            line: state_line(
+                                &indent,
+                                details
+                                    .states
+                                    .get(&file.path)
+                                    .copied()
+                                    .unwrap_or(FileState::guessed(file.kind)),
+                                &entry.name,
                             ),
                             pick: Pick::Select(DiffTarget::File(file)),
                         },
@@ -114,6 +245,39 @@ pub fn rows(app: &App) -> Vec<ViewRow> {
         }
         RepoTab::Commits => super::commits::rows(details, view),
         RepoTab::Graph => super::graph::rows(details, view),
+        RepoTab::Reflog => {
+            if details.reflog.is_empty() {
+                return vec![ViewRow::note("no steps yet")];
+            }
+            details
+                .reflog
+                .iter()
+                .map(|step| ViewRow {
+                    line: Line::from(vec![
+                        Span::styled(format!("{} ", step.short), dim()),
+                        Span::styled(format!("{} ", step.action), Style::new().fg(Color::Yellow)),
+                        Span::raw(step.message.clone()),
+                    ]),
+                    pick: Pick::Select(DiffTarget::Commit(step.hash.clone())),
+                })
+                .collect()
+        }
+        RepoTab::Stash => {
+            if details.stashes.is_empty() {
+                return vec![ViewRow::note("no stashes")];
+            }
+            details
+                .stashes
+                .iter()
+                .map(|stash| ViewRow {
+                    line: Line::from(vec![
+                        Span::styled(format!("{} ", stash.name), dim()),
+                        Span::raw(stash.subject.clone()),
+                    ]),
+                    pick: Pick::Select(DiffTarget::Commit(stash.hash.clone())),
+                })
+                .collect()
+        }
     }
 }
 
@@ -173,6 +337,8 @@ fn pane_lines(view: &RepoView) -> Vec<PaneRow> {
             let hint = match view.tab {
                 RepoTab::Files => "Pick a file to see its changes.",
                 RepoTab::Commits | RepoTab::Graph => "Pick a commit to see it.",
+                RepoTab::Stash => "Pick a stash to see it.",
+                RepoTab::Reflog => "Pick a step to see its commit.",
             };
             return text(Line::styled(hint, dim()));
         }
@@ -222,15 +388,24 @@ fn pane_key(app: &mut App, key: KeyEvent) {
     let at = app.gui.pane_cursor.min(last);
     match key.code {
         KeyCode::Tab | KeyCode::Esc => app.gui.pane_focus = false,
+        KeyCode::Char('e') => {
+            if let Some(path) = rows.get(at).and_then(|row| row.file.clone()) {
+                app.edit_file(&path);
+            }
+        }
         KeyCode::Char('j') | KeyCode::Down => app.gui.pane_cursor = at.saturating_add(1).min(last),
         KeyCode::Char('k') | KeyCode::Up => app.gui.pane_cursor = at.saturating_sub(1),
         KeyCode::Char('g') | KeyCode::Home => app.gui.pane_cursor = 0,
         KeyCode::Char('G') | KeyCode::End => app.gui.pane_cursor = last,
-        KeyCode::Enter | KeyCode::Char(' ') => {
-            if let Some(path) = rows.get(at).and_then(|row| row.file.clone()) {
-                app.toggle_commit_file(&path);
-            }
-        }
+        KeyCode::Enter | KeyCode::Char(' ') => match rows.get(at) {
+            Some(PaneRow {
+                folder: Some(path), ..
+            }) => app.toggle_commit_folder(&path.clone()),
+            Some(PaneRow {
+                file: Some(path), ..
+            }) => app.toggle_commit_file(&path.clone()),
+            _ => {}
+        },
         _ => list_key(app, key),
     }
 }
@@ -242,6 +417,13 @@ pub fn key(app: &mut App, key: KeyEvent) {
     } else {
         list_key(app, key);
     }
+}
+
+/// The Files tab is shown.
+fn files_tab(app: &App) -> bool {
+    app.repo_view
+        .as_ref()
+        .is_some_and(|v| v.tab == RepoTab::Files)
 }
 
 fn list_key(app: &mut App, key: KeyEvent) {
@@ -258,17 +440,36 @@ fn list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('1') => app.switch_repo_tab(RepoTab::Files),
         KeyCode::Char('2') => app.switch_repo_tab(RepoTab::Commits),
         KeyCode::Char('3') => app.switch_repo_tab(RepoTab::Graph),
+        KeyCode::Char('4') => app.switch_repo_tab(RepoTab::Stash),
+        KeyCode::Char('5') => app.switch_repo_tab(RepoTab::Reflog),
         KeyCode::Char('[') | KeyCode::Backspace => app.repo_view_back(),
         KeyCode::Char(']') => app.repo_view_forward(),
-        KeyCode::Char('r') => app.refresh_repo_view(),
+        KeyCode::Char('r') => app.refresh_repo_view_and_chips(),
+        KeyCode::Char('`') => app.toggle_file_tree(),
         KeyCode::Char('?') => app.gui.help = true,
         KeyCode::Tab => {
             app.gui.pane_focus = true;
             app.gui.pane_cursor = 0;
         }
+        KeyCode::Char('c') if files_tab(app) => {
+            app.gui.commit_cursor = usize::MAX;
+            app.start_commit();
+        }
         KeyCode::Char('c') => {
             if let Some(commit) = super::commits::picked(app) {
                 app.gui.mode = Mode::Menu(super::commits::copy_menu(&commit));
+            }
+        }
+        KeyCode::Char('a')
+            if app
+                .repo_view
+                .as_ref()
+                .is_some_and(|v| v.tab != RepoTab::Stash) =>
+        {
+            if let Some(commit) = super::commits::picked(app) {
+                app.start_apply(&commit.hash);
+                app.gui.view_cursor.clear();
+                app.gui.pane_focus = false;
             }
         }
         KeyCode::Char('p') => {
@@ -285,6 +486,38 @@ fn list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('G') | KeyCode::End => {
             set_cursor(app, last);
             read_on(app, last);
+        }
+        KeyCode::Char(' ' | 'P' | 'd')
+            if all.get(at).and_then(|r| stash_name(app, r)).is_some() =>
+        {
+            if let Some(name) = all.get(at).and_then(|r| stash_name(app, r)) {
+                let act = match key.code {
+                    KeyCode::Char(' ') => StashAct::Apply,
+                    KeyCode::Char('P') => StashAct::Pop,
+                    _ => StashAct::Drop,
+                };
+                app.stash_act(act, &name);
+            }
+        }
+        KeyCode::Char(' ') if files_tab(app) => {
+            if let Some(path) = all.get(at).and_then(row_path) {
+                app.toggle_staged(&path);
+            }
+        }
+        KeyCode::Char('o') if all.get(at).and_then(|r| graph_commit(app, r)).is_some() => {
+            if let Some(hash) = all.get(at).and_then(|r| graph_commit(app, r)) {
+                check_out_row(app, &hash);
+            }
+        }
+        KeyCode::Char('e') if files_tab(app) => {
+            if let Some(path) = all.get(at).and_then(row_path).filter(|p| !p.ends_with('/')) {
+                app.edit_file(&path);
+            }
+        }
+        KeyCode::Char('d') if files_tab(app) => {
+            if let Some(path) = all.get(at).and_then(row_path) {
+                app.gui.mode = Mode::Menu(file_menu(&path, true, false));
+            }
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
             if let Some(row) = all.get(at) {
@@ -322,6 +555,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Paragraph::new(Line::from(vec![
             Span::styled(title(&view.repo), Style::new().add_modifier(Modifier::BOLD)),
             Span::styled(format!("  {}", view.repo.display()), dim()),
+            Span::styled(
+                app.view_detached()
+                    .map(|d| format!("  {d}"))
+                    .unwrap_or_default(),
+                Style::new().fg(Color::Yellow),
+            ),
             Span::styled("   Tab pane  r refresh  y copy all  Esc close", dim()),
         ])),
         head,
@@ -452,6 +691,25 @@ pub fn mouse(app: &mut App, column: u16, row: u16, kind: MouseAt) {
                 pick(app, entry);
             }
         }
+        (MouseAt::RightClick, true) => {
+            let index = app.gui.list_top + usize::from(row.saturating_sub(area.y));
+            if let Some(name) = all.get(index).and_then(|r| stash_name(app, r)) {
+                set_cursor(app, index);
+                app.gui.mode = Mode::Menu(stash_menu(&name));
+                return;
+            }
+            if let Some(hash) = all.get(index).and_then(|r| graph_commit(app, r)) {
+                set_cursor(app, index);
+                app.gui.mode = Mode::Menu(checkout_menu(app, &hash));
+                return;
+            }
+            if let Some(path) = all.get(index).filter(|_| files_tab(app)).and_then(row_path) {
+                set_cursor(app, index);
+                let editable = app.can_edit(&path);
+                app.gui.mode = Mode::Menu(file_menu(&path, false, editable));
+            }
+        }
+        (MouseAt::RightClick, false) => {}
         (MouseAt::Down, true) => set_cursor(app, at.saturating_add(3).min(last)),
         (MouseAt::Up, true) => set_cursor(app, at.saturating_sub(3)),
         (MouseAt::Down, false) => app.gui.pane_scroll = app.gui.pane_scroll.saturating_add(3),
@@ -464,6 +722,7 @@ pub fn mouse(app: &mut App, column: u16, row: u16, kind: MouseAt) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAt {
     Click,
+    RightClick,
     Down,
     Up,
 }

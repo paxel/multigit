@@ -95,6 +95,11 @@ fn copy_items(app: &App, path: &Path) -> Vec<Item> {
             items.push(copy("Copy remote URL", remote.url.clone()));
         }
     }
+    for chip in &card.chips {
+        if let Some(url) = &chip.url {
+            items.push(copy(format!("Copy the link of {}", chip.text), url.clone()));
+        }
+    }
     if card.fetch_error.is_some() {
         items.push(Item::new(
             "Copy the fetch error and take it off",

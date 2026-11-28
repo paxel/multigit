@@ -10,6 +10,7 @@ use crate::domain::output::{Run, SectionState};
 use crate::domain::remote::remote_of;
 use crate::domain::remote::{safe_url, short_url};
 use crate::domain::repo::Snapshot;
+use crate::domain::services::{Light, ServiceChip};
 use crate::domain::status::{Head, RepoState, Upstream};
 use crate::domain::switch::{
     Choice, branch_choices, matching, new_branch_command, remote_choices, tag_choices,
@@ -72,35 +73,33 @@ fn swatch(ui: &mut Ui, text: &str, rgb: [u8; 3], picked: bool, small: bool) -> e
     ui.add(button)
 }
 
-/// A mark button of the toolbar: filled while it is pressed, its text
-/// struck through while it marks the cards that do not fit it, and with a
-/// coloured border while the board shows only the cards that fit it.
-fn mark_button(
-    ui: &mut Ui,
-    by: MarkBy,
-    (pressed, inverted): (bool, bool),
-    filtering: bool,
-) -> egui::Response {
-    let mut text = RichText::new(by.label());
-    if inverted {
-        text = text.strikethrough();
-    }
+/// A mark button of the toolbar. It never stays pressed: a click marks
+/// the shown cards that fit it, a right click the ones that do not.
+fn mark_button(ui: &mut Ui, by: MarkBy) -> egui::Response {
     let hint = if by == MarkBy::All {
-        "Click: mark all repositories. Again: mark none.\nRight click: show all again.".to_owned()
+        "Click: mark all shown repositories.\nRight click: mark none.".to_owned()
     } else {
         format!(
-            "Click: mark {what}. Again: mark all others instead.\n\
-             Right click: show only {what}. Again: show all.",
+            "Click: mark {what}.\nRight click: mark all others instead.",
             what = by.what()
         )
     };
+    ui.button(by.label()).on_hover_text(hint)
+}
+
+/// A filter button of the toolbar with the number of cards it shows;
+/// the one that filters stays pressed, like a radio button.
+fn filter_button(ui: &mut Ui, by: MarkBy, pressed: bool, count: usize) -> egui::Response {
+    let hint = if by == MarkBy::All {
+        "Show all repositories".to_owned()
+    } else {
+        format!("Show only {}", by.what())
+    };
     // Not `Button::selectable`: that one has no frame until it is pressed,
-    // so the row would read as words and the filter's border would not show.
-    let mut button = egui::Button::new(text).selected(pressed);
-    if filtering {
-        button = button.stroke(egui::Stroke::new(2.0, ui.visuals().warn_fg_color));
-    }
-    ui.add(button).on_hover_text(hint)
+    // so the row would read as words.
+    let text = format!("{} ({count})", by.label());
+    ui.add(egui::Button::new(text).selected(pressed))
+        .on_hover_text(hint)
 }
 
 fn favorite_button(ui: &mut Ui, favorite: &Favorite, active: bool) -> egui::Response {
@@ -144,6 +143,8 @@ enum BoardAction {
     Copy(String, egui::Pos2),
     /// The fetch error of this card was clicked at this pointer position.
     CopyFetchError(PathBuf, egui::Pos2),
+    /// A PR or CI chip was clicked: open its page.
+    OpenUrl(String),
 }
 
 /// How long the "Copied" animation lasts, and how far it floats up.
@@ -245,6 +246,9 @@ impl App {
         }
 
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
+        if self.apply.is_some() {
+            egui::Panel::top("apply-bar").show(ui, |ui| self.apply_bar(ui));
+        }
         egui::Panel::bottom("cli").show(ui, |ui| {
             ui.add_space(4.0);
             self.cli_line(ui);
@@ -262,9 +266,10 @@ impl App {
 
         self.toasts_overlay(ui);
         self.copy_flash_overlay(ui);
-        self.confirm_dialog(ui, enter_confirms);
         self.favorite_dialog(ui);
         self.repo_view_dialog(ui);
+        // Over the repository view: a discard there asks here.
+        self.confirm_dialog(ui, enter_confirms);
         self.text_menu_overlay(ui);
         settings::show(self, ui.ctx());
     }
@@ -449,29 +454,21 @@ impl App {
         ui.separator();
         ui.label("Mark:");
         for by in MarkBy::EACH {
-            let (pressed, inverted) = match self.pressed_mark {
-                Some((button, inverted)) if button == by => (true, inverted),
-                _ => (false, false),
-            };
-            let filtering = self.status_filter == Some(by);
-            let button = mark_button(ui, by, (pressed, inverted), filtering);
+            let button = mark_button(ui, by);
             if button.clicked() {
-                self.press_mark(by);
+                self.press_mark(by, false);
             }
             if button.secondary_clicked() {
-                self.filter_by(by);
+                self.press_mark(by, true);
             }
         }
-        if let Some(by) = self.status_filter {
-            // Cards are missing from the board: say why, in plain words.
-            let showing = format!("showing {} ({})", by.label(), self.shown_cards().len());
-            let text = RichText::new(showing).color(ui.visuals().warn_fg_color);
-            if ui
-                .add(egui::Button::new(text).frame(false))
-                .on_hover_text("Only these repositories are shown. Click to show all again.")
-                .clicked()
-            {
-                self.status_filter = None;
+        ui.separator();
+        ui.label("Filter:");
+        for by in MarkBy::EACH {
+            let pressed = self.filtered_by() == by;
+            let count = self.filter_count(by);
+            if filter_button(ui, by, pressed, count).clicked() {
+                self.filter_by(by);
             }
         }
         ui.separator();
@@ -619,6 +616,7 @@ impl App {
                         self.copy(ui, output, at);
                     }
                 }
+                BoardAction::OpenUrl(url) => self.open_url(&url),
             }
         }
     }
@@ -775,14 +773,39 @@ impl App {
             });
     }
 
+    /// The bar over the board while a commit is on its way to other
+    /// repositories.
+    fn apply_bar(&mut self, ui: &mut Ui) {
+        let Some(apply) = &self.apply else {
+            return;
+        };
+        let (mut go, mut cancel) = (false, false);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Apply").strong());
+            ui.label(RichText::new(&apply.title).monospace());
+            ui.label(format!(
+                "from {} to the marked repositories",
+                title(&apply.source)
+            ));
+            go = ui.button("Apply").clicked();
+            cancel = ui.button("Cancel").clicked();
+        });
+        if go {
+            self.apply_to_marked();
+        } else if cancel {
+            self.cancel_apply();
+        }
+    }
+
     /// `enter` confirms, like a click on Run.
     fn confirm_dialog(&mut self, ui: &Ui, enter: bool) {
         let Some(pending) = &self.confirm else {
             return;
         };
         let names: Vec<String> = pending.repos.iter().map(|p| title(p)).collect();
-        let (heading, question) = match &pending.job {
-            Job::Shell(line) => (
+        let (heading, question) = match (&pending.ask, &pending.job) {
+            (Some((heading, question)), _) => (heading.as_str(), question.clone()),
+            (None, Job::Shell(line)) => (
                 "Shell command",
                 format!(
                     "Run `{line}` with {} in {}?",
@@ -790,7 +813,7 @@ impl App {
                     repositories(names.len())
                 ),
             ),
-            Job::Git(_) => (
+            (None, Job::Git(_) | Job::Steps(_) | Job::Apply { .. }) => (
                 "Destructive command",
                 format!(
                     "Run `{}` in {}? This can discard work.",
@@ -1232,6 +1255,7 @@ fn card_frame(
                 ui.multiply_opacity(0.55);
             }
             status_lines(ui, card, actions);
+            service_chips(ui, &card.chips, actions);
             if let Some(error) = &card.fetch_error {
                 // One line however long git's message is; a click copies
                 // all of the output and takes the error off the card.
@@ -1274,6 +1298,40 @@ fn card_frame(
                 }
             });
         });
+    });
+}
+
+/// The color of a chip's light.
+fn light_color(ui: &Ui, light: Light) -> Color32 {
+    match light {
+        Light::Green => ok_color(ui),
+        Light::Orange => ui.visuals().warn_fg_color,
+        Light::Red => ui.visuals().error_fg_color,
+        Light::Grey => ui.visuals().weak_text_color(),
+    }
+}
+
+/// The PR and CI chips of a card: small buttons in the color of their
+/// light; a click opens the page, a chip without one only tells.
+fn service_chips(ui: &mut Ui, chips: &[ServiceChip], actions: &mut Vec<BoardAction>) {
+    if chips.is_empty() {
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+        for chip in chips {
+            let color = light_color(ui, chip.light);
+            let text = RichText::new(&chip.text).small().color(color);
+            let button = egui::Button::new(text)
+                .small()
+                .stroke(egui::Stroke::new(1.0, color));
+            let response = ui.add(button).on_hover_text(&chip.hint);
+            if response.clicked()
+                && let Some(url) = &chip.url
+            {
+                actions.push(BoardAction::OpenUrl(url.clone()));
+            }
+        }
     });
 }
 

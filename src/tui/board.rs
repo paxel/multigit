@@ -30,16 +30,33 @@ pub const HELP: &[(&str, &str)] = &[
     ("g / G, Home / End", "first / last row"),
     ("space, click", "mark or unmark the row"),
     ("Enter, double click", "open the repository view"),
-    ("  1 2 3", "tabs Files, Commits, Graph"),
+    ("  1 .. 5", "tabs Files, Commits, Graph, Stash, Reflog"),
     ("  j / k, Enter", "move / pick or fold (a click too)"),
     ("  J / K, PgDn / PgUp", "scroll the right pane"),
     ("  [ / ]", "back / forward"),
     ("  r / y / Esc", "refresh / copy the pane / close"),
     ("  Tab", "keys to the right pane and back"),
     ("  c / p", "a commit's values to copy / its parents"),
+    ("  `", "file lists: a tree of folders or flat"),
+    ("  space / d", "Files: stage or unstage / discard"),
+    ("  e", "edit the file in $EDITOR (in the pane too)"),
+    ("  c", "Files: commit what is staged (Ctrl+S sends)"),
+    (
+        "  space / P / d",
+        "Stash: apply / pop / drop (right click: menu)",
+    ),
+    (
+        "  o",
+        "Graph: check out the branch or commit (right click: menu)",
+    ),
+    ("  a", "apply the picked commit to other repositories"),
+    ("  right click", "Files: stage, unstage, discard"),
     ("a d b p", "mark all / dirty / behind / ahead"),
-    ("D B P", "show only dirty / behind / ahead"),
-    ("A", "show all again"),
+    (
+        "Alt+a d b p",
+        "mark the opposite: none / not dirty / not behind / not ahead",
+    ),
+    ("A D B P", "show all / only dirty / behind / ahead"),
     ("/", "filter by name (Enter, Esc: done)"),
     ("s", "sort"),
     ("x, right click", "the row's menu: copy, and more"),
@@ -86,6 +103,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Mode::Favorite(form) = &app.gui.mode {
         draw_favorite_form(frame, app, form);
     }
+    if app.commit_dialog.is_some() {
+        super::commit::draw(frame, app);
+    }
     if app.confirm.is_some() {
         draw_confirm(frame, app);
     }
@@ -107,8 +127,19 @@ fn draw_board(frame: &mut Frame, app: &mut App) {
         (frame.area().height / 4).max(5)
     };
     let favorites = u16::from(!app.config.favorites.is_empty());
-    let [top, favorites_line, table, detail, out, command, status] = Layout::vertical([
+    let applying = u16::from(app.apply.is_some());
+    let [
+        top,
+        apply_line,
+        favorites_line,
+        table,
+        detail,
+        out,
+        command,
+        status,
+    ] = Layout::vertical([
         Constraint::Length(2),
+        Constraint::Length(applying),
         Constraint::Length(favorites),
         Constraint::Min(3),
         Constraint::Length(DETAIL_HEIGHT),
@@ -123,6 +154,15 @@ fn draw_board(frame: &mut Frame, app: &mut App) {
         let before = toolbar_lines(app).first().map_or(0, Line::width);
         let x = u16::try_from(before).unwrap_or(u16::MAX);
         frame.set_cursor_position((top.x.saturating_add(x), top.y));
+    }
+    if let Some(apply) = &app.apply {
+        let bar = Line::from(vec![
+            Span::styled("Apply ", Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled(apply.title.clone(), Style::new().fg(Color::Yellow)),
+            Span::raw(format!(" from {} to the marked rows", title(&apply.source))),
+            Span::styled("   Ctrl+S applies  Esc cancels", dim()),
+        ]);
+        frame.render_widget(Paragraph::new(bar), apply_line);
     }
     if favorites > 0 {
         let (line, at) = super::favorites::line(app);
@@ -174,43 +214,28 @@ fn toolbar_lines(app: &App) -> Vec<Line<'static>> {
     } else {
         first.push(Span::styled("   ? keys  q quit", dim()));
     }
-    let mut second = vec![Span::styled("mark ", dim())];
+    let mut second = vec![Span::styled("mark a d b p  filter ", dim())];
     for (key, by) in [
-        ('a', MarkBy::All),
-        ('d', MarkBy::Dirty),
-        ('b', MarkBy::Behind),
-        ('p', MarkBy::Ahead),
+        ('A', MarkBy::All),
+        ('D', MarkBy::Dirty),
+        ('B', MarkBy::Behind),
+        ('P', MarkBy::Ahead),
     ] {
-        second.push(mark_button(app, key, by));
+        second.push(filter_button(app, key, by));
         second.push(Span::raw(" "));
-    }
-    if let Some(by) = app.status_filter {
-        second.push(Span::styled(
-            format!(" showing {} ({shown})", by.label()),
-            Style::new().fg(Color::Magenta),
-        ));
-        second.push(Span::styled("  A: all", dim()));
     }
     vec![Line::from(first), Line::from(second)]
 }
 
-/// A mark button: its key and name, reversed while pressed and struck
-/// through when it marks the other cards.
-fn mark_button(app: &App, key: char, by: MarkBy) -> Span<'static> {
+/// A filter button: its key, name and the number of cards it shows,
+/// reversed while it filters.
+fn filter_button(app: &App, key: char, by: MarkBy) -> Span<'static> {
     let mut style = Style::new();
-    match app.pressed_mark {
-        Some((pressed, inverted)) if pressed == by => {
-            style = style.add_modifier(Modifier::REVERSED);
-            if inverted {
-                style = style.add_modifier(Modifier::CROSSED_OUT);
-            }
-        }
-        _ => {}
+    if app.filtered_by() == by {
+        style = style.add_modifier(Modifier::REVERSED);
     }
-    if app.status_filter == Some(by) {
-        style = style.fg(Color::Magenta);
-    }
-    Span::styled(format!("[{key}] {}", by.label()), style)
+    let count = app.filter_count(by);
+    Span::styled(format!("[{key}] {} ({count})", by.label()), style)
 }
 
 /// "1 repository", "3 repositories".
@@ -463,11 +488,26 @@ pub fn detail_lines(app: &App, card: &Card) -> Vec<Line<'static>> {
     if let Some(push) = snap.push_remote() {
         remote.push(Span::styled(format!("  push: {}", push.name), warn()));
     }
+    for chip in &card.chips {
+        remote.push(Span::raw("  "));
+        remote.push(Span::styled(chip.text.clone(), light_style(chip.light)));
+    }
     lines.push(Line::from(remote));
     if let Some(error) = &card.fetch_error {
         lines.push(Line::styled(error.card_text(), bad()));
     }
     lines
+}
+
+/// The color of a PR or CI chip's light.
+fn light_style(light: crate::domain::services::Light) -> Style {
+    use crate::domain::services::Light;
+    match light {
+        Light::Green => Style::new().fg(Color::Green),
+        Light::Orange => warn(),
+        Light::Red => bad(),
+        Light::Grey => dim(),
+    }
 }
 
 fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
@@ -696,17 +736,18 @@ fn draw_confirm(frame: &mut Frame, app: &App) {
         return;
     };
     let names: Vec<String> = pending.repos.iter().map(|p| title(p)).collect();
-    let (heading, question) = match &pending.job {
-        Job::Shell(line) => (
-            " Shell command ",
+    let (heading, question) = match (&pending.ask, &pending.job) {
+        (Some((heading, question)), _) => (format!(" {heading} "), question.clone()),
+        (None, Job::Shell(line)) => (
+            " Shell command ".to_owned(),
             format!(
                 "Run `{line}` with {} in {}?",
                 cli::login_shell_name(),
                 repositories(names.len())
             ),
         ),
-        Job::Git(_) => (
-            " Destructive command ",
+        (None, Job::Git(_) | Job::Steps(_) | Job::Apply { .. }) => (
+            " Destructive command ".to_owned(),
             format!(
                 "Run `{}` in {}? This can discard work.",
                 display(&pending.command),

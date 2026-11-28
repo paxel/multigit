@@ -11,6 +11,14 @@ pub enum Job {
     Git(Vec<String>),
     /// A line for `<shell> -c`.
     Shell(String),
+    /// Git commands one after the other (arguments after `git`); the first
+    /// that fails ends the run.
+    Steps(Vec<Vec<String>>),
+    /// Commit `hash` of the repository at `source` applied here.
+    Apply {
+        source: std::path::PathBuf,
+        hash: String,
+    },
 }
 
 /// The text after a leading `!`, trimmed; `None` for a git line.
@@ -139,9 +147,56 @@ pub fn terminal_commands(
     Ok(commands)
 }
 
+/// The command line that edits `file`: the editor setting `configured`
+/// with `{file}` replaced, or the file after it; without a setting the
+/// editor of the environment (`$VISUAL`, then `$EDITOR`). `None` when
+/// neither is set; an error when the setting cannot be split into words.
+pub fn editor_command(
+    configured: &str,
+    environment: Option<&str>,
+    file: &str,
+) -> Result<Option<Vec<String>>, String> {
+    let line = match (configured.trim(), environment.map(str::trim)) {
+        (set, _) if !set.is_empty() => set,
+        (_, Some(env)) if !env.is_empty() => env,
+        _ => return Ok(None),
+    };
+    let mut words = shell_words::split(line).map_err(|e| format!("editor command: {e}"))?;
+    if words.is_empty() {
+        return Ok(None);
+    }
+    if words.iter().any(|w| w.contains("{file}")) {
+        for word in &mut words {
+            *word = word.replace("{file}", file);
+        }
+    } else {
+        words.push(file.to_owned());
+    }
+    Ok(Some(words))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_editor_command_takes_the_file_where_it_says_or_at_its_end() {
+        let words = |configured, env| editor_command(configured, env, "/r/a b.rs").unwrap();
+        assert_eq!(
+            words("hx", None),
+            Some(vec!["hx".into(), "/r/a b.rs".into()])
+        );
+        assert_eq!(
+            words("code -g {file}:1", Some("vi")),
+            Some(vec!["code".into(), "-g".into(), "/r/a b.rs:1".into()])
+        );
+        assert_eq!(
+            words("", Some("nano")),
+            Some(vec!["nano".into(), "/r/a b.rs".into()])
+        );
+        assert_eq!(words(" ", None), None);
+        assert!(editor_command("vi 'x", None, "f").is_err());
+    }
 
     #[test]
     fn configured_terminal_is_the_only_one_tried() {

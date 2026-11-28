@@ -4,19 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.6.0]
+## [0.7.0]
 
 ### Added
 
-- On Windows the config is kept in `%APPDATA%\multigit` and the history in `%LOCALAPPDATA%\multigit` ([mgit-1015](https://github.com/paxel/multigit/issues/89)).
-- On Windows `!` lines and the terminal board's shell run in PowerShell when `SHELL` is not set: `pwsh`, or `powershell` without PowerShell 7 ([mgit-1016](https://github.com/paxel/multigit/issues/90)).
-- On Windows the terminal button opens Windows Terminal in the repository, or a PowerShell console without it ([mgit-1017](https://github.com/paxel/multigit/issues/91)).
-- On Windows files and links open with their default program ([mgit-1018](https://github.com/paxel/multigit/issues/92)).
-- On Windows sounds and the Kawaii music play through `ffplay` when installed, otherwise through PowerShell ([mgit-1019](https://github.com/paxel/multigit/issues/93)).
-- `multigit-tui` starts the terminal board, as `multigit --tui` does; on Windows it is the way to start it, and `multigit.exe` opens no console window there ([mgit-1020](https://github.com/paxel/multigit/issues/94)).
-- The Windows programs carry the multigit icon, for the Start menu and the taskbar ([mgit-1021](https://github.com/paxel/multigit/issues/95)).
-- Every release has a Windows zip, `multigit-<version>-x86_64-windows.zip`, with `multigit.exe` and `multigit-tui.exe` ([mgit-1023](https://github.com/paxel/multigit/issues/97)).
-- multigit can be installed on Windows with Scoop, from the `paxel/scoop-bucket` bucket, with a Start menu entry ([mgit-1024](https://github.com/paxel/multigit/issues/98)).
+- The file lists of the repository view switch between a tree of folders and a flat list of paths, with the Tree button of a list or `` ` `` in the terminal; the choice is saved, and the files of a commit fold by folder too ([mgit-1026](https://github.com/paxel/multigit/issues/101)).
+- The Files tab of the repository view stages, unstages and discards files and folders: a checkbox and a right-click menu in the window, Space, `d` and a right click in the terminal; each file shows its staged and unstaged letters in the colors lazygit uses, and a discard asks first ([mgit-1027](https://github.com/paxel/multigit/issues/102)).
+- Commit what is staged from the Files tab with the Commit button or `c`: one box whose first line is the subject, Ctrl+Enter (Ctrl+S in the terminal) or Enter three times at the end commits, the empty line before the body is added, nothing staged offers to stage everything, and git's error stays in the box ([mgit-1030](https://github.com/paxel/multigit/issues/105)).
+- The commit box starts with the ticket key of the branch, or of the last commit, written the way the last commit wrote it, or as `[KEY] ` ([mgit-1031](https://github.com/paxel/multigit/issues/106)).
+- A file or folder of the Files tab is stashed from its menu, untracked files too, with a message; the new Stash tab (`4`) lists the stashes with their changes and applies, pops or drops one (Space, `P`, `d` in the terminal), and a drop asks first ([mgit-1028](https://github.com/paxel/multigit/issues/103)).
+- "Edit" on a file of the repository view (`e` in the terminal) opens its copy in the working tree in the editor command of the settings, or the system's default program; the terminal hands itself to `$VISUAL` or `$EDITOR` until the editor ends ([mgit-1029](https://github.com/paxel/multigit/issues/104)).
+- The Reflog tab (`5`) of the repository view lists where HEAD has been, each step with its commit, what moved HEAD there and its message; a picked step shows its commit ([mgit-1034](https://github.com/paxel/multigit/issues/109)).
+- A row of the Graph tab checks out one of its branches or its commit from its right-click menu (`o` in the terminal); a remote branch gets its local tracking branch, local changes in the way can be stashed first, and the view says when HEAD is detached ([mgit-1033](https://github.com/paxel/multigit/issues/108)).
+- "Apply to repositories…" on a commit of the Commits, Graph or Reflog tab (`a` in the terminal) takes it to the board, where the repositories it goes to are marked; Apply makes it a commit there with the same message and author, and where it does not apply the repository stays as it was and the output says why ([mgit-1032](https://github.com/paxel/multigit/issues/107)).
+- A card on GitHub or GitLab shows chips for the pull request of its branch and the CI runs of the branch's newest commit, green, orange or red, read through `gh` or `glab` every 5 minutes, after a push and after a fetch with news; a click opens the page, and the terminal shows them in the detail strip with their links in the row's menu ([mgit-1037](https://github.com/paxel/multigit/issues/112)).
+
+### Changed
+
+- The fold triangles of the repository view in the window have three equal sides instead of a stretched shape ([mgit-1025](https://github.com/paxel/multigit/issues/100)).
+- The toolbar has a Mark group and a Filter group: a mark button marks the shown cards that fit and no longer stays pressed or turns round on a second click, a right click (Alt with the key in the terminal) marks the others; the filter buttons all, dirty, behind and ahead work like radio buttons and each shows how many cards it would show ([mgit-1035](https://github.com/paxel/multigit/issues/110)).
+- The dirty, behind and ahead filters mark the cards they show and unmark the ones they hide; a card that comes onto the board later is marked, one that leaves loses its mark ([mgit-1036](https://github.com/paxel/multigit/issues/111)).
 
 ---
 

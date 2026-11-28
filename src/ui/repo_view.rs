@@ -3,12 +3,14 @@
 //! the right, and Back and Forward through what was looked at.
 
 use crate::app::{CommitRow, commit_rows};
+use crate::domain::checkout::{Checkout, checkouts};
 use crate::domain::details::{
-    ChangeKind, Details, DiffTarget, LineKind, LogEntry, RepoTab, author_hue, file_lines, initials,
-    parse_commit, short_age, tree_rows,
+    ChangeKind, Details, DiffTarget, LineKind, LogEntry, RepoTab, author_hue, file_lines,
+    file_rows, initials, parse_commit, short_age,
 };
 use crate::domain::graph::{GraphData, GraphRow, LabelKind, RowKind, graph_rows, labels};
 use crate::domain::naming::title;
+use crate::domain::staging::{FileAct, FileState, Staged, StashAct, files_of, staged};
 use crate::ui::app::{App, RepoView};
 use crate::ui::text_menu::{self, TextOf};
 use crate::ui::view::ok_color;
@@ -25,6 +27,27 @@ enum Act {
     Fold(String),
     /// Unfold or fold the diff of this file of the picked commit.
     Unfold(String),
+    /// Fold or unfold this folder of the picked commit's files.
+    FoldCommit(String),
+    /// Flip the file lists between a tree and a flat list.
+    Tree,
+    /// Commit what is staged.
+    Commit,
+    /// Ask for the message of a stash of the file or folder at this path.
+    StartStash(String),
+    /// Edit the file at this path in the working tree.
+    Edit(String),
+    /// Check out a branch or a commit of the graph.
+    Checkout(Checkout),
+    /// Take this commit to the board, to apply it to other repositories.
+    Apply(String),
+    /// Apply, pop or drop the stash git names so.
+    Stash(StashAct, String),
+    /// Stage the file or folder at this path, or unstage it when it is
+    /// staged whole.
+    Stage(String),
+    /// Stage, unstage or discard the file or folder at this path.
+    File(FileAct, String),
     /// The end of the commit list came into view.
     More,
     /// Unfold the run of the graph that starts with this commit.
@@ -46,9 +69,13 @@ impl App {
         egui::Modal::new(egui::Id::new("repo-view")).show(ui.ctx(), |ui| {
             ui.set_width((screen.width() - 80.0).max(400.0));
             ui.set_height((screen.height() - 80.0).max(300.0));
+            let detached = self.view_detached();
             ui.horizontal(|ui| {
                 ui.heading(title(&view.repo));
                 ui.weak(view.repo.display().to_string());
+                if let Some(detached) = &detached {
+                    ui.colored_label(ui.visuals().warn_fg_color, detached);
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").clicked() {
                         act = Some(Act::Close);
@@ -75,7 +102,9 @@ impl App {
                     // Each tab has a width of its own, kept while the app
                     // runs; the graph needs room for lanes, names and titles.
                     let width = match view.tab {
-                        RepoTab::Files | RepoTab::Commits => LIST_WIDTH,
+                        RepoTab::Files | RepoTab::Commits | RepoTab::Stash | RepoTab::Reflog => {
+                            LIST_WIDTH
+                        }
                         RepoTab::Graph => (ui.available_width() * GRAPH_SHARE).max(LIST_WIDTH),
                     };
                     egui::Panel::left(egui::Id::new(("repo-view-lists", view.tab)))
@@ -90,23 +119,39 @@ impl App {
                                 RepoTab::Files => file_list(ui, details, view, &mut act),
                                 RepoTab::Commits => commit_list(ui, details, view, &mut act),
                                 RepoTab::Graph => graph_list(ui, details, view, &mut act),
+                                RepoTab::Stash => stash_list(ui, details, view, &mut act),
+                                RepoTab::Reflog => reflog_list(ui, details, view, &mut act),
                             }
                         });
                     egui::CentralPanel::default().show(ui, |ui| diff_pane(ui, view, &mut act));
                 }
             }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // Esc in a question or dialog over the view is theirs.
+            let over = self.confirm.is_some()
+                || self.commit_dialog.is_some()
+                || self.stash_prompt.is_some();
+            if !over && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 act = Some(Act::Close);
             }
         });
         match act {
             Some(Act::Close) => self.close_repo_view(),
-            Some(Act::Refresh) => self.refresh_repo_view(),
+            Some(Act::Refresh) => self.refresh_repo_view_and_chips(),
             Some(Act::Back) => self.repo_view_back(),
             Some(Act::Forward) => self.repo_view_forward(),
             Some(Act::Tab(tab)) => self.switch_repo_tab(tab),
             Some(Act::Fold(path)) => self.toggle_repo_folder(&path),
             Some(Act::Unfold(path)) => self.toggle_commit_file(&path),
+            Some(Act::FoldCommit(path)) => self.toggle_commit_folder(&path),
+            Some(Act::Tree) => self.toggle_file_tree(),
+            Some(Act::Commit) => self.start_commit(),
+            Some(Act::StartStash(path)) => self.start_stash(&path),
+            Some(Act::Edit(path)) => self.edit_file(&path),
+            Some(Act::Checkout(way)) => self.check_out(way),
+            Some(Act::Apply(hash)) => self.start_apply(&hash),
+            Some(Act::Stash(stash_act, name)) => self.stash_act(stash_act, &name),
+            Some(Act::Stage(path)) => self.toggle_staged(&path),
+            Some(Act::File(file_act, path)) => self.file_act(file_act, &path),
             Some(Act::More) => self.load_more_commits(),
             Some(Act::Run(first)) => self.unfold_graph_run(&first),
             Some(Act::Old) => self.show_old_branches(),
@@ -114,6 +159,8 @@ impl App {
             Some(Act::Copy(text, at)) => self.copy(ui, text, at),
             None => {}
         }
+        self.commit_dialog_window(ui);
+        self.stash_prompt_window(ui);
     }
 }
 
@@ -150,11 +197,34 @@ fn navigation(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
 /// A list of the view under its heading, scrolling on its own. Each tab's
 /// list keeps its own scroll position.
 fn list(ui: &mut Ui, heading: &str, tab: RepoTab, rows: impl FnOnce(&mut Ui)) {
-    ui.strong(heading);
+    if !heading.is_empty() {
+        ui.strong(heading);
+    }
     egui::ScrollArea::vertical()
         .id_salt(tab)
         .auto_shrink([false, false])
         .show(ui, rows);
+}
+
+/// The switch at the right end of a file list's heading: the files as a
+/// tree of folders, or flat. Both lists share it.
+fn tree_switch(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        tree_toggle(ui, view, act);
+    });
+}
+
+/// The Tree button itself.
+fn tree_toggle(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
+    let hover = if view.tree {
+        "Folders: click for a flat list of the files"
+    } else {
+        "Flat list: click to show the folders"
+    };
+    let switch = egui::Button::selectable(view.tree, "Tree");
+    if ui.add(switch).on_hover_text(hover).clicked() {
+        *act = Some(Act::Tree);
+    }
 }
 
 /// A row of a list; a click picks its target for the right pane.
@@ -165,12 +235,14 @@ fn row(
     text: impl Into<egui::WidgetText>,
     hover: &str,
     act: &mut Option<Act>,
-) {
+) -> egui::Response {
     let picked = view.selected.as_ref() == Some(&target);
     let entry = egui::Button::selectable(picked, text.into()).truncate();
-    if ui.add(entry).on_hover_text(hover).clicked() {
+    let response = ui.add(entry).on_hover_text(hover);
+    if response.clicked() {
         *act = Some(Act::Select(target));
     }
+    response
 }
 
 /// The color that says how a file changed.
@@ -185,42 +257,236 @@ pub(super) fn change_color(ui: &Ui, kind: ChangeKind) -> Color32 {
 /// How far a row of the tree is moved in for each level.
 const INDENT: f32 = 14.0;
 
+/// How long a side of the fold triangle is.
+const FOLD_SIDE: f32 = 8.0;
+
+/// The three corners of the fold triangle in a square box around `center`:
+/// all sides of the same length, pointing right when folded (`▸`) and down
+/// when open (`▾`).
+pub(super) fn fold_triangle(center: egui::Pos2, open: bool) -> [egui::Pos2; 3] {
+    // Height of a triangle whose sides are all FOLD_SIDE long.
+    let height = FOLD_SIDE * 3f32.sqrt() / 2.0;
+    let (half, third) = (FOLD_SIDE / 2.0, height / 3.0);
+    if open {
+        [
+            center + egui::vec2(-half, -third),
+            center + egui::vec2(half, -third),
+            center + egui::vec2(0.0, 2.0 * third),
+        ]
+    } else {
+        [
+            center + egui::vec2(-third, -half),
+            center + egui::vec2(2.0 * third, 0.0),
+            center + egui::vec2(-third, half),
+        ]
+    }
+}
+
+/// The fold triangle of a folder or a file row, in the color its widget
+/// state gives it.
+fn fold_icon(ui: &Ui, open: bool, response: &egui::Response) {
+    let color = ui.style().interact(response).fg_stroke.color;
+    let points = fold_triangle(response.rect.center(), open).to_vec();
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        color,
+        egui::Stroke::NONE,
+    ));
+}
+
 /// The Files tab: the changed files as a tree. A folder folds on a click;
 /// a file is picked for the right pane.
 fn file_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<Act>) {
-    let heading = format!("Changed files ({})", details.files.len());
-    list(ui, &heading, RepoTab::Files, |ui| {
+    ui.horizontal(|ui| {
+        ui.strong(format!("Changed files ({})", details.files.len()));
+        // Both at the right end: anything after the right-to-left part
+        // would make the list wider than its panel.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let commit = ui
+                .button("Commit")
+                .on_hover_text("Commit what is staged (lazygit: c)");
+            if commit.clicked() {
+                *act = Some(Act::Commit);
+            }
+            tree_toggle(ui, view, act);
+        });
+    });
+    list(ui, "", RepoTab::Files, |ui| {
         if details.files.is_empty() {
             ui.weak("none: the working tree is clean");
         }
-        for entry in tree_rows(&details.files, &view.closed) {
+        for entry in file_rows(&details.files, &view.closed, view.tree) {
             ui.horizontal(|ui| {
                 ui.add_space(entry.depth as f32 * INDENT);
+                let paths: Vec<&str> = files_of(&details.files, &entry.path)
+                    .iter()
+                    .map(|f| f.path.as_str())
+                    .collect();
+                stage_box(ui, staged(&details.states, &paths), &entry.path, act);
                 let Some(file) = entry.file else {
                     let size = egui::vec2(INDENT, ui.spacing().interact_size.y);
                     let (_, icon) = ui.allocate_exact_size(size, egui::Sense::click());
-                    let openness = if entry.open { 1.0 } else { 0.0 };
-                    egui::collapsing_header::paint_default_icon(ui, openness, &icon);
+                    fold_icon(ui, entry.open, &icon);
                     let name = egui::Button::new(format!("{}/", entry.name)).frame(false);
                     let hover = if entry.open { "Fold" } else { "Unfold" };
-                    if ui.add(name).on_hover_text(hover).clicked() || icon.clicked() {
-                        *act = Some(Act::Fold(entry.path));
+                    let name = ui.add(name).on_hover_text(hover);
+                    if name.clicked() || icon.clicked() {
+                        *act = Some(Act::Fold(entry.path.clone()));
                     }
+                    file_menu(&name, &view.repo, &entry.path, act);
                     return;
                 };
-                ui.add_space(INDENT);
-                let color = change_color(ui, file.kind);
-                let text = format!("{} {}", file.kind.letter(), entry.name);
+                let state = details.states.get(&file.path).copied();
+                let state = state.unwrap_or(FileState::guessed(file.kind));
+                let letters = state_text(ui, state, &entry.name);
                 let hover = format!("{}: {}", file.kind.label(), file.path);
+                let path = file.path.clone();
                 let target = DiffTarget::File(file);
-                row(
-                    ui,
-                    view,
-                    target,
-                    RichText::new(text).color(color),
-                    &hover,
-                    act,
-                );
+                let shown = row(ui, view, target, letters, &hover, act);
+                file_menu(&shown, &view.repo, &path, act);
+            });
+        }
+    });
+}
+
+/// The checkbox in front of a file or folder: checked when all of it is
+/// staged, half filled when a part is. A click stages it, or unstages it
+/// when it is staged whole.
+fn stage_box(ui: &mut Ui, staged: Staged, path: &str, act: &mut Option<Act>) {
+    let mut checked = staged == Staged::All;
+    let hover = match staged {
+        Staged::All => "Staged: click to unstage",
+        Staged::Partly => "Partly staged: click to stage all of it",
+        Staged::Nothing => "Not staged: click to stage",
+    };
+    let check = egui::Checkbox::without_text(&mut checked).indeterminate(staged == Staged::Partly);
+    if ui.add(check).on_hover_text(hover).clicked() {
+        *act = Some(Act::Stage(path.to_owned()));
+    }
+}
+
+/// A file's two status letters and its name, colored as lazygit colors
+/// them: the staged letter green, the unstaged one red, and the name green
+/// when all of it is staged, red when anything is not.
+fn state_text(ui: &Ui, state: FileState, name: &str) -> egui::text::LayoutJob {
+    let (green, red) = (ok_color(ui), ui.visuals().error_fg_color);
+    let mono = egui::TextStyle::Monospace.resolve(ui.style());
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let part = |font: &egui::FontId, color| egui::TextFormat {
+        font_id: font.clone(),
+        color,
+        ..Default::default()
+    };
+    let mut text = egui::text::LayoutJob::default();
+    let letters: Vec<char> = state.letters().chars().collect();
+    let index = letters.first().copied().unwrap_or(' ');
+    let worktree = letters.get(1).copied().unwrap_or(' ');
+    let index_color = if state.untracked() { red } else { green };
+    text.append(&index.to_string(), 0.0, part(&mono, index_color));
+    text.append(&worktree.to_string(), 0.0, part(&mono, red));
+    let name_color = if state.unstaged() { red } else { green };
+    text.append(&format!(" {name}"), 0.0, part(&body, name_color));
+    text
+}
+
+/// The right-click menu of a file or folder in the Files tab.
+fn file_menu(response: &egui::Response, repo: &std::path::Path, path: &str, act: &mut Option<Act>) {
+    response.context_menu(|ui| {
+        if !path.ends_with('/') {
+            edit_entry(ui, repo, path, act);
+        }
+        for file_act in [
+            FileAct::Stage,
+            FileAct::Unstage,
+            FileAct::DiscardAll,
+            FileAct::DiscardUnstaged,
+        ] {
+            if ui.button(file_act.label()).clicked() {
+                *act = Some(Act::File(file_act, path.to_owned()));
+            }
+        }
+        if ui.button("Stash\u{2026}").clicked() {
+            *act = Some(Act::StartStash(path.to_owned()));
+        }
+    });
+}
+
+/// "Edit": today's copy of the file in the working tree; greyed out when
+/// it is not there.
+fn edit_entry(ui: &mut Ui, repo: &std::path::Path, path: &str, act: &mut Option<Act>) {
+    let there = repo.join(path).is_file();
+    let edit = ui
+        .add_enabled(there, egui::Button::new("Edit"))
+        .on_disabled_hover_text("Not in the working tree");
+    if edit.clicked() {
+        *act = Some(Act::Edit(path.to_owned()));
+    }
+}
+
+/// The Reflog tab: where HEAD has been, newest first. A click picks the
+/// commit of a step for the right pane.
+fn reflog_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<Act>) {
+    list(ui, "Where HEAD has been", RepoTab::Reflog, |ui| {
+        if details.reflog.is_empty() {
+            ui.weak("no steps yet");
+        }
+        let mono = egui::TextStyle::Monospace.resolve(ui.style());
+        let body = egui::TextStyle::Body.resolve(ui.style());
+        for step in &details.reflog {
+            let mut text = egui::text::LayoutJob::default();
+            let weak = ui.visuals().weak_text_color();
+            text.append(
+                &format!("{} ", step.short),
+                0.0,
+                egui::TextFormat::simple(mono.clone(), weak),
+            );
+            text.append(
+                &format!("{} ", step.action),
+                0.0,
+                egui::TextFormat::simple(body.clone(), ui.visuals().warn_fg_color),
+            );
+            text.append(
+                &step.message,
+                0.0,
+                egui::TextFormat::simple(body.clone(), ui.visuals().text_color()),
+            );
+            let hover = format!("{}: {}: {}", step.name, step.action, step.message);
+            let target = DiffTarget::Commit(step.hash.clone());
+            let shown = row(ui, view, target, text, &hover, act);
+            shown.context_menu(|ui| apply_entry(ui, &step.hash, act));
+        }
+    });
+}
+
+/// The Stash tab: the stashes, newest first. A click picks one for the
+/// right pane; its right-click menu applies, pops or drops it.
+fn stash_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<Act>) {
+    list(ui, "Stashes", RepoTab::Stash, |ui| {
+        if details.stashes.is_empty() {
+            ui.weak("no stashes");
+        }
+        for stash in &details.stashes {
+            let mut text = egui::text::LayoutJob::default();
+            let mono = egui::TextStyle::Monospace.resolve(ui.style());
+            let body = egui::TextStyle::Body.resolve(ui.style());
+            text.append(
+                &format!("{} ", stash.name),
+                0.0,
+                egui::TextFormat::simple(mono, ui.visuals().weak_text_color()),
+            );
+            text.append(
+                &stash.subject,
+                0.0,
+                egui::TextFormat::simple(body, ui.visuals().text_color()),
+            );
+            let target = DiffTarget::Commit(stash.hash.clone());
+            let shown = row(ui, view, target, text, &stash.subject, act);
+            shown.context_menu(|ui| {
+                for stash_act in [StashAct::Apply, StashAct::Pop, StashAct::Drop] {
+                    if ui.button(stash_act.label()).clicked() {
+                        *act = Some(Act::Stash(stash_act, stash.name.clone()));
+                    }
+                }
             });
         }
     });
@@ -272,9 +538,21 @@ fn commit_row(ui: &mut Ui, view: &RepoView, commit: &LogEntry, now: i64, act: &m
             text.append(&commit.subject, 0.0, title);
             let hover = format!("{}, {}\n{}", commit.author, commit.date, commit.subject);
             let target = DiffTarget::Commit(commit.hash.clone());
-            row(ui, view, target, text, &hover, act);
+            let shown = row(ui, view, target, text, &hover, act);
+            shown.context_menu(|ui| apply_entry(ui, &commit.hash, act));
         });
     });
+}
+
+/// "Apply to repositories…": the commit goes to the board, where the
+/// repositories it goes to are marked.
+fn apply_entry(ui: &mut Ui, hash: &str, act: &mut Option<Act>) {
+    let entry = ui
+        .button("Apply to repositories\u{2026}")
+        .on_hover_text("Mark them on the board, then Apply");
+    if entry.clicked() {
+        *act = Some(Act::Apply(hash.to_owned()));
+    }
 }
 
 /// The Commits tab: the history of the checked-out branch. The next page
@@ -368,6 +646,7 @@ fn graph_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<
     let head = details.branches.iter().find(|b| b.current);
     let names = labels(&graph.refs, head.map(|b| b.name.as_str()));
     let rows = graph_rows(&graph.commits, &names, &view.graph_open);
+    let ways = |hash: &str| checkouts(&graph.refs, hash, head.map(|b| b.name.as_str()));
     let lanes = rows.iter().map(GraphRow::width).max().unwrap_or(1);
     ui.strong("All branches");
     graph_notes(ui, graph, view, act);
@@ -386,7 +665,7 @@ fn graph_list(ui: &mut Ui, details: &Details, view: &RepoView, act: &mut Option<
                     let size = egui::vec2(lanes as f32 * LANE, GRAPH_ROW);
                     let (gutter, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                     graph_lines(ui, gutter, entry);
-                    graph_row_text(ui, view, entry, act);
+                    graph_row_text(ui, view, entry, &ways, act);
                 });
             }
         });
@@ -414,7 +693,13 @@ fn graph_notes(ui: &mut Ui, graph: &GraphData, view: &RepoView, act: &mut Option
 
 /// What stands beside the lines of a row: the names on the commit and its
 /// title, or how many commits a folded run holds.
-fn graph_row_text(ui: &mut Ui, view: &RepoView, entry: &GraphRow, act: &mut Option<Act>) {
+fn graph_row_text(
+    ui: &mut Ui,
+    view: &RepoView,
+    entry: &GraphRow,
+    ways: &dyn Fn(&str) -> Vec<Checkout>,
+    act: &mut Option<Act>,
+) {
     match &entry.kind {
         RowKind::Fold { count, first } => {
             let text = RichText::new(format!("{count} commits")).weak();
@@ -456,7 +741,16 @@ fn graph_row_text(ui: &mut Ui, view: &RepoView, entry: &GraphRow, act: &mut Opti
             }
             let target = DiffTarget::Commit(hash.clone());
             let hover = format!("{author}\n{subject}");
-            row(ui, view, target, RichText::new(subject), &hover, act);
+            let shown = row(ui, view, target, RichText::new(subject), &hover, act);
+            shown.context_menu(|ui| {
+                for way in ways(hash) {
+                    if ui.button(&way.label).clicked() {
+                        *act = Some(Act::Checkout(way));
+                    }
+                }
+                ui.separator();
+                apply_entry(ui, hash, act);
+            });
         }
     }
 }
@@ -469,6 +763,8 @@ fn diff_pane(ui: &mut Ui, view: &RepoView, act: &mut Option<Act>) {
             ui.weak(match view.tab {
                 RepoTab::Files => "Pick a file to see its changes.",
                 RepoTab::Commits | RepoTab::Graph => "Pick a commit to see it.",
+                RepoTab::Stash => "Pick a stash to see it.",
+                RepoTab::Reflog => "Pick a step to see its commit.",
             });
             return;
         }
@@ -603,6 +899,7 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
         if count > 0 {
             line_counts(ui, commit.total_lines());
         }
+        tree_switch(ui, view, act);
     });
     let rows = commit_rows(&commit, view);
     let row_height = ui.spacing().interact_size.y;
@@ -616,17 +913,42 @@ fn commit_pane(ui: &mut Ui, view: &RepoView, raw: &str, act: &mut Option<Act>) {
                 ui.horizontal(|ui| {
                     ui.set_height(row_height);
                     match entry {
-                        CommitRow::File(file, open, lines) => {
+                        CommitRow::Folder(folder) => {
+                            ui.add_space(folder.depth as f32 * INDENT);
                             let size = egui::vec2(INDENT, row_height);
                             let (_, icon) = ui.allocate_exact_size(size, egui::Sense::click());
-                            let openness = if *open { 1.0 } else { 0.0 };
-                            egui::collapsing_header::paint_default_icon(ui, openness, &icon);
-                            let text = format!("{} {}", file.kind.letter(), file.path);
+                            fold_icon(ui, folder.open, &icon);
+                            let name = egui::Button::new(format!("{}/", folder.name)).frame(false);
+                            let hover = if folder.open { "Fold" } else { "Unfold" };
+                            if ui.add(name).on_hover_text(hover).clicked() || icon.clicked() {
+                                *act = Some(Act::FoldCommit(folder.path.clone()));
+                            }
+                        }
+                        CommitRow::File(row, open, lines) => {
+                            let file = row.file;
+                            ui.add_space(row.depth as f32 * INDENT);
+                            let size = egui::vec2(INDENT, row_height);
+                            let (_, icon) = ui.allocate_exact_size(size, egui::Sense::click());
+                            fold_icon(ui, *open, &icon);
+                            let text = format!("{} {}", file.kind.letter(), row.name);
                             let text = RichText::new(text).color(change_color(ui, file.kind));
                             let name = egui::Button::new(text).frame(false);
                             let hover = if *open { "Fold" } else { "Show what changed" };
-                            if ui.add(name).on_hover_text(hover).clicked() || icon.clicked() {
+                            let name = ui.add(name).on_hover_text(hover);
+                            if name.clicked() || icon.clicked() {
                                 *act = Some(Act::Unfold(file.path.clone()));
+                            }
+                            // A right click here opens the pane's text menu, so
+                            // Edit is a button of the row.
+                            let there = view.repo.join(&file.path).is_file();
+                            let edit =
+                                egui::Button::new(RichText::new("edit").small()).frame(false);
+                            let edit = ui
+                                .add_enabled(there, edit)
+                                .on_hover_text("Edit the file in the working tree")
+                                .on_disabled_hover_text("Not in the working tree");
+                            if edit.clicked() {
+                                *act = Some(Act::Edit(file.path.clone()));
                             }
                             match lines {
                                 Some(lines) => line_counts(ui, *lines),

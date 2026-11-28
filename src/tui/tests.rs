@@ -26,6 +26,8 @@ pub fn card(name: &str, counts: Counts, upstream: Upstream) -> Card {
         probe: Some(Ok(snapshot(counts, upstream, &["main"]))),
         fetch_error: None,
         last_command: None,
+        chips: Vec::new(),
+        chips_for: None,
     }
 }
 
@@ -192,15 +194,20 @@ fn space_and_clicks_mark_rows_and_the_mark_keys_act_like_the_buttons() {
     press(&mut app, KeyCode::Char('d'));
     assert_eq!(app.marked_repos(), vec![PathBuf::from("/repos/beta")]);
     press(&mut app, KeyCode::Char('d'));
-    assert_eq!(
-        app.marked_repos().len(),
-        2,
-        "a second press marks the others"
-    );
+    assert_eq!(app.marked_repos().len(), 1, "a second press does the same");
+    alt(&mut app, 'd');
+    assert_eq!(app.marked_repos().len(), 2, "Alt marks the others");
     press(&mut app, KeyCode::Char('a'));
     assert_eq!(app.marked_repos().len(), 3);
-    press(&mut app, KeyCode::Char('a'));
-    assert!(app.marked_repos().is_empty(), "a second all marks nothing");
+    alt(&mut app, 'a');
+    assert!(app.marked_repos().is_empty(), "Alt+a marks none");
+}
+
+fn alt(app: &mut App, c: char) {
+    on_event(
+        app,
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)),
+    );
 }
 
 #[test]
@@ -214,10 +221,21 @@ fn the_status_filter_shows_only_the_fitting_rows() {
         Upstream::None,
         &["main"],
     )));
+    let lines = screen(&mut app, 100, 24);
+    assert!(shown(
+        &lines,
+        "filter [A] all (3) [D] dirty (1) [B] behind (0)"
+    ));
     press(&mut app, KeyCode::Char('D'));
     let lines = screen(&mut app, 100, 24);
-    assert!(shown(&lines, "showing dirty (1)"));
+    assert!(!shown(&lines, "showing"));
     assert!(!shown(&lines, "alpha"));
+    press(&mut app, KeyCode::Char('D'));
+    assert_eq!(
+        app.status_filter,
+        Some(crate::app::MarkBy::Dirty),
+        "it stays"
+    );
     press(&mut app, KeyCode::Char('A'));
     let lines = screen(&mut app, 100, 24);
     assert!(shown(&lines, "alpha"));
@@ -735,6 +753,9 @@ fn repo_app() -> (App, Arc<FakeBackend>) {
     use crate::domain::details::{ChangeKind, Details, FileChange, parse_log};
     let backend = Arc::new(FakeBackend::default());
     *backend.details.lock().unwrap() = Some(Details {
+        states: Default::default(),
+        stashes: Vec::new(),
+        reflog: Vec::new(),
         files: vec![
             FileChange {
                 path: "src/main.rs".into(),
@@ -866,6 +887,8 @@ fn a_double_click_on_a_row_opens_it_and_keeps_its_mark() {
 #[test]
 fn the_commits_tab_lists_the_history_and_shows_a_picked_commit() {
     let (mut app, _) = repo_app();
+    // The files of a commit by their whole paths.
+    app.config.file_tree = false;
     open_view(&mut app);
     let lines = screen(&mut app, 120, 34);
     assert!(shown(&lines, "AL aaaabbb Fix the thing"));
@@ -882,6 +905,8 @@ fn the_commits_tab_lists_the_history_and_shows_a_picked_commit() {
 #[test]
 fn tab_goes_to_the_commit_pane_where_enter_unfolds_a_file() {
     let (mut app, _) = repo_app();
+    // The files of a commit by their whole paths.
+    app.config.file_tree = false;
     open_view(&mut app);
     press(&mut app, KeyCode::Enter);
     settle_diff(&mut app);
@@ -1270,13 +1295,7 @@ fn board_keys_move_mark_and_filter() {
     press(&mut app, KeyCode::Char('p'));
     assert_eq!(app.marked_repos(), vec![PathBuf::from("/repos/beta")]);
     let lines = screen(&mut app, 100, 24);
-    assert!(shown(&lines, "[p] ahead"));
-    press(&mut app, KeyCode::Char('p'));
-    let lines = screen(&mut app, 100, 24);
-    assert!(
-        shown(&lines, "[p] ahead"),
-        "struck through, the others marked"
-    );
+    assert!(shown(&lines, "mark a d b p"));
     press(&mut app, KeyCode::Char('B'));
     assert_eq!(app.status_filter, Some(crate::app::MarkBy::Behind));
     press(&mut app, KeyCode::Char('P'));
@@ -1754,4 +1773,181 @@ fn a_destructive_command_in_several_rows_asks_first() {
     assert!(app.confirm.is_some(), "other keys do nothing");
     press(&mut app, KeyCode::Esc);
     assert!(app.confirm.is_none());
+}
+
+#[test]
+fn backtick_flips_the_file_list_between_tree_and_flat() {
+    let (mut app, _) = repo_app();
+    app.cards[0].probe = Some(Ok(snapshot(
+        Counts {
+            modified: 1,
+            ..Counts::default()
+        },
+        Upstream::None,
+        &["main"],
+    )));
+    open_view(&mut app);
+    press(&mut app, KeyCode::Char('`'));
+    assert!(!app.config.file_tree);
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, "M src/main.rs"));
+    assert!(shown(&lines, "A src/ui/deep/new.rs"));
+    assert!(!shown(&lines, "\u{25be} src/"));
+    press(&mut app, KeyCode::Char('`'));
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, "\u{25be} src/"));
+}
+
+#[test]
+fn c_opens_the_commit_box_where_ctrl_s_or_three_enters_send() {
+    use crate::domain::staging::FileState;
+    let (mut app, backend) = repo_app();
+    if let Some(details) = backend.details.lock().unwrap().as_mut() {
+        details.states.insert(
+            "src/main.rs".into(),
+            FileState {
+                index: 'M',
+                worktree: '.',
+            },
+        );
+    }
+    app.cards[0].probe = Some(Ok(snapshot(
+        Counts {
+            modified: 1,
+            ..Counts::default()
+        },
+        Upstream::None,
+        &["main"],
+    )));
+    open_view(&mut app);
+    press(&mut app, KeyCode::Char('c'));
+    assert!(app.commit_dialog.is_some());
+    type_line(&mut app, "Fix it");
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, " Commit "));
+    assert!(shown(&lines, "Ctrl+S commits"));
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Enter);
+    }
+    assert!(app.commit_dialog.as_ref().unwrap().running.is_some());
+    crate::app::tests::settle(&mut app, |a| a.commit_dialog.is_none());
+    press(&mut app, KeyCode::Char('c'));
+    type_line(&mut app, "Again");
+    on_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+    );
+    crate::app::tests::settle(&mut app, |a| a.commit_dialog.is_none());
+    let runs = backend.runs.lock().unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].1[..2], ["commit", "--file"]);
+}
+
+#[test]
+fn the_stash_tab_lists_the_stashes_and_space_applies_one() {
+    use crate::domain::details::StashEntry;
+    let (mut app, backend) = repo_app();
+    if let Some(details) = backend.details.lock().unwrap().as_mut() {
+        details.stashes.push(StashEntry {
+            hash: "cafe".into(),
+            name: "stash@{0}".into(),
+            subject: "On main: src/".into(),
+        });
+    }
+    open_view(&mut app);
+    press(&mut app, KeyCode::Char('4'));
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, " 4 Stash "));
+    assert!(shown(&lines, "stash@{0} On main: src/"));
+    press(&mut app, KeyCode::Char(' '));
+    crate::app::tests::settle(&mut app, |_| !backend.runs.lock().unwrap().is_empty());
+    assert_eq!(
+        backend.runs.lock().unwrap()[0].1,
+        ["stash", "apply", "stash@{0}"]
+    );
+    press(&mut app, KeyCode::Char('d'));
+    assert!(app.confirm.is_some(), "a drop asks");
+}
+
+#[test]
+fn five_shows_where_head_has_been() {
+    use crate::domain::details::parse_reflog;
+    let (mut app, backend) = repo_app();
+    if let Some(details) = backend.details.lock().unwrap().as_mut() {
+        details.reflog =
+            parse_reflog("aaaabbbb\taaaabbb\tHEAD@{0}\tcheckout: moving from main to side\n");
+    }
+    open_view(&mut app);
+    press(&mut app, KeyCode::Char('5'));
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, " 5 Reflog "));
+    assert!(shown(&lines, "aaaabbb checkout moving from main to side"));
+    press(&mut app, KeyCode::Enter);
+    settle_diff(&mut app);
+    let lines = screen(&mut app, 120, 30);
+    assert!(shown(&lines, "aaaabbbb [main] [v9]"), "the step's commit");
+}
+
+#[test]
+fn a_on_a_commit_goes_to_the_board_where_ctrl_s_applies_it() {
+    let (mut app, backend) = repo_app();
+    app.cards
+        .push(card("beta", Counts::default(), Upstream::None));
+    open_view(&mut app);
+    press(&mut app, KeyCode::Enter);
+    settle_diff(&mut app);
+    press(&mut app, KeyCode::Char('a'));
+    assert!(app.repo_view.is_none());
+    let lines = screen(&mut app, 120, 30);
+    assert!(
+        shown(&lines, "Apply aaaabbb Fix the thing from alpha"),
+        "{lines:#?}"
+    );
+    app.marked.insert(PathBuf::from("/repos/beta"));
+    on_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+    );
+    assert!(app.apply.is_none());
+    crate::app::tests::settle(&mut app, |_| !backend.runs.lock().unwrap().is_empty());
+    let (dir, args) = backend.runs.lock().unwrap()[0].clone();
+    assert_eq!(dir, PathBuf::from("/repos/beta"));
+    assert_eq!(args[0], "apply");
+}
+
+#[test]
+fn the_detail_strip_shows_the_chips_and_the_menu_copies_their_links() {
+    use crate::domain::services::{Light, ServiceChip};
+    let mut app = board_app();
+    let mut snap = snapshot(Counts::default(), Upstream::None, &["main"]);
+    snap.remotes = vec![crate::domain::remote::Remote {
+        name: "origin".into(),
+        url: "git@github.com:o/r.git".into(),
+    }];
+    app.cards[0].probe = Some(Ok(snap));
+    app.cards[0].chips = vec![
+        ServiceChip {
+            text: "PR #12".into(),
+            light: Light::Green,
+            url: Some("https://github.com/o/r/pull/12".into()),
+            hint: String::new(),
+        },
+        ServiceChip {
+            text: "CI".into(),
+            light: Light::Red,
+            url: Some("https://github.com/o/r/actions/runs/1".into()),
+            hint: String::new(),
+        },
+    ];
+    let lines = screen(&mut app, 100, 30);
+    assert!(
+        shown(&lines, "ssh github.com/o/r  PR #12  CI"),
+        "{lines:#?}"
+    );
+    press(&mut app, KeyCode::Char('x'));
+    pick(&mut app, "Copy the link of PR #12");
+    assert_eq!(
+        app.gui.copies,
+        vec!["https://github.com/o/r/pull/12".to_owned()]
+    );
 }

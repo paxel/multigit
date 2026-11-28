@@ -2,7 +2,7 @@
 
 use crate::application::desktop::Desktop;
 use crate::domain::audio::player_commands;
-use crate::domain::command::terminal_commands;
+use crate::domain::command::{editor_command, terminal_commands};
 use crate::domain::system::System;
 use std::ffi::OsStr;
 use std::io;
@@ -151,6 +151,18 @@ impl Desktop for SystemDesktop {
         )
         .map_err(io::Error::other)?;
         spawn_first(&commands, dir, NO_TERMINAL)
+    }
+
+    /// The editor of the settings, started on its own; without one the
+    /// system's default program for the file.
+    fn edit_file(&self, file: &Path, configured: &str) -> io::Result<()> {
+        let words =
+            editor_command(configured, None, &file.to_string_lossy()).map_err(io::Error::other)?;
+        let Some((program, args)) = words.as_ref().and_then(|w| w.split_first()) else {
+            return self.open_file(file);
+        };
+        let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+        spawn_detached(OsStr::new(program), &args, file.parent())
     }
 
     fn play(&self, file: &Path) -> io::Result<()> {

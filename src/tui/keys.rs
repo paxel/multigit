@@ -55,6 +55,10 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
         }
         return;
     }
+    if app.commit_dialog.is_some() {
+        super::commit::key(app, key);
+        return;
+    }
     match std::mem::take(&mut app.gui.mode) {
         Mode::Board if app.settings_open => super::settings::key(app, key),
         Mode::Board if app.repo_view.is_some() => super::repo::key(app, key),
@@ -101,6 +105,20 @@ pub fn on_key(app: &mut App, key: KeyEvent) {
 }
 
 fn board_key(app: &mut App, key: KeyEvent) {
+    if app.apply.is_some() {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('s' | 'j') | KeyCode::Enter if ctrl => {
+                app.apply_to_marked();
+                return;
+            }
+            KeyCode::Esc => {
+                app.cancel_apply();
+                return;
+            }
+            _ => {}
+        }
+    }
     match key.code {
         KeyCode::Char('q') => app.gui.quit = true,
         KeyCode::Char('?') => app.gui.help = true,
@@ -120,11 +138,16 @@ fn board_key(app: &mut App, key: KeyEvent) {
                 app.open_repo_view(&path);
             }
         }
-        KeyCode::Char('a') => app.press_mark(MarkBy::All),
-        KeyCode::Char('d') => app.press_mark(MarkBy::Dirty),
-        KeyCode::Char('b') => app.press_mark(MarkBy::Behind),
-        KeyCode::Char('p') => app.press_mark(MarkBy::Ahead),
-        KeyCode::Char('A') => app.status_filter = None,
+        KeyCode::Char(c @ ('a' | 'd' | 'b' | 'p')) => {
+            let by = match c {
+                'a' => MarkBy::All,
+                'd' => MarkBy::Dirty,
+                'b' => MarkBy::Behind,
+                _ => MarkBy::Ahead,
+            };
+            app.press_mark(by, key.modifiers.contains(KeyModifiers::ALT));
+        }
+        KeyCode::Char('A') => app.filter_by(MarkBy::All),
         KeyCode::Char('D') => app.filter_by(MarkBy::Dirty),
         KeyCode::Char('B') => app.filter_by(MarkBy::Behind),
         KeyCode::Char('P') => app.filter_by(MarkBy::Ahead),
@@ -256,6 +279,7 @@ pub fn on_mouse(app: &mut App, mouse: MouseEvent) {
     if app.repo_view.is_some() {
         let kind = match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => super::repo::MouseAt::Click,
+            MouseEventKind::Down(MouseButton::Right) => super::repo::MouseAt::RightClick,
             MouseEventKind::ScrollDown => super::repo::MouseAt::Down,
             MouseEventKind::ScrollUp => super::repo::MouseAt::Up,
             _ => return,

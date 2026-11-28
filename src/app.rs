@@ -7,24 +7,31 @@ use crate::application::music::Music;
 use crate::application::schedule::{Due, Schedule};
 use crate::domain::audio::{self, SAMPLE_RATE, Sound};
 use crate::domain::board::{SortKey, Sorted, compare, is_ahead, matches_filter};
+use crate::domain::checkout::{Checkout, checkouts, refused_for_changes, stash_before};
 use crate::domain::command::{Job, display, shell_line};
+use crate::domain::commit_message::{finish, prefill};
 use crate::domain::completion::{RepoValues, Vocabulary, strip_git_prefix};
 use crate::domain::config::{Config, Theme};
 use crate::domain::critters::{News, Troupe};
 use crate::domain::destructive::is_destructive;
 use crate::domain::details::{
     CommitDetail, Details, DiffTarget, FileChange, LineKind, LogEntry, Place, RepoTab, Trail,
-    file_lines, parse_commit,
+    TreeRow, file_lines, file_rows, parse_commit,
 };
 use crate::domain::favorites::{FavoriteDraft, active_after_delete, forget};
 use crate::domain::graph::GraphData;
 use crate::domain::history::History;
 use crate::domain::kawaii;
 use crate::domain::naming::{board_order, title};
-use crate::domain::output::{OutputLog, SectionState};
+use crate::domain::output::{OutputLog, ProcessOutput, SectionState};
+use crate::domain::remote::host_and_path;
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
+use crate::domain::services::{ChipQuery, ServiceChip};
 use crate::domain::songs::{STYLES, styles_on};
-use crate::domain::status::{RepoState, Upstream};
+use crate::domain::staging::{
+    FileAct, Staged, StashAct, file_steps, files_of, staged, stash_push, states_of,
+};
+use crate::domain::status::{Head, RepoState, Upstream};
 use crate::infrastructure::audio::decode;
 use crate::infrastructure::desktop::{scratch_dir, write_scratch_file};
 use crate::infrastructure::scan::{is_repo, scan};
@@ -49,6 +56,11 @@ pub struct Card {
     pub fetch_error: Option<FetchError>,
     /// Outcome of the last command run on this card.
     pub last_command: Option<bool>,
+    /// The PR and CI chips, as last read.
+    pub chips: Vec<ServiceChip>,
+    /// What the chips were last read for; a new branch or remote reads
+    /// them again.
+    pub chips_for: Option<ChipQuery>,
 }
 
 impl Card {
@@ -58,6 +70,8 @@ impl Card {
             probe: None,
             fetch_error: None,
             last_command: None,
+            chips: Vec::new(),
+            chips_for: None,
         }
     }
 
@@ -100,6 +114,70 @@ pub struct PendingRun {
     pub command: String,
     pub job: Job,
     pub repos: Vec<PathBuf>,
+    /// The heading and the question of the confirmation, when the run is
+    /// not a typed command but something picked in the repository view.
+    pub ask: Option<(String, String)>,
+    /// The commit dialog opens when it is confirmed.
+    pub commit_after: bool,
+}
+
+/// What follows when a run started from the repository view ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AfterRun {
+    /// The view is read again.
+    Refresh,
+    /// The same, and the commit dialog closes, or shows the error.
+    Commit,
+    /// The same; when local changes stopped the checkout, the offer to
+    /// stash them and check out.
+    Checkout(Checkout),
+}
+
+/// The commit dialog of the repository view: one box whose first line is
+/// the subject.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommitDialog {
+    pub text: String,
+    /// git's error from the last try; the message stays.
+    pub error: Option<String>,
+    /// The commit runs as this run of the output panel.
+    pub running: Option<u64>,
+}
+
+/// A commit on its way to other repositories: the board shows it in a bar
+/// while the repositories it goes to are marked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyMode {
+    /// The repository the commit is in.
+    pub source: PathBuf,
+    /// Its full hash.
+    pub hash: String,
+    /// Its short hash and subject, for the bar.
+    pub title: String,
+}
+
+/// The question for the message of a stash of a file or folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashPrompt {
+    /// The file, or the folder with its `/`.
+    pub path: String,
+    pub message: String,
+}
+
+/// What a failed command said, for a dialog: its error lines, or its
+/// output when it wrote none.
+fn first_error(out: &ProcessOutput) -> String {
+    let text = if out.stderr.trim().is_empty() {
+        &out.stdout
+    } else {
+        &out.stderr
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        "git failed".to_owned()
+    } else {
+        text.to_owned()
+    }
 }
 
 /// The open read-only view of one repository.
@@ -118,6 +196,12 @@ pub struct RepoView {
     pub trail: Trail<Place>,
     /// The folders of the file tree that are folded, by path.
     pub closed: HashSet<String>,
+    /// The file lists are a tree of folders, not a flat list (the setting
+    /// of the same name, kept here for the lists).
+    pub tree: bool,
+    /// The folders of the picked commit's file tree that are folded, by
+    /// path; they open again when another commit is picked.
+    pub commit_closed: HashSet<String>,
     /// The files of the picked commit that are unfolded, by path, each
     /// with its diff; `None` while it is read.
     pub unfolded: HashMap<String, Option<Result<String, String>>>,
@@ -155,6 +239,7 @@ impl RepoView {
             self.selected = None;
             self.diff = None;
             self.unfolded.clear();
+            self.commit_closed.clear();
         }
         let mut kept = std::mem::take(&mut self.kept);
         kept.retain(|_, target| self.holds(target));
@@ -240,15 +325,36 @@ impl MarkBy {
     }
 }
 
+/// Git commands one after the other as the output panel names them.
+fn steps_line(steps: &[Vec<String>]) -> String {
+    steps
+        .iter()
+        .map(shell_words::join)
+        .collect::<Vec<_>>()
+        .join(" && git ")
+}
+
 /// The whole application state.
 /// The rows under the header of `commit`: its files, each with the lines
 /// of its diff when it is unfolded.
 pub fn commit_rows<'a>(commit: &'a CommitDetail, view: &'a RepoView) -> Vec<CommitRow<'a>> {
     let mut rows = Vec::new();
-    for file in &commit.files {
+    for entry in file_rows(&commit.files, &view.commit_closed, view.tree) {
+        let Some(file) = commit.files.iter().find(|f| f.path == entry.path) else {
+            rows.push(CommitRow::Folder(entry));
+            continue;
+        };
         let diff = view.unfolded.get(&file.path);
         let lines = commit.lines.get(&file.path).copied();
-        rows.push(CommitRow::File(file, diff.is_some(), lines));
+        rows.push(CommitRow::File(
+            CommitFile {
+                file,
+                depth: entry.depth,
+                name: entry.name,
+            },
+            diff.is_some(),
+            lines,
+        ));
         match diff {
             None => {}
             Some(None) => rows.push(CommitRow::Note("loading")),
@@ -289,9 +395,15 @@ impl RepoView {
                 let lines: Vec<String> = commit_rows(&commit, self)
                     .into_iter()
                     .map(|row| match row {
-                        CommitRow::File(file, ..) => {
-                            format!("{} {}", file.kind.letter(), file.path)
+                        CommitRow::Folder(folder) => {
+                            format!("{}{}/", "  ".repeat(folder.depth), folder.name)
                         }
+                        CommitRow::File(row, ..) => format!(
+                            "{}{} {}",
+                            "  ".repeat(row.depth),
+                            row.file.kind.letter(),
+                            row.name
+                        ),
                         CommitRow::Line(_, line) => line.to_owned(),
                         CommitRow::Note(note) => note.to_owned(),
                     })
@@ -303,11 +415,22 @@ impl RepoView {
     }
 }
 
+/// A file among the files of a commit, where it stands in their list.
+pub struct CommitFile<'a> {
+    pub file: &'a FileChange,
+    /// How deep it sits in the tree; 0 in the flat list.
+    pub depth: usize,
+    /// What the row shows: its name in the tree, its path in the flat list.
+    pub name: String,
+}
+
 /// A row under the header of a commit.
 pub enum CommitRow<'a> {
+    /// A folder of the tree of its files.
+    Folder(TreeRow),
     /// A file, whether its diff is unfolded, and its lines added and taken
     /// away (a binary file has none).
-    File(&'a FileChange, bool, Option<(u32, u32)>),
+    File(CommitFile<'a>, bool, Option<(u32, u32)>),
     Line(LineKind, &'a str),
     Note(&'a str),
 }
@@ -323,12 +446,14 @@ pub struct App<G = ()> {
     pub cards: Vec<Card>,
     /// Marks of all cards, also of the ones the filter hides.
     pub marked: BTreeSet<PathBuf>,
-    /// The mark button that is pressed, and whether it was clicked again
-    /// and marks the cards that do not fit it; not saved.
-    pub pressed_mark: Option<(MarkBy, bool)>,
-    /// The mark button the board is filtered by: only the cards that fit
-    /// it are shown. Never `All`; not saved.
+    /// The filter button the board is filtered by: only the cards that fit
+    /// it are shown. Never `All`, which is `None`; not saved.
     pub status_filter: Option<MarkBy>,
+    /// When the chips of all cards are read next.
+    chips_due: Option<Instant>,
+    /// Runs that push: the chips of their repositories are read when they
+    /// end.
+    push_runs: BTreeSet<u64>,
     /// Text of the filter field; not saved.
     pub filter: String,
     /// What the board is sorted by; not saved.
@@ -369,6 +494,15 @@ pub struct App<G = ()> {
     /// of the mark.
     wobbles: HashMap<PathBuf, f64>,
     pub confirm: Option<PendingRun>,
+    /// Runs started from the repository view: the view is read again when
+    /// each ends.
+    view_runs: HashMap<u64, AfterRun>,
+    /// The open commit dialog of the repository view.
+    pub commit_dialog: Option<CommitDialog>,
+    /// The window's question for the message of a stash.
+    pub stash_prompt: Option<StashPrompt>,
+    /// The board picks the repositories a commit goes to.
+    pub apply: Option<ApplyMode>,
     pub settings_open: bool,
     pub settings_page: SettingsPage,
     notify: Notify,
@@ -423,8 +557,9 @@ impl<G: Default> App<G> {
             paths,
             cards,
             marked: BTreeSet::new(),
-            pressed_mark: None,
             status_filter: None,
+            chips_due: None,
+            push_runs: BTreeSet::new(),
             filter: String::new(),
             sort: SortKey::default(),
             active_favorite: None,
@@ -449,6 +584,10 @@ impl<G: Default> App<G> {
             kawaii_awake: 0.0,
             wobbles: HashMap::new(),
             confirm: None,
+            view_runs: HashMap::new(),
+            commit_dialog: None,
+            stash_prompt: None,
+            apply: None,
             settings_open: false,
             settings_page: SettingsPage::default(),
             notify,
@@ -773,6 +912,8 @@ impl<G: Default> App<G> {
             kept: HashMap::new(),
             trail: Trail::new((tab, None)),
             closed: HashSet::new(),
+            tree: self.config.file_tree,
+            commit_closed: HashSet::new(),
             unfolded: HashMap::new(),
             graph: None,
             graph_open: HashSet::new(),
@@ -804,6 +945,81 @@ impl<G: Default> App<G> {
         }
     }
 
+    /// **Refresh** in the repository view: its lists, and the chips of its
+    /// card.
+    pub fn refresh_repo_view_and_chips(&mut self) {
+        self.refresh_repo_view();
+        if let Some(repo) = self.repo_view.as_ref().map(|v| v.repo.clone()) {
+            self.read_chips(&[repo]);
+        }
+    }
+
+    /// What the chips of a card are read for: the host and repository of
+    /// the remote the branch tracks (or `origin`) and the branch there.
+    /// `None` without a branch, a remote on a code host, or a service
+    /// switched on.
+    fn chip_query(&self, card: &Card) -> Option<ChipQuery> {
+        let (github, gitlab) = (self.config.chips_github, self.config.chips_gitlab);
+        if !github && !gitlab {
+            return None;
+        }
+        let snap = card.snapshot()?;
+        let remote = snap.remote()?;
+        let (host, path) = host_and_path(&remote.url)?;
+        let tracked = snap
+            .status
+            .tracking
+            .as_deref()
+            .and_then(|t| t.strip_prefix(remote.name.as_str()))
+            .and_then(|t| t.strip_prefix('/'));
+        let branch = match (&snap.status.head, tracked) {
+            (_, Some(tracked)) => tracked.to_owned(),
+            (Head::Branch(b), None) => b.clone(),
+            _ => return None,
+        };
+        Some(ChipQuery {
+            host,
+            path,
+            branch,
+            github,
+            gitlab,
+        })
+    }
+
+    /// Read the chips of these cards again; a card with nothing to read
+    /// them for loses its chips.
+    fn read_chips(&mut self, repos: &[PathBuf]) {
+        let mut load = Vec::new();
+        for repo in repos {
+            let query = self
+                .cards
+                .iter()
+                .find(|c| &c.path == repo)
+                .and_then(|c| self.chip_query(c));
+            let Some(card) = self.card_mut(repo) else {
+                continue;
+            };
+            card.chips_for = query.clone();
+            match query {
+                Some(query) => load.push((repo.clone(), query)),
+                None => card.chips.clear(),
+            }
+        }
+        self.engine.load_chips(load);
+    }
+
+    /// A card was probed: its chips are read when they were never read for
+    /// what it is on now (its first probe, another branch), or when a
+    /// fetch brought news.
+    fn chips_after_probe(&mut self, repo: &Path, fetched_news: bool) {
+        let Some(card) = self.cards.iter().find(|c| c.path == repo) else {
+            return;
+        };
+        if fetched_news || self.chip_query(card) != card.chips_for {
+            self.read_chips(&[repo.to_path_buf()]);
+        }
+    }
+
     /// Show `place` in the open view: its tab, and its pick with the diff.
     /// A pick the lists no longer hold is left out.
     fn show_place(&mut self, (tab, target): Place) {
@@ -822,6 +1038,7 @@ impl<G: Default> App<G> {
         view.selected = held.clone();
         view.diff = None;
         view.unfolded.clear();
+        view.commit_closed.clear();
         if let Some(target) = held {
             self.engine.load_diff(view.repo.clone(), target);
         }
@@ -835,6 +1052,7 @@ impl<G: Default> App<G> {
             view.selected = Some(target.clone());
             view.diff = None;
             view.unfolded.clear();
+            view.commit_closed.clear();
             self.engine.load_diff(view.repo.clone(), target);
         }
     }
@@ -940,6 +1158,25 @@ impl<G: Default> App<G> {
         }
     }
 
+    /// A click on a folder of the picked commit's file tree: fold it, or
+    /// unfold it.
+    pub fn toggle_commit_folder(&mut self, path: &str) {
+        if let Some(view) = &mut self.repo_view
+            && !view.commit_closed.remove(path)
+        {
+            view.commit_closed.insert(path.to_owned());
+        }
+    }
+
+    /// The switch of the file lists: a tree of folders, or a flat list.
+    /// The choice is a setting, saved with the others.
+    pub fn toggle_file_tree(&mut self) {
+        self.config.file_tree = !self.config.file_tree;
+        if let Some(view) = &mut self.repo_view {
+            view.tree = self.config.file_tree;
+        }
+    }
+
     /// A click on a tab of the view: show it, with what was picked in it.
     pub fn switch_repo_tab(&mut self, tab: RepoTab) {
         let Some(view) = &mut self.repo_view else {
@@ -995,6 +1232,57 @@ impl<G: Default> App<G> {
         }
     }
 
+    /// A run started from the repository view ended, with git's error
+    /// when it failed.
+    fn after_view_run(&mut self, after: AfterRun, repo: &Path, error: Option<String>) {
+        // git says why in the user's language: a failure while there are
+        // local changes gets the offer too.
+        let dirty = self
+            .repo_view
+            .as_ref()
+            .and_then(|v| v.details.as_ref())
+            .and_then(|d| d.as_ref().ok())
+            .is_some_and(|d| !d.files.is_empty());
+        let refused = error.as_deref().is_some_and(refused_for_changes);
+        if let AfterRun::Checkout(way) = &after
+            && error.is_some()
+            && (refused || dirty)
+        {
+            let why = if refused {
+                format!("Local changes stop the checkout of {}.", way.what)
+            } else {
+                format!(
+                    "The checkout of {} failed while there are local changes.",
+                    way.what
+                )
+            };
+            let question = format!(
+                "{why} Stash them, untracked files too, and check out? The stash stays in the Stash tab."
+            );
+            let steps = vec![stash_before(&way.what), way.args.clone()];
+            self.confirm = Some(PendingRun {
+                command: steps_line(&steps),
+                job: Job::Steps(steps),
+                repos: vec![repo.to_path_buf()],
+                ask: Some(("Stash and check out".to_owned(), question)),
+                commit_after: false,
+            });
+        }
+        if matches!(after, AfterRun::Commit)
+            && let Some(dialog) = &mut self.commit_dialog
+        {
+            dialog.running = None;
+            match error {
+                None => self.commit_dialog = None,
+                Some(error) => dialog.error = Some(error),
+            }
+        }
+        // What was done in the view shows in its lists.
+        if self.repo_view.as_ref().is_some_and(|v| v.repo == repo) {
+            self.refresh_repo_view();
+        }
+    }
+
     pub fn is_kawaii(&self) -> bool {
         self.config.theme == Theme::Kawaii
     }
@@ -1003,6 +1291,10 @@ impl<G: Default> App<G> {
     /// a card that gets its mark swings.
     pub fn toggle_mark(&mut self, path: PathBuf) {
         if self.marked.remove(&path) {
+            return;
+        }
+        if self.apply.as_ref().is_some_and(|a| a.source == path) {
+            self.toast("The commit comes from this repository");
             return;
         }
         if self.is_kawaii() {
@@ -1162,12 +1454,17 @@ impl<G: Default> App<G> {
 
     /// Whether the board shows this card.
     pub fn shows(&self, card: &Card) -> bool {
+        let fits = self.status_filter.is_none_or(|by| by.fits(card));
+        fits && self.shows_besides_status(card)
+    }
+
+    /// The active favorite and the name filter leave the card on the board.
+    fn shows_besides_status(&self, card: &Card) -> bool {
         let in_active = self
             .active_favorite
             .and_then(|i| self.config.favorites.get(i))
             .is_none_or(|f| f.contains(&card.path));
-        let fits = self.status_filter.is_none_or(|by| by.fits(card));
-        in_active && fits && matches_filter(&card.path, &self.filter)
+        in_active && matches_filter(&card.path, &self.filter)
     }
 
     /// The cards the board shows, in the order of the sort key. Everything that acts on
@@ -1203,25 +1500,144 @@ impl<G: Default> App<G> {
             .collect();
         self.marked.retain(|p| !shown.contains(p));
         self.marked.extend(picked);
+        // The repository a commit comes from takes no mark while it goes.
+        if let Some(apply) = &self.apply {
+            self.marked.remove(&apply.source);
+        }
     }
 
-    /// A right click on a mark button: show only the cards that fit it,
-    /// as they fit it now and later. On the button that filters, and on
-    /// `All`, it shows all again. The marks and the pressed button stay.
+    /// "Apply to repositories…" on a commit of the view: back to the
+    /// board, where the repositories it goes to are marked.
+    pub fn start_apply(&mut self, hash: &str) {
+        let Some(view) = &self.repo_view else {
+            return;
+        };
+        let details = view.details.as_ref().and_then(|d| d.as_ref().ok());
+        let listed = details.and_then(|d| {
+            d.commits
+                .iter()
+                .find(|c| c.hash == hash)
+                .map(|c| c.subject.clone())
+                .or_else(|| {
+                    d.reflog
+                        .iter()
+                        .find(|r| r.hash == hash)
+                        .map(|r| r.message.clone())
+                })
+        });
+        let drawn = match &view.graph {
+            Some(Ok(graph)) => graph
+                .commits
+                .iter()
+                .find(|c| c.hash == hash)
+                .map(|c| c.subject.clone()),
+            _ => None,
+        };
+        let subject = listed.or(drawn).unwrap_or_default();
+        let short: String = hash.chars().take(7).collect();
+        let source = view.repo.clone();
+        self.marked.remove(&source);
+        self.apply = Some(ApplyMode {
+            source,
+            hash: hash.to_owned(),
+            title: format!("{short} {subject}").trim_end().to_owned(),
+        });
+        self.close_repo_view();
+    }
+
+    /// Apply in the bar: the commit goes to every marked repository, as a
+    /// commit with its message and author; where it does not apply, the
+    /// output panel says why.
+    pub fn apply_to_marked(&mut self) {
+        let Some(apply) = self.apply.clone() else {
+            return;
+        };
+        let targets: Vec<PathBuf> = self
+            .marked_repos()
+            .into_iter()
+            .filter(|r| *r != apply.source)
+            .collect();
+        if targets.is_empty() {
+            self.toast("Mark the repositories the commit goes to");
+            return;
+        }
+        self.apply = None;
+        let short: String = apply.hash.chars().take(7).collect();
+        let command = format!("am --3way {short} (from {})", title(&apply.source));
+        let id = self.log.start(&command, &targets);
+        for repo in &targets {
+            let job = Job::Apply {
+                source: apply.source.clone(),
+                hash: apply.hash.clone(),
+            };
+            self.engine.run_command(id, repo, job);
+        }
+    }
+
+    /// Cancel in the bar: the commit goes nowhere.
+    pub fn cancel_apply(&mut self) {
+        self.apply = None;
+    }
+
+    /// A filter button: show only the cards that fit it, as they fit it
+    /// now and later; `All` shows all. Like radio buttons, the same one
+    /// again changes nothing. Dirty, behind and ahead mark the cards they
+    /// show and unmark the ones they hide; all leaves the marks alone.
     pub fn filter_by(&mut self, by: MarkBy) {
-        self.status_filter = (by != MarkBy::All && self.status_filter != Some(by)).then_some(by);
+        if self.filtered_by() == by {
+            return;
+        }
+        self.status_filter = (by != MarkBy::All).then_some(by);
+        if by != MarkBy::All {
+            let hidden: BTreeSet<PathBuf> = self
+                .cards
+                .iter()
+                .filter(|c| !by.fits(c))
+                .map(|c| c.path.clone())
+                .collect();
+            self.marked.retain(|p| !hidden.contains(p));
+            self.mark_where(|_| true);
+        }
     }
 
-    /// A click on a mark button. The first click marks the shown cards that
-    /// fit it and unmarks the other shown ones; a click on the pressed
-    /// button turns that round, and the next one back. The button stays
-    /// pressed until another one is clicked, whatever happens to the marks
-    /// in between.
-    pub fn press_mark(&mut self, by: MarkBy) {
-        let inverted =
-            matches!(self.pressed_mark, Some((pressed, inverted)) if pressed == by && !inverted);
-        self.pressed_mark = Some((by, inverted));
-        self.mark_where(|card| by.fits(card) != inverted);
+    /// A card's status changed under a dirty, behind or ahead filter: one
+    /// that came onto the board is marked, one that left it is unmarked.
+    fn follow_filter(&mut self, repo: &Path, fitted: bool) {
+        let Some(by) = self.status_filter else {
+            return;
+        };
+        let Some(card) = self.cards.iter().find(|c| c.path == repo) else {
+            return;
+        };
+        let fits = by.fits(card);
+        let shown = self.shows(card);
+        let source = self.apply.as_ref().is_some_and(|a| a.source == repo);
+        if fits && !fitted && shown && !source {
+            self.marked.insert(repo.to_path_buf());
+        } else if fitted && !fits {
+            self.marked.remove(repo);
+        }
+    }
+
+    /// The filter button that is pressed: `All` when nothing filters.
+    pub fn filtered_by(&self) -> MarkBy {
+        self.status_filter.unwrap_or(MarkBy::All)
+    }
+
+    /// How many cards a filter button would show: the ones the favorite
+    /// and the name filter leave that fit it.
+    pub fn filter_count(&self, by: MarkBy) -> usize {
+        self.cards
+            .iter()
+            .filter(|c| self.shows_besides_status(c) && by.fits(c))
+            .count()
+    }
+
+    /// A mark button: mark the shown cards that fit it and unmark the
+    /// other shown ones, or with `opposite` (a right click, Alt with the
+    /// key) the other way round, so the opposite of `All` marks none.
+    pub fn press_mark(&mut self, by: MarkBy, opposite: bool) {
+        self.mark_where(|card| by.fits(card) != opposite);
     }
 
     /// The marked repositories the board shows, in board order.
@@ -1251,6 +1667,8 @@ impl<G: Default> App<G> {
                     command: command.to_owned(),
                     job: Job::Shell(line.to_owned()),
                     repos,
+                    ask: None,
+                    commit_after: false,
                 });
             }
             return;
@@ -1267,6 +1685,8 @@ impl<G: Default> App<G> {
             command: command.to_owned(),
             job: Job::Git(args),
             repos,
+            ask: None,
+            commit_after: false,
         };
         if destructive {
             self.confirm = Some(pending);
@@ -1277,9 +1697,319 @@ impl<G: Default> App<G> {
 
     fn execute(&mut self, run: PendingRun) {
         let id = self.log.start(&run.command, &run.repos);
+        if matches!(&run.job, Job::Git(args) if args.first().is_some_and(|a| a == "push")) {
+            self.push_runs.insert(id);
+        }
         for repo in &run.repos {
             self.engine.run_command(id, repo, run.job.clone());
         }
+        if run.ask.is_some() {
+            self.view_runs.insert(id, AfterRun::Refresh);
+        }
+        if run.commit_after {
+            self.open_commit_dialog();
+        }
+    }
+
+    /// Run `steps` (git arguments, one command after the other) in the
+    /// repository of the open view, in the output panel like any command.
+    /// The view is read again when they end.
+    pub fn run_in_view(&mut self, steps: Vec<Vec<String>>) -> Option<u64> {
+        let repo = self.repo_view.as_ref()?.repo.clone();
+        let id = self
+            .log
+            .start(&steps_line(&steps), std::slice::from_ref(&repo));
+        self.engine.run_command(id, &repo, Job::Steps(steps));
+        self.view_runs.insert(id, AfterRun::Refresh);
+        Some(id)
+    }
+
+    /// Commit in the Files tab: the commit dialog when something is
+    /// staged; with nothing staged first the offer to stage everything.
+    pub fn start_commit(&mut self) {
+        let Some(view) = &self.repo_view else {
+            return;
+        };
+        let Some(Ok(details)) = &view.details else {
+            return;
+        };
+        if details.states.values().any(|s| s.staged()) {
+            self.open_commit_dialog();
+            return;
+        }
+        let count = details.files.len();
+        if count == 0 {
+            self.toast("Nothing to commit: the working tree is clean");
+            return;
+        }
+        let files = if count == 1 {
+            "the 1 changed file".to_owned()
+        } else {
+            format!("all {count} changed files")
+        };
+        self.confirm = Some(PendingRun {
+            command: "add --all".to_owned(),
+            job: Job::Steps(vec![vec!["add".to_owned(), "--all".to_owned()]]),
+            repos: vec![view.repo.clone()],
+            ask: Some((
+                "Nothing staged".to_owned(),
+                format!("Nothing is staged. Stage {files} (git add -A) and commit?"),
+            )),
+            commit_after: true,
+        });
+    }
+
+    /// The commit dialog, with the ticket key of the branch or the last
+    /// commit written in.
+    fn open_commit_dialog(&mut self) {
+        let details = self
+            .repo_view
+            .as_ref()
+            .and_then(|v| v.details.as_ref())
+            .and_then(|d| d.as_ref().ok());
+        let branch = details
+            .and_then(|d| d.branches.iter().find(|b| b.current))
+            .map(|b| b.name.as_str());
+        let last = details
+            .and_then(|d| d.commits.first())
+            .map(|c| c.subject.as_str());
+        self.commit_dialog = Some(CommitDialog {
+            text: prefill(branch, last),
+            ..CommitDialog::default()
+        });
+    }
+
+    /// Send the message of the commit dialog: `git commit` with it, in the
+    /// output panel. The dialog closes when the commit is made and shows
+    /// git's error when it is not.
+    pub fn send_commit(&mut self) {
+        let Some(dialog) = &self.commit_dialog else {
+            return;
+        };
+        if dialog.running.is_some() {
+            return;
+        }
+        let message = finish(&dialog.text);
+        if message.is_empty() {
+            self.set_commit_error("Write a message first.");
+            return;
+        }
+        let file = match write_scratch_file(&self.scratch, "commit-message.txt", &message) {
+            Ok(file) => file,
+            Err(e) => {
+                self.set_commit_error(&format!("Cannot write the message: {e}"));
+                return;
+            }
+        };
+        let args = vec![
+            "commit".to_owned(),
+            "--file".to_owned(),
+            file.to_string_lossy().into_owned(),
+        ];
+        let run = self.run_in_view(vec![args]);
+        if let Some(run) = run {
+            self.view_runs.insert(run, AfterRun::Commit);
+        }
+        if let Some(dialog) = &mut self.commit_dialog {
+            dialog.running = run;
+            dialog.error = None;
+        }
+    }
+
+    fn set_commit_error(&mut self, error: &str) {
+        if let Some(dialog) = &mut self.commit_dialog {
+            dialog.error = Some(error.to_owned());
+        }
+    }
+
+    /// Esc in the commit dialog: it closes, unless the commit is running.
+    pub fn cancel_commit(&mut self) {
+        if self
+            .commit_dialog
+            .as_ref()
+            .is_some_and(|d| d.running.is_none())
+        {
+            self.commit_dialog = None;
+        }
+    }
+
+    /// Stage, unstage or discard the file or the folder (its path ends
+    /// with `/`) at `path` in the Files tab. Discarding asks first.
+    pub fn file_act(&mut self, act: FileAct, path: &str) {
+        let Some(view) = &self.repo_view else {
+            return;
+        };
+        let Some(Ok(details)) = &view.details else {
+            return;
+        };
+        let files = files_of(&details.files, path);
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        let steps = file_steps(act, &states_of(&files, &details.states), &paths);
+        if steps.is_empty() {
+            let what = act.label().to_lowercase();
+            self.toast(format!("Nothing to {what} in {path}"));
+            return;
+        }
+        if act.discards() {
+            let count = match paths.len() {
+                1 => "1 file".to_owned(),
+                n => format!("{n} files"),
+            };
+            let what = match act {
+                FileAct::DiscardUnstaged => "the unstaged changes",
+                _ => "all changes",
+            };
+            let question = format!("Discard {what} of {path} ({count})? This cannot be undone.");
+            self.confirm = Some(PendingRun {
+                command: steps_line(&steps),
+                job: Job::Steps(steps),
+                repos: vec![view.repo.clone()],
+                ask: Some((act.label().to_owned(), question)),
+                commit_after: false,
+            });
+            return;
+        }
+        self.run_in_view(steps);
+    }
+
+    /// The ways to check out the commit `hash` of the Graph tab: its
+    /// branches, then the commit itself.
+    pub fn checkouts_of(&self, hash: &str) -> Vec<Checkout> {
+        let Some(view) = &self.repo_view else {
+            return Vec::new();
+        };
+        let Some(Ok(graph)) = &view.graph else {
+            return Vec::new();
+        };
+        let head = view
+            .details
+            .as_ref()
+            .and_then(|d| d.as_ref().ok())
+            .and_then(|d| d.branches.iter().find(|b| b.current))
+            .map(|b| b.name.as_str());
+        checkouts(&graph.refs, hash, head)
+    }
+
+    /// Check out a branch or a commit from the Graph tab. When local
+    /// changes stop it, the offer to stash them first follows.
+    pub fn check_out(&mut self, way: Checkout) {
+        if let Some(run) = self.run_in_view(vec![way.args.clone()]) {
+            self.view_runs.insert(run, AfterRun::Checkout(way));
+        }
+    }
+
+    /// "detached at 1a2b3c4" when the repository of the open view is on
+    /// no branch.
+    pub fn view_detached(&self) -> Option<String> {
+        let repo = &self.repo_view.as_ref()?.repo;
+        let card = self.cards.iter().find(|c| &c.path == repo)?;
+        match &card.snapshot()?.status.head {
+            crate::domain::status::Head::Detached(sha) => Some(format!("detached at {sha}")),
+            _ => None,
+        }
+    }
+
+    /// "Edit" on a file of the view: today's copy of it in the working
+    /// tree, in the editor of the settings or the system's program.
+    pub fn edit_file(&mut self, path: &str) {
+        let Some(view) = &self.repo_view else {
+            return;
+        };
+        let file = view.repo.join(path);
+        if !file.is_file() {
+            self.toast(format!("{path} is not in the working tree"));
+            return;
+        }
+        if let Err(e) = self.desktop.edit_file(&file, &self.config.editor) {
+            self.toast(format!("Cannot edit {path}: {e}"));
+        }
+    }
+
+    /// Whether "Edit" can open the file at `path`: it is in the working
+    /// tree.
+    pub fn can_edit(&self, path: &str) -> bool {
+        self.repo_view
+            .as_ref()
+            .is_some_and(|v| v.repo.join(path).is_file())
+    }
+
+    /// "Stash" on a file or folder: the question for the stash's message,
+    /// which starts as the file's or folder's path.
+    pub fn start_stash(&mut self, path: &str) {
+        self.stash_prompt = Some(StashPrompt {
+            path: path.to_owned(),
+            message: path.to_owned(),
+        });
+    }
+
+    /// Stash the file or folder at `path` with `message`, untracked files
+    /// too; an empty message leaves git's own.
+    pub fn stash_files(&mut self, path: &str, message: &str) {
+        self.stash_prompt = None;
+        let Some(Ok(details)) = self.repo_view.as_ref().and_then(|v| v.details.as_ref()) else {
+            return;
+        };
+        let paths: Vec<&str> = files_of(&details.files, path)
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect();
+        if paths.is_empty() {
+            self.toast(format!("Nothing to stash in {path}"));
+            return;
+        }
+        let step = stash_push(&paths, message);
+        self.run_in_view(vec![step]);
+    }
+
+    /// Apply, pop or drop the stash git names `name`. Dropping asks first.
+    pub fn stash_act(&mut self, act: StashAct, name: &str) {
+        let Some(view) = &self.repo_view else {
+            return;
+        };
+        let step = act.args(name);
+        if act == StashAct::Drop {
+            let subject = view
+                .details
+                .as_ref()
+                .and_then(|d| d.as_ref().ok())
+                .and_then(|d| d.stashes.iter().find(|s| s.name == name))
+                .map_or(String::new(), |s| format!(" ({})", s.subject));
+            let question = format!("Drop {name}{subject}? Its changes are gone then.");
+            self.confirm = Some(PendingRun {
+                command: steps_line(std::slice::from_ref(&step)),
+                job: Job::Steps(vec![step]),
+                repos: vec![view.repo.clone()],
+                ask: Some(("Drop stash".to_owned(), question)),
+                commit_after: false,
+            });
+            return;
+        }
+        self.run_in_view(vec![step]);
+    }
+
+    /// The checkbox of a file or folder, or Space: stage what is not
+    /// staged yet, or unstage what is staged whole.
+    pub fn toggle_staged(&mut self, path: &str) {
+        let staged = self.staged_of(path);
+        let act = if staged == Staged::All {
+            FileAct::Unstage
+        } else {
+            FileAct::Stage
+        };
+        self.file_act(act, path);
+    }
+
+    /// How much of the file or folder at `path` in the Files tab is
+    /// staged.
+    pub fn staged_of(&self, path: &str) -> Staged {
+        let Some(Ok(details)) = self.repo_view.as_ref().and_then(|v| v.details.as_ref()) else {
+            return Staged::Nothing;
+        };
+        let paths: Vec<&str> = files_of(&details.files, path)
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect();
+        staged(&details.states, &paths)
     }
 
     /// A link of the About page: a web page or a mail in the system's
@@ -1390,6 +2120,12 @@ impl<G: Default> App<G> {
             } => {
                 let mut changed = false;
                 let mut sounds = Vec::new();
+                let filter = self.status_filter;
+                let fitted = self
+                    .cards
+                    .iter()
+                    .find(|c| c.path == repo)
+                    .is_some_and(|c| filter.is_some_and(|by| by.fits(c)));
                 if let Some(card) = self.card_mut(&repo) {
                     let new = Some(*result);
                     // The first probe of a card is no change.
@@ -1402,6 +2138,8 @@ impl<G: Default> App<G> {
                     }
                     card.probe = new;
                 }
+                self.follow_filter(&repo, fitted);
+                self.chips_after_probe(&repo, changed && cause == ProbeCause::Fetch);
                 self.sound_news(&sounds, Instant::now());
                 if changed {
                     self.wake_kawaii();
@@ -1440,7 +2178,19 @@ impl<G: Default> App<G> {
                         self.wake_kawaii();
                     }
                 }
+                let error = match &state {
+                    SectionState::Done(out) if !out.success() => Some(first_error(out)),
+                    SectionState::SpawnFailed(e) => Some(e.clone()),
+                    _ => None,
+                };
+                let ended = state.outcome().is_some();
+                if ended && self.push_runs.contains(&run) {
+                    self.read_chips(std::slice::from_ref(&repo));
+                }
                 self.log.update(run, &repo, state);
+                if let Some(after) = ended.then(|| self.view_runs.remove(&run)).flatten() {
+                    self.after_view_run(after, &repo, error);
+                }
             }
             Event::Commands { all, builtins } => {
                 self.vocab.subcommands = all;
@@ -1450,6 +2200,13 @@ impl<G: Default> App<G> {
                 self.vocab.options.insert(command, options);
             }
             Event::Details { repo, result } => self.repo_view_loaded(&repo, result),
+            Event::Chips { repo, query, chips } => {
+                if let Some(card) = self.card_mut(&repo)
+                    && card.chips_for.as_ref() == Some(&query)
+                {
+                    card.chips = chips;
+                }
+            }
             Event::Log {
                 repo,
                 skip,
@@ -1537,6 +2294,17 @@ impl<G: Default> App<G> {
                 };
             }
         }
+        let chips_every = Duration::from_secs(self.config.effective_chips_interval_secs());
+        match self.chips_due {
+            // The first read of each card follows its first probe.
+            None => self.chips_due = Some(now + chips_every),
+            Some(due) if now >= due => {
+                self.chips_due = Some(now + chips_every);
+                let repos: Vec<PathBuf> = self.cards.iter().map(|c| c.path.clone()).collect();
+                self.read_chips(&repos);
+            }
+            Some(_) => {}
+        }
         let concurrency = self.config.effective_concurrency();
         if concurrency != self.applied_concurrency {
             self.applied_concurrency = concurrency;
@@ -1545,7 +2313,11 @@ impl<G: Default> App<G> {
         self.persist();
         self.sync_music();
         self.toasts.retain(|t| t.until > now);
-        self.schedule.until_next(now, fetch_interval)
+        let next = self.schedule.until_next(now, fetch_interval);
+        let chips = self
+            .chips_due
+            .map_or(next, |due| due.saturating_duration_since(now));
+        next.min(chips)
     }
 
     /// Write the config file when it changed (never after a load error).
@@ -1605,6 +2377,8 @@ pub(crate) mod tests {
         /// `details` as they are, `usize::MAX` makes reading a page fail.
         pub log_length: Mutex<usize>,
         pub snapshot: Mutex<Option<Snapshot>>,
+        /// What the chips were read for.
+        pub chip_reads: Mutex<Vec<ChipQuery>>,
     }
 
     pub fn snapshot(counts: Counts, upstream: Upstream, branches: &[&str]) -> Snapshot {
@@ -1654,6 +2428,29 @@ pub(crate) mod tests {
                 .unwrap()
                 .clone()
                 .ok_or(ProbeError::NotARepo)
+        }
+        fn chips(&self, query: &ChipQuery) -> Vec<ServiceChip> {
+            self.chip_reads.lock().unwrap().push(query.clone());
+            vec![ServiceChip {
+                text: format!("PR {}", query.branch),
+                light: crate::domain::services::Light::Green,
+                url: Some("https://example.org/pr".into()),
+                hint: String::new(),
+            }]
+        }
+
+        fn apply_commit(&self, dir: &Path, source: &Path, hash: &str) -> io::Result<ProcessOutput> {
+            let args = vec![
+                "apply".to_owned(),
+                source.display().to_string(),
+                hash.to_owned(),
+            ];
+            self.runs.lock().unwrap().push((dir.to_path_buf(), args));
+            Ok(ProcessOutput {
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            })
         }
         fn run(&self, dir: &Path, args: &[String]) -> io::Result<ProcessOutput> {
             self.runs
@@ -2035,20 +2832,24 @@ pub(crate) mod tests {
             card.probe = Some(Ok(snap));
             app.cards.push(card);
         }
-        app.press_mark(MarkBy::Dirty);
+        app.press_mark(MarkBy::Dirty, false);
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/dirty")]);
-        app.press_mark(MarkBy::Behind);
+        app.press_mark(MarkBy::Behind, false);
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/behind")]);
-        app.press_mark(MarkBy::Ahead);
+        app.press_mark(MarkBy::Ahead, false);
         assert_eq!(app.marked_repos(), vec![PathBuf::from("/ahead")]);
-        app.press_mark(MarkBy::All);
+        app.press_mark(MarkBy::All, false);
         assert_eq!(app.marked.len(), 4);
-        app.press_mark(MarkBy::All);
+        // Pressed again, a button does the same; it never turns round.
+        app.press_mark(MarkBy::All, false);
+        assert_eq!(app.marked.len(), 4);
+        // The opposite of all is none.
+        app.press_mark(MarkBy::All, true);
         assert!(app.marked.is_empty());
     }
 
     #[test]
-    fn a_right_click_on_a_mark_button_filters_the_board_and_leaves_the_marks() {
+    fn a_filter_button_filters_the_board_like_a_radio_button() {
         let mut app = app_with(Arc::default(), None);
         let dirty = Counts {
             staged: 1,
@@ -2065,51 +2866,171 @@ pub(crate) mod tests {
                 .map(|c| c.path.display().to_string())
                 .collect()
         };
-        app.press_mark(MarkBy::All);
+        assert_eq!(app.filtered_by(), MarkBy::All, "it starts on all");
+        assert_eq!(app.filter_count(MarkBy::All), 3);
+        assert_eq!(app.filter_count(MarkBy::Dirty), 2);
+        assert_eq!(app.filter_count(MarkBy::Behind), 0);
         app.filter_by(MarkBy::Dirty);
-        assert_eq!(app.status_filter, Some(MarkBy::Dirty));
+        assert_eq!(app.filtered_by(), MarkBy::Dirty);
         assert_eq!(shown(&app), ["/a", "/web"]);
-        // The marks and the pressed button are as they were; the hidden
-        // card keeps its mark, and nothing acts on it.
-        assert_eq!(app.marked.len(), 3);
-        assert_eq!(app.pressed_mark, Some((MarkBy::All, false)));
+        // The same button again changes nothing.
+        app.filter_by(MarkBy::Dirty);
+        assert_eq!(app.filtered_by(), MarkBy::Dirty);
+        // A mark button never changes the filter and marks what is shown.
+        app.press_mark(MarkBy::All, false);
+        assert_eq!(app.filtered_by(), MarkBy::Dirty);
         assert_eq!(app.marked_repos().len(), 2);
-        // A left click never changes the filter and marks what is shown.
-        app.press_mark(MarkBy::All);
-        assert_eq!(app.status_filter, Some(MarkBy::Dirty));
-        assert_eq!(app.marked, BTreeSet::from([PathBuf::from("/b")]));
-        app.press_mark(MarkBy::All);
-        assert_eq!(app.marked.len(), 3);
 
-        // Live: a card that is clean now leaves, still marked.
+        // Live: a card that is clean now leaves, one that is dirty comes.
         app.cards[0].probe = Some(Ok(snapshot(Counts::default(), Upstream::None, &[])));
         assert_eq!(shown(&app), ["/web"]);
-        assert!(app.marked.contains(&PathBuf::from("/a")));
         app.cards[1].probe = Some(Ok(snapshot(dirty, Upstream::None, &[])));
         assert_eq!(shown(&app), ["/b", "/web"]);
 
-        // It works together with the text filter and the favorite.
+        // It works together with the text filter, and so do the counts.
         app.filter = "we".into();
         assert_eq!(shown(&app), ["/web"]);
+        assert_eq!(app.filter_count(MarkBy::All), 1);
+        assert_eq!(app.filter_count(MarkBy::Dirty), 1);
         app.filter.clear();
 
-        // Another button takes the filter over; the same one, or all,
-        // shows all again.
+        // Another button takes the filter over; all shows all again.
         app.filter_by(MarkBy::Behind);
         assert_eq!(app.status_filter, Some(MarkBy::Behind));
         assert!(shown(&app).is_empty());
-        app.filter_by(MarkBy::Behind);
+        app.filter_by(MarkBy::All);
         assert_eq!(app.status_filter, None);
         assert_eq!(shown(&app).len(), 3);
-        app.filter_by(MarkBy::Ahead);
-        app.filter_by(MarkBy::All);
-        assert_eq!(app.status_filter, None);
-        app.filter_by(MarkBy::All);
-        assert_eq!(app.status_filter, None);
     }
 
     #[test]
-    fn a_pressed_mark_button_turns_its_marks_round_at_every_click() {
+    fn the_chips_are_read_for_the_tracked_branch_and_read_again_when_it_changes() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut app = app_with(backend.clone(), None);
+        app.cards.push(Card::new("/r".into()));
+        let tracked = |branch: &str, tracking: Option<&str>| {
+            let mut snap = snapshot(Counts::default(), Upstream::None, &[]);
+            snap.status.head = Head::Branch(branch.into());
+            snap.status.tracking = tracking.map(str::to_owned);
+            snap.remotes = vec![
+                crate::domain::remote::Remote {
+                    name: "origin".into(),
+                    url: "git@github.com:o/r.git".into(),
+                },
+                crate::domain::remote::Remote {
+                    name: "fork".into(),
+                    url: "https://github.com/me/r".into(),
+                },
+            ];
+            Event::Probed {
+                repo: "/r".into(),
+                result: Box::new(Ok(snap)),
+                cause: ProbeCause::Poll,
+            }
+        };
+        let reads = |b: &FakeBackend| -> Vec<String> {
+            b.chip_reads
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|q| format!("{} {} {}", q.host, q.path, q.branch))
+                .collect()
+        };
+        // The first probe reads them, for the branch the upstream names.
+        app.handle_event(tracked("local", Some("fork/feature/x")));
+        settle(&mut app, |a| !a.cards[0].chips.is_empty());
+        assert_eq!(reads(&backend), ["github.com me/r feature/x"]);
+        assert_eq!(app.cards[0].chips[0].text, "PR feature/x");
+        // The same again reads nothing; another branch reads them again,
+        // without an upstream on origin and the local name.
+        app.handle_event(tracked("local", Some("fork/feature/x")));
+        app.handle_event(tracked("main", None));
+        settle(&mut app, |_| reads(&backend).len() == 2);
+        assert_eq!(reads(&backend)[1], "github.com o/r main");
+        // A push reads them when it ends.
+        let id = app.log.start("push", &[PathBuf::from("/r")]);
+        app.push_runs.insert(id);
+        app.handle_event(Event::Section {
+            run: id,
+            repo: "/r".into(),
+            state: SectionState::Done(ProcessOutput {
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            }),
+        });
+        settle(&mut app, |_| reads(&backend).len() == 3);
+        // Both services off: nothing is read, and the chips go.
+        app.config.chips_github = false;
+        app.config.chips_gitlab = false;
+        app.read_chips(&[PathBuf::from("/r")]);
+        assert!(app.cards[0].chips.is_empty());
+        assert_eq!(reads(&backend).len(), 3);
+    }
+
+    #[test]
+    fn a_push_run_is_known_by_its_git_arguments() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut app = app_with(backend, None);
+        app.cards.push(Card::new("/r".into()));
+        app.start_run("push", vec![PathBuf::from("/r")]);
+        app.start_run("fetch", vec![PathBuf::from("/r")]);
+        assert_eq!(app.push_runs.len(), 1);
+    }
+
+    #[test]
+    fn a_status_filter_marks_what_it_shows_now_and_later() {
+        let mut app = app_with(Arc::default(), None);
+        let dirty = Counts {
+            modified: 1,
+            ..Counts::default()
+        };
+        for (name, counts) in [
+            ("a", dirty),
+            ("b", Counts::default()),
+            ("c", Counts::default()),
+        ] {
+            let mut card = Card::new(PathBuf::from(format!("/{name}")));
+            card.probe = Some(Ok(snapshot(counts, Upstream::None, &[])));
+            app.cards.push(card);
+        }
+        let probed = |repo: &str, counts| Event::Probed {
+            repo: repo.into(),
+            result: Box::new(Ok(snapshot(counts, Upstream::None, &[]))),
+            cause: ProbeCause::Poll,
+        };
+        let marked = |app: &App| -> Vec<String> {
+            app.marked.iter().map(|p| p.display().to_string()).collect()
+        };
+        // A hidden card loses its mark, the shown ones get one.
+        app.marked.insert("/c".into());
+        app.filter_by(MarkBy::Dirty);
+        assert_eq!(marked(&app), ["/a"]);
+        // Unmarked by hand, it stays unmarked while it stays dirty.
+        app.toggle_mark("/a".into());
+        app.handle_event(probed("/a", dirty));
+        assert!(marked(&app).is_empty());
+        // A card that turns dirty comes and is marked; one that is clean
+        // again leaves and loses its mark.
+        app.handle_event(probed("/b", dirty));
+        assert_eq!(marked(&app), ["/b"]);
+        app.handle_event(probed("/b", Counts::default()));
+        assert!(marked(&app).is_empty());
+        // One the name filter hides is not marked when it fits.
+        app.filter = "zzz".into();
+        app.handle_event(probed("/c", dirty));
+        assert!(marked(&app).is_empty());
+        app.filter.clear();
+        // All marks nothing and leaves the marks as they are.
+        app.marked.insert("/a".into());
+        app.filter_by(MarkBy::All);
+        assert_eq!(marked(&app), ["/a"]);
+        app.handle_event(probed("/b", dirty));
+        assert_eq!(marked(&app), ["/a"]);
+    }
+
+    #[test]
+    fn a_mark_button_marks_what_fits_or_with_the_opposite_what_does_not() {
         let mut app = app_with(Arc::default(), None);
         let dirty = Counts {
             staged: 1,
@@ -2130,38 +3051,16 @@ pub(crate) mod tests {
                 .map(|p| p.display().to_string())
                 .collect()
         };
-        assert_eq!(app.pressed_mark, None);
-        app.press_mark(MarkBy::Dirty);
-        assert_eq!(app.pressed_mark, Some((MarkBy::Dirty, false)));
+        app.press_mark(MarkBy::Dirty, false);
         assert_eq!(marked(&app), ["/a"]);
-        // Again: the ones that are not dirty, and the button stays pressed.
-        app.press_mark(MarkBy::Dirty);
-        assert_eq!(app.pressed_mark, Some((MarkBy::Dirty, true)));
+        app.press_mark(MarkBy::Dirty, false);
+        assert_eq!(marked(&app), ["/a"], "again: the same");
+        app.press_mark(MarkBy::Dirty, true);
         assert_eq!(marked(&app), ["/b", "/c"]);
-        app.press_mark(MarkBy::Dirty);
-        assert_eq!(app.pressed_mark, Some((MarkBy::Dirty, false)));
-        assert_eq!(marked(&app), ["/a"]);
-
-        // A card clicked by hand leaves the button pressed, and the next
-        // click goes by what is dirty, not by what is marked.
-        app.toggle_mark("/b".into());
-        assert_eq!(app.pressed_mark, Some((MarkBy::Dirty, false)));
-        assert_eq!(marked(&app), ["/a", "/b"]);
-        app.press_mark(MarkBy::Dirty);
+        // A card clicked by hand changes nothing about the next press.
+        app.toggle_mark("/a".into());
+        app.press_mark(MarkBy::Dirty, true);
         assert_eq!(marked(&app), ["/b", "/c"]);
-
-        // Another button unpresses it and starts with its first action.
-        app.press_mark(MarkBy::All);
-        assert_eq!(app.pressed_mark, Some((MarkBy::All, false)));
-        assert_eq!(marked(&app), ["/a", "/b", "/c"]);
-        app.press_mark(MarkBy::Dirty);
-        assert_eq!(app.pressed_mark, Some((MarkBy::Dirty, false)));
-        assert_eq!(marked(&app), ["/a"]);
-        // All, turned round: nothing is marked.
-        app.press_mark(MarkBy::All);
-        app.press_mark(MarkBy::All);
-        assert_eq!(app.pressed_mark, Some((MarkBy::All, true)));
-        assert!(marked(&app).is_empty());
     }
 
     #[test]
@@ -2172,7 +3071,7 @@ pub(crate) mod tests {
             .into_iter()
             .map(|p| Card::new(p.into()))
             .collect();
-        app.press_mark(MarkBy::All);
+        app.press_mark(MarkBy::All, false);
         app.filter = "ETL".into();
         let etl = vec![PathBuf::from("/x/etl-load"), PathBuf::from("/x/etl-store")];
         assert_eq!(app.marked_repos(), etl);
@@ -2191,10 +3090,10 @@ pub(crate) mod tests {
         assert_eq!(ran, etl.iter().cloned().collect());
 
         // Marking touches the shown cards only: the hidden mark stays.
-        app.press_mark(MarkBy::All);
+        app.press_mark(MarkBy::All, true);
         assert_eq!(app.marked, BTreeSet::from([PathBuf::from("/x/web")]));
         app.marked.clear();
-        app.press_mark(MarkBy::All);
+        app.press_mark(MarkBy::All, false);
         assert_eq!(app.marked, etl.iter().cloned().collect());
 
         // Removing the marked cards leaves a marked card the filter hides.
@@ -2587,6 +3486,347 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn files_are_staged_from_the_view_and_a_discard_asks_first() {
+        use crate::domain::details::ChangeKind;
+        use crate::domain::staging::{FileAct, FileState, Staged};
+        let backend = Arc::new(FakeBackend::default());
+        let state = |index, worktree| FileState { index, worktree };
+        *backend.details.lock().unwrap() = Some(Details {
+            files: vec![
+                FileChange {
+                    path: "src/a.rs".into(),
+                    kind: ChangeKind::Modified,
+                },
+                FileChange {
+                    path: "src/b.rs".into(),
+                    kind: ChangeKind::Modified,
+                },
+            ],
+            states: [
+                ("src/a.rs".to_string(), state('M', '.')),
+                ("src/b.rs".to_string(), state('.', 'M')),
+            ]
+            .into_iter()
+            .collect(),
+            ..Details::default()
+        });
+        let mut app = app_with(backend.clone(), None);
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| {
+            a.repo_view.as_ref().unwrap().details.is_some()
+        });
+        assert_eq!(app.staged_of("src/a.rs"), Staged::All);
+        assert_eq!(app.staged_of("src/"), Staged::Partly);
+
+        let read = *backend.details_read.lock().unwrap();
+        app.toggle_staged("src/a.rs");
+        settle(&mut app, |_| *backend.details_read.lock().unwrap() > read);
+        let ran = backend.runs.lock().unwrap().last().unwrap().1.join(" ");
+        assert_eq!(ran, "--literal-pathspecs reset --quiet -- src/a.rs");
+        app.toggle_staged("src/");
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 2);
+        let ran = backend.runs.lock().unwrap().last().unwrap().1.join(" ");
+        assert_eq!(ran, "--literal-pathspecs add --all -- src/a.rs src/b.rs");
+
+        app.file_act(FileAct::DiscardUnstaged, "src/");
+        let pending = app.confirm.clone().expect("a discard asks");
+        assert_eq!(pending.repos, [PathBuf::from("/x/a")]);
+        let (heading, question) = pending.ask.unwrap();
+        assert_eq!(heading, "Discard unstaged changes");
+        assert!(question.contains("src/ (2 files)"), "{question}");
+        assert_eq!(backend.runs.lock().unwrap().len(), 2, "nothing ran yet");
+        app.confirm_run();
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 3);
+        let ran = backend.runs.lock().unwrap().last().unwrap().1.join(" ");
+        assert_eq!(ran, "--literal-pathspecs restore --worktree -- src/b.rs");
+    }
+
+    #[test]
+    fn a_commit_is_written_in_its_dialog_and_a_failure_keeps_the_message() {
+        use crate::domain::details::ChangeKind;
+        use crate::domain::staging::FileState;
+        let backend = Arc::new(FakeBackend::default());
+        let lists = |index| Details {
+            files: vec![FileChange {
+                path: "a.rs".into(),
+                kind: ChangeKind::Modified,
+            }],
+            states: [(
+                "a.rs".to_string(),
+                FileState {
+                    index,
+                    worktree: 'M',
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Details::default()
+        };
+        // Nothing staged: Commit offers to stage everything first.
+        *backend.details.lock().unwrap() = Some(lists('.'));
+        let mut app = app_with(backend.clone(), None);
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| {
+            a.repo_view.as_ref().unwrap().details.is_some()
+        });
+        app.start_commit();
+        assert!(app.commit_dialog.is_none());
+        let pending = app.confirm.clone().expect("the offer");
+        assert!(pending.ask.unwrap().1.contains("Stage the 1 changed file"));
+        app.confirm_run();
+        assert!(app.commit_dialog.is_some(), "the dialog opens at once");
+        settle(&mut app, |_| !backend.runs.lock().unwrap().is_empty());
+        assert_eq!(backend.runs.lock().unwrap()[0].1, ["add", "--all"]);
+
+        // Something staged: the dialog opens straight away.
+        app.commit_dialog = None;
+        *backend.details.lock().unwrap() = Some(lists('M'));
+        app.refresh_repo_view();
+        settle(&mut app, |a| {
+            a.repo_view
+                .as_ref()
+                .unwrap()
+                .details
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .states["a.rs"]
+                .staged()
+        });
+        app.start_commit();
+        app.send_commit();
+        assert_eq!(
+            app.commit_dialog.as_ref().unwrap().error.as_deref(),
+            Some("Write a message first.")
+        );
+        app.commit_dialog.as_mut().unwrap().text = "Fix it\nBecause.\n\n".into();
+        app.send_commit();
+        let run = app.commit_dialog.as_ref().unwrap().running.expect("runs");
+        // git refuses: the dialog stays with the message and the error.
+        app.handle_event(Event::Section {
+            run,
+            repo: "/x/a".into(),
+            state: SectionState::Done(ProcessOutput {
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: "pre-commit hook failed\n".into(),
+            }),
+        });
+        let dialog = app.commit_dialog.clone().expect("stays open");
+        assert_eq!(dialog.error.as_deref(), Some("pre-commit hook failed"));
+        assert_eq!(dialog.text, "Fix it\nBecause.\n\n");
+        assert!(dialog.running.is_none());
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 2);
+        let args = backend.runs.lock().unwrap()[1].1.clone();
+        assert_eq!(args[..2], ["commit", "--file"]);
+        let message = std::fs::read_to_string(&args[2]).unwrap();
+        assert_eq!(message, "Fix it\n\nBecause.");
+        // The next try goes through and closes it.
+        app.send_commit();
+        settle(&mut app, |a| a.commit_dialog.is_none());
+        app.start_commit();
+        app.cancel_commit();
+        assert!(app.commit_dialog.is_none(), "Esc closes it");
+    }
+
+    #[test]
+    fn a_checkout_stopped_by_local_changes_offers_to_stash_them() {
+        use crate::domain::graph::{GraphRef, RefKind};
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details::default());
+        let mut app = app_with(backend.clone(), None);
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| {
+            a.repo_view.as_ref().unwrap().details.is_some()
+        });
+        if let Some(view) = &mut app.repo_view {
+            view.graph = Some(Ok(GraphData {
+                refs: vec![GraphRef {
+                    name: "side".into(),
+                    kind: RefKind::Local,
+                    hash: "abc".into(),
+                    time: 0,
+                }],
+                ..GraphData::default()
+            }));
+        }
+        let ways = app.checkouts_of("abc");
+        assert_eq!(ways.len(), 2);
+        app.check_out(ways[0].clone());
+        let run = *app.view_runs.keys().next().unwrap();
+        app.handle_event(Event::Section {
+            run,
+            repo: "/x/a".into(),
+            state: SectionState::Done(ProcessOutput {
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: "error: Your local changes to the following files would be overwritten by checkout:\n".into(),
+            }),
+        });
+        let offer = app.confirm.clone().expect("the offer");
+        assert_eq!(offer.ask.unwrap().0, "Stash and check out");
+        let Job::Steps(steps) = offer.job else {
+            panic!("steps")
+        };
+        assert_eq!(steps[1], ["switch", "--no-guess", "side"]);
+        assert!(steps[0].join(" ").contains("before checking out side"));
+    }
+
+    #[test]
+    fn a_commit_goes_to_the_marked_repositories_but_not_where_it_comes_from() {
+        use crate::domain::details::parse_log;
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details {
+            commits: parse_log("abcdef12\tabcdef1\tA\t1\td\t\tFix it\n"),
+            ..Details::default()
+        });
+        let mut app = app_with(backend.clone(), None);
+        for name in ["/x/a", "/x/b", "/x/c"] {
+            app.cards.push(Card::new(PathBuf::from(name)));
+        }
+        app.marked.insert(PathBuf::from("/x/a"));
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| {
+            a.repo_view.as_ref().unwrap().details.is_some()
+        });
+        app.start_apply("abcdef12");
+        assert!(app.repo_view.is_none(), "back to the board");
+        assert_eq!(app.apply.as_ref().unwrap().title, "abcdef1 Fix it");
+        assert!(app.marked.is_empty(), "the source loses its mark");
+        app.apply_to_marked();
+        assert!(app.apply.is_some(), "nothing marked: it stays");
+        app.toggle_mark(PathBuf::from("/x/a"));
+        assert!(app.marked.is_empty(), "the source takes no mark");
+        app.press_mark(MarkBy::All, false);
+        assert_eq!(app.marked.len(), 2);
+        assert!(!app.marked.contains(Path::new("/x/a")));
+        app.apply_to_marked();
+        assert!(app.apply.is_none());
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 2);
+        let runs = backend.runs.lock().unwrap().clone();
+        for (dir, args) in &runs {
+            assert_ne!(dir, Path::new("/x/a"));
+            assert_eq!(args, &["apply", "/x/a", "abcdef12"]);
+        }
+        assert!(
+            app.log
+                .last()
+                .unwrap()
+                .command
+                .starts_with("am --3way abcdef1")
+        );
+        app.start_apply("abcdef12");
+        app.cancel_apply();
+        assert!(app.apply.is_none());
+    }
+
+    #[test]
+    fn edit_opens_the_working_tree_copy_and_not_a_file_that_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "x").unwrap();
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details::default());
+        let desktop = Arc::new(FakeDesktop::default());
+        let mut app = app_on(backend, desktop.clone(), None);
+        app.open_repo_view(dir.path());
+        assert!(app.can_edit("src/a.rs"));
+        assert!(!app.can_edit("src/gone.rs"));
+        app.edit_file("src/a.rs");
+        assert_eq!(
+            *desktop.files.lock().unwrap(),
+            [dir.path().join("src/a.rs")]
+        );
+        app.edit_file("src/gone.rs");
+        assert_eq!(desktop.files.lock().unwrap().len(), 1);
+        assert!(
+            app.toasts
+                .iter()
+                .any(|t| t.text.contains("not in the working tree"))
+        );
+    }
+
+    #[test]
+    fn a_folder_is_stashed_with_a_message_and_a_drop_asks_first() {
+        use crate::domain::details::{ChangeKind, StashEntry};
+        use crate::domain::staging::StashAct;
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details {
+            files: vec![FileChange {
+                path: "src/a.rs".into(),
+                kind: ChangeKind::Modified,
+            }],
+            stashes: vec![StashEntry {
+                hash: "cafe".into(),
+                name: "stash@{0}".into(),
+                subject: "On main: old".into(),
+            }],
+            ..Details::default()
+        });
+        let mut app = app_with(backend.clone(), None);
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| {
+            a.repo_view.as_ref().unwrap().details.is_some()
+        });
+        app.start_stash("src/");
+        assert_eq!(app.stash_prompt.as_ref().unwrap().message, "src/");
+        app.stash_files("src/", "work in src");
+        assert!(app.stash_prompt.is_none());
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 1);
+        assert_eq!(
+            backend.runs.lock().unwrap()[0].1.join(" "),
+            "--literal-pathspecs stash push --include-untracked --message work in src -- src/a.rs"
+        );
+        app.stash_act(StashAct::Drop, "stash@{0}");
+        let (_, question) = app.confirm.clone().unwrap().ask.unwrap();
+        assert!(question.contains("stash@{0} (On main: old)"), "{question}");
+        app.cancel_run();
+        app.stash_act(StashAct::Pop, "stash@{0}");
+        settle(&mut app, |_| backend.runs.lock().unwrap().len() == 2);
+        assert_eq!(
+            backend.runs.lock().unwrap()[1].1,
+            ["stash", "pop", "stash@{0}"]
+        );
+    }
+
+    #[test]
+    fn the_commit_dialog_starts_with_the_ticket_key_of_the_branch() {
+        use crate::domain::details::{BranchEntry, ChangeKind, parse_log};
+        use crate::domain::staging::FileState;
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details {
+            files: vec![FileChange {
+                path: "a.rs".into(),
+                kind: ChangeKind::Modified,
+            }],
+            states: [(
+                "a.rs".to_string(),
+                FileState {
+                    index: 'M',
+                    worktree: '.',
+                },
+            )]
+            .into_iter()
+            .collect(),
+            commits: parse_log("aa\taa\tA\t1\td\t\t[ABC-9] Fix logout\n"),
+            branches: vec![BranchEntry {
+                name: "feature/ABC-12-login".into(),
+                current: true,
+            }],
+            stashes: Vec::new(),
+            reflog: Vec::new(),
+        });
+        let mut app = app_with(backend, None);
+        app.open_repo_view(Path::new("/x/a"));
+        settle(&mut app, |a| {
+            a.repo_view.as_ref().unwrap().details.is_some()
+        });
+        app.start_commit();
+        assert_eq!(app.commit_dialog.as_ref().unwrap().text, "[ABC-12] ");
+    }
+
+    #[test]
     fn repository_view_loads_its_lists_follows_the_card_and_keeps_a_held_selection() {
         use crate::domain::details::{ChangeKind, FileChange, parse_log};
         let backend = Arc::new(FakeBackend::default());
@@ -2597,6 +3837,9 @@ pub(crate) mod tests {
             kind: ChangeKind::Modified,
         };
         let lists = |files: &[&str]| Details {
+            states: Default::default(),
+            stashes: Vec::new(),
+            reflog: Vec::new(),
             files: files.iter().map(|f| file(f)).collect(),
             commits: parse_log("aaaa\taa\tAda\t1\tthen\t\tone\n"),
             branches: vec![],
@@ -2754,6 +3997,56 @@ pub(crate) mod tests {
             result: Err("closed".into()),
         });
         assert!(app.repo_view.is_none());
+    }
+
+    #[test]
+    fn the_file_lists_switch_between_tree_and_flat_and_commit_folders_fold() {
+        let backend = Arc::new(FakeBackend::default());
+        *backend.details.lock().unwrap() = Some(Details::default());
+        let mut app = app_with(backend, None);
+        assert!(app.config.file_tree, "a tree when nothing was chosen");
+        app.open_repo_view(Path::new("/x/a"));
+        let file = |path: &str| FileChange {
+            path: path.into(),
+            kind: crate::domain::details::ChangeKind::Modified,
+        };
+        let commit = CommitDetail {
+            hash: "a".repeat(40),
+            parents: vec![],
+            author: "A".into(),
+            email: "a@x".into(),
+            committer: None,
+            date: String::new(),
+            refs: vec![],
+            message: "m".into(),
+            files: vec![file("src/ui/view.rs"), file("README.md")],
+            lines: Default::default(),
+        };
+        let shape = |app: &App| -> Vec<String> {
+            let view = app.repo_view.as_ref().unwrap();
+            commit_rows(&commit, view)
+                .into_iter()
+                .map(|row| match row {
+                    CommitRow::Folder(f) => format!("{}{}/", "  ".repeat(f.depth), f.name),
+                    CommitRow::File(f, ..) => format!("{}{}", "  ".repeat(f.depth), f.name),
+                    CommitRow::Line(..) | CommitRow::Note(_) => "line".into(),
+                })
+                .collect()
+        };
+        assert_eq!(shape(&app), ["src/ui/", "  view.rs", "README.md"]);
+        app.toggle_commit_folder("src/ui/");
+        assert_eq!(shape(&app), ["src/ui/", "README.md"]);
+        // Another commit starts unfolded.
+        app.select_in_repo_view(DiffTarget::Commit("b".repeat(40)));
+        assert_eq!(shape(&app), ["src/ui/", "  view.rs", "README.md"]);
+
+        app.toggle_file_tree();
+        assert!(!app.config.file_tree, "the choice is a setting");
+        assert_eq!(shape(&app), ["src/ui/view.rs", "README.md"]);
+        // A view opened later takes the setting.
+        app.close_repo_view();
+        app.open_repo_view(Path::new("/x/a"));
+        assert!(!app.repo_view.as_ref().unwrap().tree);
     }
 
     #[test]

@@ -155,6 +155,29 @@ fn settings_page(app: &mut App, ui: &mut Ui) {
             )
             .on_hover_text("Opens a terminal in a repository; {dir} stands for its folder");
             ui.end_row();
+            ui.label("Editor command");
+            ui.add(
+                TextEdit::singleline(&mut config.editor)
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("the system's default program")
+                    .desired_width(240.0),
+            )
+            .on_hover_text("Edits a file of the repository view; {file} stands for it, else it goes at the end");
+            ui.end_row();
+            ui.label("PR and CI chips every");
+            ui.horizontal(|ui| {
+                ui.add(
+                    DragValue::new(&mut config.chips_interval_secs)
+                        .range(60..=86_400)
+                        .suffix(" s"),
+                )
+                .on_hover_text(
+                    "Also after a push, a fetch with news, and Refresh in the repository view",
+                );
+                ui.checkbox(&mut config.chips_github, "GitHub (gh)");
+                ui.checkbox(&mut config.chips_gitlab, "GitLab (glab)");
+            });
+            ui.end_row();
             ui.label("Theme");
             ui.horizontal(|ui| {
                 for theme in Theme::ALL {

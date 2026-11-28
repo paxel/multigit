@@ -67,15 +67,23 @@ greyed out, and comes back by itself when the folder returns.
 ## Looking into a repository
 
 A double click on a card, or **Open** in its right-click menu, opens a
-read-only view of that repository over the board. It has three tabs, and
+view of that repository over the board. It has five tabs, and
 **Back** and **Forward** step through what was looked at:
 
 - **Files**, where the view opens when the repository has changes: the
-  changed files as a tree with folders that fold. Each file is listed once,
-  with a letter and a color for what happened to it since the last commit
-  (A added, M modified, D deleted, ! conflict), staged or not. A picked file
-  shows its content when it is new, what is gone when it was deleted, and its
-  diff otherwise.
+  changed files as a tree with folders that fold, or as a flat list in
+  git's order when **Tree** over the list is switched off. Each file is
+  listed once, with git's two letters for it, colored as lazygit colors
+  them: the first for what is staged (green), the second for what is not
+  (red), `??` for a new file. A picked file shows its content when it is
+  new, what is gone when it was deleted, and its diff otherwise. The box
+  before a file or folder stages it, or unstages it when all of it is
+  staged; a right click on it offers **Stage**, **Unstage**, **Discard all
+  changes** and **Discard unstaged changes**, and a discard asks first.
+  **Stash…** there stashes the file or folder, new files too, under a
+  message that may stay empty, and **Edit** opens a file in the editor of
+  the Settings (`{file}` in it stands for the file, else the file comes
+  last), or without one in the system's program for it.
 - **Commits**, where it opens when the repository is clean: the history of
   the current branch, a row for each commit with the author's initials, the
   short hash, the tags on it, the title and the age. It reads on when scrolled to its end. A
@@ -84,12 +92,40 @@ read-only view of that repository over the board. It has three tabs, and
   it names the committer when that is not the author, and its parents, where
   a click goes to that commit. Below that, the files it changed with the
   lines added and removed, and a click on a file shows what the commit did
-  to it.
+  to it; **edit** next to a file opens today's copy in the working tree.
 - **Graph**: all local and remote branches as a graph of the commits that
   matter (branch tips, tags, merges, and where branches part). Runs of
   commits between them are one row that unfolds on a click. Remote branches
   that nobody has locally and that had no commit for 90 days are left out
   behind a line that shows them. A click on a commit shows it as in Commits.
+  A right click checks out a branch on it (a remote one as the local branch
+  of its name, made to track it when there is none) or the commit itself,
+  on no branch; the heading then says `detached at` and the commit. When
+  local changes stop a checkout, multigit offers to stash them, new files
+  too, and check out.
+- **Stash**: the stashes, newest first; a click shows one as a commit, and
+  a right click applies, pops or drops it (a drop asks first).
+- **Reflog**: the last 200 places `HEAD` was, newest first, with what
+  moved it; a click shows the commit of a step.
+
+**Commit** over the Files tab commits what is staged. The message is one
+box whose first line is the subject, drawn stronger, with what goes past 72
+characters marked; a body written straight under it gets the empty line in
+between when it is committed. Ctrl+Enter, **Commit** or Enter three times
+at the end of the text commits, Esc cancels. The box starts with the
+ticket key of the branch, or of the last commit when the branch has none
+(letters and digits, a dash and a number, like `ABC-12`), written the way
+the last commit wrote its key: `[ABC-9] Fix` gives `[ABC-12] `, `ABC-9: Fix`
+gives `ABC-12: `.
+
+**Apply to repositories…** in the right-click menu of a commit (Commits,
+Graph and Reflog) takes that commit to other repositories: the view closes,
+a bar over the board names the commit, you mark and filter the cards it
+should go to, and **Apply** puts it on the branch each of them has checked
+out, with its message and author (`git am --3way`). Where it does not
+apply, the `am` is aborted and the repository stays as it was; a merge
+commit is not applied, and a repository in the middle of an `am` or a
+rebase is left alone. The output panel shows each result.
 
 A diff of more than 5000 lines is cut. The view reads the repository
 again when its card notices a change and on **Refresh**; **Close** or Esc
@@ -160,21 +196,31 @@ emoji. A repository can be in several.
 - **Card buttons** run in that one repository. The defaults are
   `pull --ff-only`, `pull --rebase`, `push` and `fetch --all --prune`.
 - **Marking**: a click on a card marks it, a second click unmarks it; marked
-  cards get a coloured border. The toolbar marks all, dirty (changes or
-  an operation in progress), behind (unpulled commits) or ahead (unpushed
-  commits). These buttons work like the station buttons of a radio: the
-  clicked one stays pressed until another is clicked. A click on the pressed
-  button marks the other cards instead (its text is struck through then), the
-  next click the first ones again; a second click on **all** leaves nothing
-  marked. Marking a card by hand does not release the button. A right click
-  on **dirty**, **behind** or **ahead** filters the board instead: only the
-  cards that fit are shown, cards come and go as their status changes, and
-  the marks stay as they are. The button gets a coloured border and the
-  toolbar says `showing dirty (7)`; a click on that text, a second right
-  click, or a right click on **all** shows all again. This filter works
-  together with the favorite and the filter field, and a card it hides keeps
-  its mark and is left alone like one the filter field hides. The toolbar repeats the card buttons
-  for all marked repositories.
+  cards get a coloured border. The **Mark** buttons of the toolbar mark
+  all, dirty (changes or an operation in progress), behind (unpulled
+  commits) or ahead (unpushed commits) of the shown cards and unmark the
+  other shown ones; a right click marks the other cards instead, so a right
+  click on **all** leaves nothing marked. They do not stay pressed. The
+  toolbar repeats the card buttons for all marked repositories.
+- **Filtering**: the **Filter** buttons all, dirty, behind and ahead work
+  like the station buttons of a radio: the clicked one stays pressed, and
+  the board shows only the cards that fit it, as their status changes.
+  Each button says how many cards it would show. Dirty, behind and ahead
+  mark the cards they show and unmark the ones they hide; a card that comes
+  later is marked, one that leaves loses its mark. **all** leaves the marks
+  as they are. The filter works together with the favorite and the filter
+  field.
+- **PR and CI chips**: a card whose branch tracks a repository on GitHub or
+  GitLab shows the pull request (merge request) of that branch and its CI
+  (on GitHub all workflows of the newest commit, the worst counts): green
+  when it is fine, orange while checks run or a
+  review is open, red when something failed. A click opens the page. They
+  are read through `gh` or `glab`, as you have them installed and logged in
+  (multigit keeps no token): every 5 minutes, after a push, after a fetch
+  that brings news, and on **Refresh** in the repository view. A company
+  server counts when the tool is logged into it. On github.com or gitlab.com
+  a grey chip says when the tool is missing or not logged in; Settings
+  switches the chips off per service.
 - **Copying**: a click on a card's folder name, branch name (or the sha of a
   detached HEAD) or tag copies it to the clipboard instead of marking the
   card; a click on the path line copies the repository's full path, and a
@@ -272,7 +318,8 @@ console.
 The board is a table with one row per repository: its name, branch, tag,
 working tree, unpushed (`↑`) and unpulled (`↓`) commits and the last
 command's result. A `!` before the name is a failed fetch. Under the table
-the selected row shows everything its card shows in the window. Statuses
+the selected row shows everything its card shows in the window, the PR and
+CI chips after the remote; the row's menu (`x`) copies their links. Statuses
 refresh and fetches run as in the window. No sounds and no music play in
 the terminal.
 
@@ -284,9 +331,9 @@ Plain keys act on the board; `?` shows them all:
 | g / G, Home / End | First / last row                                       |
 | space             | Mark or unmark the row                                 |
 | Enter             | Open the repository view (a double click too)          |
-| a, d, b, p        | Mark button all, dirty, behind, ahead (p for push)     |
-| D, B, P           | Show only the dirty, behind, ahead rows                |
-| A                 | Show all rows again                                    |
+| a, d, b, p        | Mark all, dirty, behind, ahead rows (p for push)       |
+| Alt+a, d, b, p    | Mark the other rows (Alt+a: none)                      |
+| A, D, B, P        | Filter: all, dirty, behind, ahead rows                 |
 | /                 | Type into the filter field; Enter or Esc leaves it     |
 | s                 | Sort                                                   |
 | :                 | Go to the command line; Esc goes back to the board     |
@@ -318,8 +365,8 @@ over SSH. Terminals that do not support it copy nothing; in tmux it takes
 `set-clipboard on`.
 
 The repository view fills the terminal: the list on the left, what is
-picked in it on the right. `1`, `2` and `3` pick the tabs Files, Commits and
-Graph, `[` and `]` are Back and Forward, `j`/`k` and Enter (or a click) move
+picked in it on the right. `1` to `5` pick the tabs Files, Commits,
+Graph, Stash and Reflog, `[` and `]` are Back and Forward, `j`/`k` and Enter (or a click) move
 and pick, `J`/`K` and PgDn/PgUp scroll the right side, `r` reads the
 repository again, `y` copies all of the right side, and Esc or `q` closes
 it. In the Commits tab the history reads on at its end; for a picked commit
@@ -327,7 +374,17 @@ it. In the Commits tab the history reads on at its end; for a picked commit
 parents to go to, and Tab gives the keys to the right side, where Enter
 unfolds what the commit did to a file (Tab or Esc gives them back). The
 Graph tab draws the lanes with line characters; Enter on a folded run
-unfolds it, and on the line of hidden old remote branches shows them. To copy a part, mark it with the terminal's own selection (Shift and drag
+unfolds it, and on the line of hidden old remote branches shows them; `o`
+or a right click on a commit offers its checkouts. `a` on a commit starts
+applying it to other repositories; on the board Ctrl+S applies it to the
+marked ones and Esc cancels.
+`` ` `` switches the file lists between tree and flat. In the Files tab
+Space stages or unstages the file or folder, `d` offers the two discards,
+and a right click opens the same menu as in the window; `c` opens the
+commit box, where Ctrl+S (or Enter three times at the end) commits. In the
+Stash tab Space applies the picked stash, `P` pops it and `d` drops it.
+`e` edits the picked file in the terminal: in the editor of the Settings,
+else `$VISUAL` or `$EDITOR`, else `vi`; multigit comes back when it ends. To copy a part, mark it with the terminal's own selection (Shift and drag
 where the terminal leaves the mouse to multigit).
 
 `+` asks for the folder instead of a folder dialog: `~` is the home folder,
@@ -376,7 +433,9 @@ In the terminal multigit writes no menu entry and no icon. With `RUST_LOG` set, 
 ## Settings and files
 
 **Settings** in the toolbar changes the fetch interval, the number of parallel
-git processes, the folder scan depth, the terminal command, the theme (System,
+git processes, the folder scan depth, the terminal command, the editor
+command, how often the PR and CI chips are read and for which services,
+the theme (System,
 Light, Dark or Kawaii), Tab's
 single-match behaviour, and the card buttons (add, remove, reorder, or pick a
 preset).
@@ -497,7 +556,7 @@ To build the bundle yourself:
 
 ```sh
 cargo build --release
-packaging/macos/bundle.sh target/release/multigit 0.6.0 .
+packaging/macos/bundle.sh target/release/multigit 0.7.0 .
 ```
 
 ### Scoop (Windows x86_64)

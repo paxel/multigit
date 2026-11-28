@@ -14,6 +14,7 @@ use crate::domain::details::{Details, DiffTarget, LOG_PAGE, LogEntry};
 use crate::domain::graph::GraphData;
 use crate::domain::output::{ProcessOutput, SectionState};
 use crate::domain::repo::{FetchError, ProbeError, Snapshot};
+use crate::domain::services::{ChipQuery, ServiceChip};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -52,6 +53,19 @@ pub trait Backend: Send + Sync + 'static {
     fn graph(&self, dir: &Path, with_old: bool) -> Result<GraphData, String>;
     /// The diff of a file or commit for the repository view; same rule.
     fn diff(&self, dir: &Path, target: &DiffTarget) -> Result<String, String>;
+    /// Apply commit `hash` of the repository at `source` to the one at
+    /// `dir`, with its message and author; a patch that does not apply
+    /// leaves `dir` as it was.
+    fn apply_commit(&self, dir: &Path, source: &Path, hash: &str) -> io::Result<ProcessOutput> {
+        let _ = (dir, source, hash);
+        Err(io::Error::other("applying commits is not supported here"))
+    }
+    /// The chips of a card: its PR and last CI run, through `gh` or
+    /// `glab`. Slow; never on the UI thread.
+    fn chips(&self, query: &ChipQuery) -> Vec<ServiceChip> {
+        let _ = query;
+        Vec::new()
+    }
 }
 
 /// What made a probe run.
@@ -110,6 +124,14 @@ pub enum Event {
         repo: PathBuf,
         result: Result<GraphData, String>,
     },
+    /// The chips of a card were read.
+    Chips {
+        repo: PathBuf,
+        /// What they were read for: an answer for a branch the card is no
+        /// longer on is dropped.
+        query: ChipQuery,
+        chips: Vec<ServiceChip>,
+    },
     /// A diff for the repository view was read.
     Diff {
         repo: PathBuf,
@@ -161,12 +183,38 @@ impl Shared {
     }
 }
 
+/// Git commands one after the other in `dir`, their output together; the
+/// first that fails ends them, and its exit code is the result's.
+fn run_steps(
+    backend: &dyn Backend,
+    dir: &Path,
+    steps: &[Vec<String>],
+) -> io::Result<ProcessOutput> {
+    let mut all = ProcessOutput {
+        exit_code: Some(0),
+        stdout: String::new(),
+        stderr: String::new(),
+    };
+    for args in steps {
+        let out = backend.run(dir, args)?;
+        all.stdout.push_str(&out.stdout);
+        all.stderr.push_str(&out.stderr);
+        if !out.success() {
+            all.exit_code = out.exit_code;
+            break;
+        }
+    }
+    Ok(all)
+}
+
 /// Owns the worker budgets and per-repository slots; lives on the UI thread.
 pub struct Engine {
     shared: Shared,
     commands: Arc<Semaphore>,
     background: Arc<Semaphore>,
     slots: HashMap<PathBuf, Arc<Slot>>,
+    /// The queue of the one thread that reads chips, made on first use.
+    chips: Mutex<Option<Sender<(PathBuf, ChipQuery)>>>,
 }
 
 impl Engine {
@@ -185,6 +233,7 @@ impl Engine {
             commands: Arc::new(Semaphore::new(concurrency)),
             background: Arc::new(Semaphore::new(concurrency)),
             slots: HashMap::new(),
+            chips: Mutex::new(None),
         };
         (engine, rx)
     }
@@ -278,6 +327,8 @@ impl Engine {
                 let result = match &job {
                     Job::Git(args) => shared.backend.run(&repo, args),
                     Job::Shell(line) => shared.backend.run_shell(&repo, line),
+                    Job::Steps(steps) => run_steps(shared.backend.as_ref(), &repo, steps),
+                    Job::Apply { source, hash } => shared.backend.apply_commit(&repo, source, hash),
                 };
                 let state = match result {
                     Ok(out) => SectionState::Done(out),
@@ -342,6 +393,33 @@ impl Engine {
             let result = shared.backend.graph(&repo, with_old);
             shared.send(Event::Graph { repo, result });
         });
+    }
+
+    /// Read the chips of these cards. One thread reads all chips, one card
+    /// after the other, so the code hosts get one question at a time
+    /// (sends [`Event::Chips`] for each).
+    pub fn load_chips(&self, cards: Vec<(PathBuf, ChipQuery)>) {
+        let mut queue = self.chips.lock().unwrap_or_else(|p| p.into_inner());
+        for card in cards {
+            let card = match queue.as_ref() {
+                Some(tx) => match tx.send(card) {
+                    Ok(()) => continue,
+                    Err(e) => e.0,
+                },
+                None => card,
+            };
+            let (tx, rx) = channel::<(PathBuf, ChipQuery)>();
+            let shared = self.shared.clone();
+            thread::spawn(move || {
+                for (repo, query) in rx {
+                    let chips = shared.backend.chips(&query);
+                    shared.send(Event::Chips { repo, query, chips });
+                }
+            });
+            // A fresh queue takes a send; it fails only when the thread is gone.
+            let _ = tx.send(card);
+            *queue = Some(tx);
+        }
     }
 
     /// Read a diff for the repository view (sends [`Event::Diff`]).

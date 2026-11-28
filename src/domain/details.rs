@@ -123,6 +123,25 @@ pub fn tree_rows(files: &[FileChange], closed: &HashSet<String>) -> Vec<TreeRow>
     rows
 }
 
+/// The changed files as rows: with `tree` the tree of [`tree_rows`],
+/// without it every file by its whole path, in the order git gave them.
+pub fn file_rows(files: &[FileChange], closed: &HashSet<String>, tree: bool) -> Vec<TreeRow> {
+    if tree {
+        return tree_rows(files, closed);
+    }
+    files
+        .iter()
+        .cloned()
+        .map(|file| TreeRow {
+            depth: 0,
+            name: file.path.clone(),
+            path: file.path.clone(),
+            file: Some(file),
+            open: false,
+        })
+        .collect()
+}
+
 /// A commit in the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogEntry {
@@ -315,10 +334,20 @@ pub enum RepoTab {
     Commits,
     /// All branches.
     Graph,
+    /// The stashes.
+    Stash,
+    /// Where HEAD has been.
+    Reflog,
 }
 
 impl RepoTab {
-    pub const ALL: [Self; 3] = [Self::Files, Self::Commits, Self::Graph];
+    pub const ALL: [Self; 5] = [
+        Self::Files,
+        Self::Commits,
+        Self::Graph,
+        Self::Stash,
+        Self::Reflog,
+    ];
 
     /// As its tab names it.
     pub fn label(self) -> &'static str {
@@ -326,6 +355,8 @@ impl RepoTab {
             Self::Files => "Files",
             Self::Commits => "Commits",
             Self::Graph => "Graph",
+            Self::Stash => "Stash",
+            Self::Reflog => "Reflog",
         }
     }
 
@@ -398,8 +429,88 @@ impl<T: PartialEq> Trail<T> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Details {
     pub files: Vec<FileChange>,
+    /// What is staged of each changed file, by path.
+    pub states: BTreeMap<String, crate::domain::staging::FileState>,
     pub commits: Vec<LogEntry>,
     pub branches: Vec<BranchEntry>,
+    /// The stashes, newest first.
+    pub stashes: Vec<StashEntry>,
+    /// Where HEAD has been, newest first.
+    pub reflog: Vec<ReflogEntry>,
+}
+
+/// A step of HEAD in the Reflog tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReflogEntry {
+    /// The commit HEAD was at, by its full hash.
+    pub hash: String,
+    pub short: String,
+    /// How git names the step: `HEAD@{0}` is the newest.
+    pub name: String,
+    /// What moved HEAD there: `checkout`, `commit`, `reset: moving to …`.
+    pub action: String,
+    /// The rest of what git says about it.
+    pub message: String,
+}
+
+/// How many steps of HEAD the Reflog tab reads.
+pub const REFLOG_LIMIT: usize = 200;
+
+/// The `--format` of `git log -g`: hash, short hash, name and what git
+/// says about the step, tab separated.
+pub const REFLOG_FORMAT: &str = "--format=%H%x09%h%x09%gd%x09%gs";
+
+/// The steps in the output of `git log -g` with [`REFLOG_FORMAT`]. What git
+/// says is split at its first `: ` into the action and the message.
+pub fn parse_reflog(output: &str) -> Vec<ReflogEntry> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(4, '\t');
+            let hash = fields.next().filter(|h| !h.is_empty())?.to_owned();
+            let short = fields.next()?.to_owned();
+            let name = fields.next()?.to_owned();
+            let says = fields.next().unwrap_or_default();
+            let (action, message) = says.split_once(": ").unwrap_or((says, ""));
+            Some(ReflogEntry {
+                hash,
+                short,
+                name,
+                action: action.to_owned(),
+                message: message.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// A stash in the Stash tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashEntry {
+    /// Its commit, by its full hash.
+    pub hash: String,
+    /// How git names it now: `stash@{0}` is the newest.
+    pub name: String,
+    /// What it says: its message, or git's "WIP on main: …".
+    pub subject: String,
+}
+
+/// The `--format` of `git stash list`: hash, name and subject, tab
+/// separated.
+pub const STASH_FORMAT: &str = "--format=%H%x09%gd%x09%gs";
+
+/// The stashes in the output of `git stash list` with [`STASH_FORMAT`].
+pub fn parse_stashes(output: &str) -> Vec<StashEntry> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            Some(StashEntry {
+                hash: fields.next().filter(|h| !h.is_empty())?.to_owned(),
+                name: fields.next()?.to_owned(),
+                subject: fields.next().unwrap_or_default().to_owned(),
+            })
+        })
+        .collect()
 }
 
 /// What the diff pane shows.
@@ -421,7 +532,11 @@ impl Details {
     pub fn holds(&self, target: &DiffTarget) -> bool {
         match target {
             DiffTarget::File(file) => self.files.contains(file),
-            DiffTarget::Commit(hash) => self.commits.iter().any(|c| &c.hash == hash),
+            DiffTarget::Commit(hash) => {
+                self.commits.iter().any(|c| &c.hash == hash)
+                    || self.stashes.iter().any(|s| &s.hash == hash)
+                    || self.reflog.iter().any(|r| &r.hash == hash)
+            }
             // Never picked by itself: it is shown inside its commit.
             DiffTarget::CommitFile { .. } => false,
         }
@@ -673,6 +788,30 @@ mod tests {
     }
 
     #[test]
+    fn changed_files_are_a_flat_list_of_whole_paths_without_the_tree() {
+        use ChangeKind::{Added, Modified};
+        let files = [
+            file("zeta.txt", Modified),
+            file("src/ui/view.rs", Modified),
+            file("alpha.txt", Added),
+        ];
+        let closed = ["src/".to_string()].into_iter().collect();
+        let flat: Vec<(usize, String)> = file_rows(&files, &closed, false)
+            .into_iter()
+            .map(|r| (r.depth, r.name))
+            .collect();
+        assert_eq!(
+            flat,
+            [
+                (0, "zeta.txt".to_string()),
+                (0, "src/ui/view.rs".to_string()),
+                (0, "alpha.txt".to_string()),
+            ]
+        );
+        assert_eq!(file_rows(&files, &closed, true), tree_rows(&files, &closed));
+    }
+
+    #[test]
     fn changed_files_make_a_tree_with_folders_first_and_single_folders_joined() {
         use ChangeKind::{Added, Deleted, Modified};
         let files = [
@@ -793,10 +932,44 @@ mod tests {
     }
 
     #[test]
+    fn stashes_are_read_with_their_names_and_held_as_commits() {
+        let stashes = parse_stashes(
+            "aaaa\tstash@{0}\tOn main: src/ui/\nbbbb\tstash@{1}\tWIP on main: 1a2b Fix\n\n",
+        );
+        assert_eq!(stashes.len(), 2);
+        assert_eq!(stashes[0].name, "stash@{0}");
+        assert_eq!(stashes[1].subject, "WIP on main: 1a2b Fix");
+        let details = Details {
+            stashes,
+            ..Details::default()
+        };
+        assert!(details.holds(&DiffTarget::Commit("bbbb".into())));
+        assert!(!details.holds(&DiffTarget::Commit("cccc".into())));
+    }
+
+    #[test]
+    fn the_reflog_is_read_as_steps_with_their_action_and_held_as_commits() {
+        let steps = parse_reflog(
+            "aaaa\taa\tHEAD@{0}\tcheckout: moving from main to side\n\
+             bbbb\tbb\tHEAD@{1}\tcommit (initial): First\nnone\n",
+        );
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].action, "checkout");
+        assert_eq!(steps[0].message, "moving from main to side");
+        assert_eq!(steps[1].name, "HEAD@{1}");
+        assert_eq!(steps[1].action, "commit (initial)");
+        let details = Details {
+            reflog: steps,
+            ..Details::default()
+        };
+        assert!(details.holds(&DiffTarget::Commit("bbbb".into())));
+    }
+
+    #[test]
     fn tabs_are_named_and_a_repository_opens_on_its_changes_or_its_history() {
         assert_eq!(
             RepoTab::ALL.map(RepoTab::label),
-            ["Files", "Commits", "Graph"]
+            ["Files", "Commits", "Graph", "Stash", "Reflog"]
         );
         assert_eq!(RepoTab::opening(true), RepoTab::Files);
         assert_eq!(RepoTab::opening(false), RepoTab::Commits);
@@ -912,6 +1085,9 @@ mod tests {
     #[test]
     fn a_selection_outlives_a_reload_only_while_the_lists_hold_it() {
         let details = Details {
+            states: Default::default(),
+            stashes: Vec::new(),
+            reflog: Vec::new(),
             files: vec![file("a.rs", ChangeKind::Modified)],
             commits: parse_log("aaaa\taa\tAda\t1\tthen\t\tone\n"),
             branches: vec![],
